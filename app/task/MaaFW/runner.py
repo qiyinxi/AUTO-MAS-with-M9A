@@ -179,6 +179,17 @@ def _venv_python_path(venv_path: Path) -> Path:
     return venv_path / "bin" / "python"
 
 
+def _is_valid_venv_path(venv_path: Path) -> bool:
+    return _venv_python_path(venv_path).is_file() and (venv_path / "pyvenv.cfg").is_file()
+
+
+def _venv_bootstrap_python() -> str:
+    portable_python = Path.cwd() / "environment" / "python" / "python.exe"
+    if portable_python.is_file():
+        return str(portable_python)
+    return sys.executable
+
+
 def _ensure_maafw_global_init() -> None:
     global _MAAFW_INITIALIZED
     if _MAAFW_INITIALIZED:
@@ -1158,10 +1169,10 @@ class MaaFWRunner:
         python_exe = agent_plan.command[0]
 
         self.send_log(f"[Python环境] 准备隔离 venv: {venv_path}")
-        had_venv_python = _venv_python_path(venv_path).exists()
+        had_valid_venv = _is_valid_venv_path(venv_path)
         if self._should_rebuild_isolated_venv(venv_path, project_path):
             self._reset_isolated_venv(venv_path)
-            had_venv_python = False
+            had_valid_venv = False
         self._ensure_isolated_venv(venv_path)
 
         test_env = self._build_agent_env_for_pip(project_path)
@@ -1180,7 +1191,7 @@ class MaaFWRunner:
                     f"隔离 venv pip 无法自动修复: {python_exe}"
                 )
 
-        if had_venv_python and self._is_isolated_venv_manifest_current(
+        if had_valid_venv and self._is_isolated_venv_manifest_current(
             venv_path,
             project_path,
         ):
@@ -1221,7 +1232,11 @@ class MaaFWRunner:
         venv_path: Path,
         project_path: Path,
     ) -> bool:
-        if not _venv_python_path(venv_path).exists():
+        if venv_path.exists() and not _is_valid_venv_path(venv_path):
+            self.send_log("[Python环境] 隔离 venv 不完整，将重建")
+            return True
+
+        if not _is_valid_venv_path(venv_path):
             return False
 
         manifest_path = venv_path / AGENT_ENV_MANIFEST_NAME
@@ -1272,23 +1287,26 @@ class MaaFWRunner:
     def _ensure_isolated_venv(self, venv_path: Path) -> None:
         """创建或复用项目专属隔离 venv。
 
-        使用 AUTO-MAS 的 sys.executable 引导创建 venv（仅用于 venv 创建），
+        使用便携包基础 Python 或 AUTO-MAS 的 sys.executable 引导创建 venv（仅用于 venv 创建），
         agent 实际运行在隔离 venv 中，不会污染 AUTO-MAS 自身 .venv。
         """
-        venv_python = _venv_python_path(venv_path)
-        if venv_python.exists():
+        if _is_valid_venv_path(venv_path):
             self.send_log(f"[Python环境] 隔离 venv 已存在: {venv_path}")
             return
 
+        if venv_path.exists():
+            self._reset_isolated_venv(venv_path)
+
         venv_path.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap_python = _venv_bootstrap_python()
         self.send_log(
             f"[Python环境] 创建隔离 venv: {venv_path} "
-            f"(引导 Python: {sys.executable})"
+            f"(引导 Python: {bootstrap_python})"
         )
         try:
             result = subprocess.run(
                 [
-                    sys.executable,
+                    bootstrap_python,
                     "-m",
                     "venv",
                     str(venv_path),
@@ -1304,6 +1322,8 @@ class MaaFWRunner:
                 raise RuntimeError(
                     f"创建隔离 venv 失败 (exit={result.returncode}): {detail[:500]}"
                 )
+            if not _is_valid_venv_path(venv_path):
+                raise RuntimeError(f"创建隔离 venv 后结构不完整: {venv_path}")
             self.send_log(f"[Python环境] 隔离 venv 创建成功: {venv_path}")
         except subprocess.TimeoutExpired:
             raise RuntimeError(
