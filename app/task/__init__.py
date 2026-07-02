@@ -21,15 +21,6 @@
 #   Contact: DLmaster_361@163.com
 
 
-from .MAA import MaaManager
-from .MaaEnd import MaaEndManager
-from .SRC import SrcManager
-from .M9A import M9AManager
-from .MaaFW import MaaFWManager
-from .general import GeneralManager
-from .Okww import OkwwManager
-from .HSR import HSRManager
-
 __all__ = [
     "MaaManager",
     "SrcManager",
@@ -40,3 +31,39 @@ __all__ = [
     "OkwwManager",
     "HSRManager",
 ]
+
+
+def __getattr__(name: str):
+    if name == "MaaManager":
+        from .MAA import MaaManager
+
+        return MaaManager
+    if name == "SrcManager":
+        from .SRC import SrcManager
+
+        return SrcManager
+    if name == "M9AManager":
+        from .M9A import M9AManager
+
+        return M9AManager
+    if name == "MaaFWManager":
+        from .MaaFW import MaaFWManager
+
+        return MaaFWManager
+    if name == "GeneralManager":
+        from .general import GeneralManager
+
+        return GeneralManager
+    if name == "MaaEndManager":
+        from .MaaEnd import MaaEndManager
+
+        return MaaEndManager
+    if name == "OkwwManager":
+        from .Okww import OkwwManager
+
+        return OkwwManager
+    if name == "HSRManager":
+        from .HSR import HSRManager
+
+        return HSRManager
+    raise AttributeError(name)

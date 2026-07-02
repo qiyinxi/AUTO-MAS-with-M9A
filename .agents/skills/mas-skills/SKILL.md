@@ -40,6 +40,7 @@ Use these skills as needed:
 8. `mas-data-model`: modeling standards for schema/config/task layers and compatibility evolution.
 9. `mas-script-specialized-adapter`: specialized script integration by script frontend architecture line; requires intake before implementation.
 10. `mas-plan-schedule`: plan schedule type registration, backend/frontend plan dispatch, plan combobox consumers, and per-type table integration.
+11. `mas-maafw-development`: MaaFW/MFW implementation context, ProjectInterface/runtime/agent environment guardrails, and package import facts.
 
 ## Global Constraints
 Apply these constraints before selecting or combining sub-skills.
@@ -77,6 +78,8 @@ Use `mas-script-specialized-adapter` first, then combine `mas-module-boundary`, 
 Use `mas-code-standards` for code-style decisions; use the docs site for contribution-process wording.
 11. Task mentions plan schedules, schedule types, `PlanConfig`, `PLAN_BOOK`, plan comboboxes, or adding a new plan table:
 Use `mas-plan-schedule`.
+12. Task mentions MaaFW, MFW, MaaFramework ProjectInterface, `app/task/MaaFW`, MaaFW controller/resource/preset/options, MaaFW agent Python environments, isolated venvs, or `MaaFw`/`maa` package imports:
+Use `mas-maafw-development`.
 
 ## Combined Execution Order
 When multiple concerns appear, apply this order:
@@ -91,6 +94,7 @@ When multiple concerns appear, apply this order:
 8. `mas-api-contract`
 9. `mas-script-specialized-adapter` after architecture intake, when the task is a specialized adapter.
 10. `mas-plan-schedule`
+11. `mas-maafw-development`, when the task targets the existing MaaFW implementation or its agent/runtime surface.
 
 Reason: frontend tasks need their engineering and UI constraints loaded before implementation decisions; then establish local conventions, place code correctly, stabilize model structure, then naming, function behavior, and transport contract. Specialized adapters add a mandatory architecture-intake step, and plan schedule rules apply when the task touches scheduler registration.
 
@@ -113,3 +117,4 @@ When using this hub:
 5. Function behavior and API contract stay consistent after changes.
 6. Relevant project rules were considered for API, config, script task, frontend task, and contribution-style changes.
 7. Contribution-process details were not duplicated from the docs site except as links or brief reminders.
+8. MaaFW/MFW tasks loaded `mas-maafw-development` and preserved the current package/import and agent isolation facts.

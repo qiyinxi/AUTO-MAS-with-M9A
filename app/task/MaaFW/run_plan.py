@@ -27,21 +27,38 @@ from typing import Any
 import json5
 from pydantic import BaseModel, ConfigDict, Field
 
-from .interface_models import (
-    MaaFWAgent,
-    MaaFWController,
-    MaaFWInterface,
-    MaaFWResource,
-    MaaFWTask,
-    MaaFWTaskOptionsByTask,
-)
-from .pipeline_override import MaaFWPipelineOverrideBuilder
-from .task_config import (
-    MaaFWTaskPresetSnapshot,
-    build_interface_preset_snapshot,
-    normalize_snapshot,
-    normalize_task_execution_payload,
-)
+try:
+    from .interface_models import (
+        MaaFWAgent,
+        MaaFWController,
+        MaaFWInterface,
+        MaaFWResource,
+        MaaFWTask,
+        MaaFWTaskOptionsByTask,
+    )
+    from .pipeline_override import MaaFWPipelineOverrideBuilder
+    from .task_config import (
+        MaaFWTaskPresetSnapshot,
+        build_interface_preset_snapshot,
+        normalize_snapshot,
+        normalize_task_execution_payload,
+    )
+except ImportError:
+    from interface_models import (  # type: ignore[no-redef]
+        MaaFWAgent,
+        MaaFWController,
+        MaaFWInterface,
+        MaaFWResource,
+        MaaFWTask,
+        MaaFWTaskOptionsByTask,
+    )
+    from pipeline_override import MaaFWPipelineOverrideBuilder  # type: ignore[no-redef]
+    from task_config import (  # type: ignore[no-redef]
+        MaaFWTaskPresetSnapshot,
+        build_interface_preset_snapshot,
+        normalize_snapshot,
+        normalize_task_execution_payload,
+    )
 
 
 PI_INTERFACE_VERSION = "v2.5.0"

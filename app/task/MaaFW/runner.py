@@ -22,6 +22,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,8 +34,6 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Literal, TextIO
 
 import maa as maa_package
-from app.utils import decode_bytes
-from app.utils.constants import ANSI_ESCAPE_RE
 from maa.agent_client import AgentClient
 from maa.controller import (
     AdbController,
@@ -57,11 +56,21 @@ from maa.tasker import Tasker, TaskerEventSink
 from maa.toolkit import Toolkit
 from pydantic import BaseModel, Field
 
-from .run_plan import (
-    MaaFWResourceBundlePlan,
-    MaaFWRunPlan,
-    build_maafw_agent_command_plans,
-)
+try:
+    from .run_plan import (
+        MaaFWResourceBundlePlan,
+        MaaFWRunPlan,
+        build_maafw_agent_command_plans,
+    )
+except ImportError:
+    from run_plan import (  # type: ignore[no-redef]
+        MaaFWResourceBundlePlan,
+        MaaFWRunPlan,
+        build_maafw_agent_command_plans,
+    )
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+ENCODINGS = ("utf-8", "gbk", "shift_jis", "utf-16")
 
 _MAAFW_INITIALIZED = False
 _MAAFW_INIT_LOCK = threading.Lock()
@@ -97,6 +106,7 @@ EMBEDDED_AGENT_SERVER_SINK_DECORATORS = {
     "context_sink",
 }
 MAAFW_FAILURE_EVENT_MESSAGES = {
+    "Node.NextList.Failed",
     "Node.PipelineNode.Failed",
     "Node.Action.Failed",
     "Tasker.Task.Failed",
@@ -104,8 +114,35 @@ MAAFW_FAILURE_EVENT_MESSAGES = {
 MAAFW_FAILURE_SUMMARY_LIMIT = 8
 
 
-def _ensure_maafw_client_library_mode() -> None:
+def _project_maafw_runtime_path(project_path: Path | None) -> Path | None:
+    if project_path is None:
+        return None
+
+    for candidate in (
+        project_path / "maafw",
+        project_path / "runtimes" / "win-x64",
+    ):
+        if (candidate / "MaaFramework.dll").is_file():
+            return candidate
+    return None
+
+
+def decode_bytes(data: bytes) -> str:
+    if not data:
+        return ""
+    for encoding in ENCODINGS:
+        try:
+            return data.decode(encoding, errors="strict")
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("latin1", errors="replace")
+
+
+def _ensure_maafw_client_library_mode(runtime_path: Path | None = None) -> None:
     """Keep MaaFW loaded as a client library inside AUTO-MAS."""
+
+    if runtime_path is not None:
+        Library.open(runtime_path, agent_server=False)
 
     if Library.is_agent_server():
         maa_bin_path = Path(maa_package.__file__).resolve().parent / "bin"
@@ -220,14 +257,14 @@ def _write_agent_compat_shims(venv_path: Path) -> Path:
     return shim_dir
 
 
-def _ensure_maafw_global_init() -> None:
+def _ensure_maafw_global_init(project_path: Path | None = None) -> None:
     global _MAAFW_INITIALIZED
     if _MAAFW_INITIALIZED:
         return
     with _MAAFW_INIT_LOCK:
         if _MAAFW_INITIALIZED:
             return
-        _ensure_maafw_client_library_mode()
+        _ensure_maafw_client_library_mode(_project_maafw_runtime_path(project_path))
         option_path = Path.cwd() / "config" / "maa_option.json"
         option_path.parent.mkdir(parents=True, exist_ok=True)
         option_path.write_text(
@@ -294,12 +331,13 @@ class MaaFWRunner:
         self._python_env_checked: dict[str, bool] = {}
         self._stop_requested: threading.Event = threading.Event()
         self._task_failure_summaries: list[str] = []
+        self._failed_task_errors: list[tuple[str, str]] = []
 
     def _ensure_initialized(self, device_config: MaaFWDeviceConfig) -> None:
         if self._initialized:
             return
 
-        _ensure_maafw_global_init()
+        _ensure_maafw_global_init(Path(self.plan.path))
         self.resource = Resource()
         self.tasker = Tasker()
         self._install_resource_sink()
@@ -313,6 +351,23 @@ class MaaFWRunner:
         try:
             self._ensure_initialized(device_config)
             completed_tasks = self._run_tasks()
+            if self._failed_task_errors:
+                first_failed_task, _ = self._failed_task_errors[0]
+                error_message = "；".join(
+                    f"{task_name}: {message}"
+                    for task_name, message in self._failed_task_errors[:3]
+                )
+                if len(self._failed_task_errors) > 3:
+                    error_message += f"；另有 {len(self._failed_task_errors) - 3} 个任务失败"
+                return MaaFWRunResult(
+                    success=False,
+                    projectName=self.plan.projectName,
+                    controllerName=self.plan.controllerName,
+                    resourceName=self.plan.resourceName,
+                    completedTasks=completed_tasks,
+                    failedTask=first_failed_task,
+                    errorMessage=error_message,
+                )
             return MaaFWRunResult(
                 success=True,
                 projectName=self.plan.projectName,
@@ -1094,6 +1149,7 @@ class MaaFWRunner:
                     self.send_log(f"[Python环境] 写入 Agent 兼容层失败: {exc}")
         python_path_items.append(str(project_path))
         env["PYTHONPATH"] = os.pathsep.join(python_path_items)
+        env["PYTHONIOENCODING"] = "utf-8"
 
         # PATH 前置：agent Python 目录、Scripts 目录、项目根目录、项目必要 dll 目录
         python_exe = Path(agent_plan.executable)
@@ -1556,6 +1612,7 @@ class MaaFWRunner:
     def _run_tasks(self) -> list[str]:
         completed_tasks: list[str] = []
         self._completed_tasks = completed_tasks
+        self._failed_task_errors = []
         for task in self.plan.tasks:
             if self._stop_requested.is_set():
                 raise RuntimeError("MaaFW 任务已停止")
@@ -1564,11 +1621,20 @@ class MaaFWRunner:
                 raise RuntimeError("MaaFW tasker 已释放，无法继续投递任务")
             self.send_log(f"正在运行任务: {task.name}")
             self._task_failure_summaries.clear()
-            if task.pipelineOverride:
-                job = tasker.post_task(task.entry, task.pipelineOverride)
-            else:
-                job = tasker.post_task(task.entry)
-            self._wait_job(job)
+            try:
+                if task.pipelineOverride:
+                    job = tasker.post_task(task.entry, task.pipelineOverride)
+                else:
+                    job = tasker.post_task(task.entry)
+                self._wait_job(job)
+            except Exception as exc:
+                if self._stop_requested.is_set():
+                    raise RuntimeError("MaaFW 任务已停止") from exc
+                message = str(exc)
+                self._failed_task_errors.append((task.name, message))
+                self.send_log(f"任务失败，将继续后续任务: {task.name}: {message}")
+                time.sleep(0.1)
+                continue
             if self._stop_requested.is_set():
                 raise RuntimeError("MaaFW 任务已停止")
             completed_tasks.append(task.name)
@@ -1594,8 +1660,8 @@ class MaaFWRunner:
         summary = _format_maafw_failure_event(message, details)
         if not summary:
             return
-        if self._task_failure_summaries and self._task_failure_summaries[-1] == summary:
-            return
+        if summary in self._task_failure_summaries:
+            self._task_failure_summaries.remove(summary)
         self._task_failure_summaries.append(summary)
         if len(self._task_failure_summaries) > MAAFW_FAILURE_SUMMARY_LIMIT:
             del self._task_failure_summaries[:-MAAFW_FAILURE_SUMMARY_LIMIT]

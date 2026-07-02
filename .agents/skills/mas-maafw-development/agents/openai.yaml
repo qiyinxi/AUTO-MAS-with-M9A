@@ -1,0 +1,4 @@
+interface:
+  display_name: "MAS MaaFW Development"
+  short_description: "AUTO-MAS MaaFW development context and guardrails."
+  default_prompt: "Use $mas-maafw-development to work on AUTO-MAS MaaFW integration tasks."

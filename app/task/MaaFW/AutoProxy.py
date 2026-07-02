@@ -18,13 +18,17 @@
 
 
 import asyncio
+import hashlib
 import json
 import os
+import shutil
 import shlex
+import subprocess
+import sys
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import IntEnum
 from pathlib import Path
 from typing import Any
@@ -58,14 +62,19 @@ from .run_plan import (
     MaaFWRunPlanError,
     build_maafw_run_plan,
 )
-from .runner import MaaFWDeviceConfig, MaaFWRunResult, MaaFWRunner
-from .window_service import resolve_window_handle
+from .runner import MaaFWDeviceConfig, MaaFWRunResult
+from .window_service import match_controller_windows, resolve_window_handle
 
 
 logger = get_logger("MaaFW 自动代理")
 
 _RUNNING_PROJECT_PATHS: set[str] = set()
 _RUNNING_PROJECT_PATHS_LOCK = asyncio.Lock()
+RUNNER_ENV_MANIFEST_NAME = ".auto_mas_maafw_runner_env.json"
+RUNNER_VENV_PACKAGES = ("maafw==5.8.1", "pydantic==2.11.7", "json5==0.14.0")
+RUNNER_VENV_TIMEOUT = 300
+RUNNER_PIP_TIMEOUT = 300
+RUNNER_PROCESS_KILL_TIMEOUT = 5
 
 
 @dataclass(frozen=True)
@@ -112,7 +121,7 @@ class AutoProxyTask(TaskExecuteBase):
         self.opened_emulator = False
         self.opened_game = False
         self.project_lock_key: str | None = None
-        self.runner: MaaFWRunner | None = None
+        self.runner_process: asyncio.subprocess.Process | None = None
         self.game_process_manager = ProcessManager()
         self._cached_adb_address: str | None = None
         self._cached_adb_path: str | None = None
@@ -197,9 +206,6 @@ class AutoProxyTask(TaskExecuteBase):
         logger.info(f"开始代理用户: {self.cur_user_uid}")
         self.cur_user_item.status = "运行"
 
-        if self.run_plan is not None:
-            self.runner = MaaFWRunner(self.run_plan, send_log=self._send_runner_log)
-
         try:
             for i in range(self.script_config.get("Run", "RunTimesLimit")):
                 if self.run_complete:
@@ -232,7 +238,7 @@ class AutoProxyTask(TaskExecuteBase):
                         type="Info",
                         data={"Error": f"MaaFW 运行异常: {exc}"},
                     )
-                    self._reset_runner_for_retry()
+                    await self._reset_runner_for_retry()
                     continue
                 finally:
                     if self.cur_user_config.get("Info", "IfScriptAfterTask"):
@@ -260,12 +266,12 @@ class AutoProxyTask(TaskExecuteBase):
                         self.run_complete = True
                         self._append_log("MaaFW 剩余周期任务已完成，停止本轮重试")
                     else:
-                        self._reset_runner_for_retry()
+                        await self._reset_runner_for_retry()
         finally:
-            self._shutdown_runner()
+            await self._shutdown_runner()
 
     async def final_task(self):
-        self._shutdown_runner()
+        await self._shutdown_runner()
         if self.check_result != "Pass":
             await self._close_game()
             await self._release_project_path()
@@ -333,7 +339,7 @@ class AutoProxyTask(TaskExecuteBase):
             type="Info",
             data={"Error": f"MaaFW 自动代理任务出现异常: {e}"},
         )
-        self._shutdown_runner()
+        await self._shutdown_runner()
         await self._close_emulator()
         await self._close_game()
         await self._release_project_path()
@@ -846,46 +852,295 @@ class AutoProxyTask(TaskExecuteBase):
     async def _run_maafw(self, device_config: MaaFWDeviceConfig) -> MaaFWRunResult:
         if self.run_plan is None:
             raise RuntimeError("MaaFW 运行计划未初始化")
-        if getattr(self, "runner", None) is None:
-            self.runner = MaaFWRunner(self.run_plan, send_log=self._send_runner_log)
-
         self.loop = asyncio.get_running_loop()
         timeout = self.script_config.get("Run", "RunTimeLimit") * 60
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self.runner.run, device_config),
+                self._run_maafw_worker(device_config),
                 timeout=timeout,
             )
         except asyncio.CancelledError:
-            if self.runner is not None:
-                self.runner.cleanup()
+            await self._terminate_runner_process()
             raise
         except asyncio.TimeoutError as exc:
-            if self.runner is not None:
-                self.runner.cleanup()
+            await self._terminate_runner_process()
             raise RuntimeError("MaaFW 任务运行超时") from exc
 
-    def _reset_runner_for_retry(self) -> None:
-        if self.runner is not None:
-            try:
-                self.runner.reset_for_retry()
-            except Exception as exc:
-                logger.warning(f"MaaFW Runner 重置重试失败，降级为完全重建: {exc}")
-                self._shutdown_runner()
-                if self.run_plan is not None:
-                    self.runner = MaaFWRunner(self.run_plan, send_log=self._send_runner_log)
+    async def _run_maafw_worker(
+        self,
+        device_config: MaaFWDeviceConfig,
+    ) -> MaaFWRunResult:
+        if self.run_plan is None:
+            raise RuntimeError("MaaFW 运行计划未初始化")
 
-    def _shutdown_runner(self) -> None:
-        if self.runner is not None:
-            try:
-                self.runner.shutdown()
-            except Exception as exc:
-                logger.warning(f"MaaFW Runner 关闭失败: {exc}")
-            self.runner = None
+        runner_venv = self._runner_venv_path()
+        runner_python = await asyncio.to_thread(self._ensure_runner_venv, runner_venv)
+        job_path = await asyncio.to_thread(self._write_runner_job, device_config)
+        env = self._build_runner_env(runner_venv)
+        result: MaaFWRunResult | None = None
+        stderr_lines: list[str] = []
+
+        self._append_log(f"MaaFW Runner 使用隔离 venv: {runner_venv}")
+        worker_path = Path(__file__).with_name("runner_worker.py")
+        process = await asyncio.create_subprocess_exec(
+            str(runner_python),
+            str(worker_path),
+            str(job_path),
+            cwd=str(Path.cwd()),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self.runner_process = process
+
+        async def read_stdout() -> None:
+            nonlocal result
+            if process.stdout is None:
+                return
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    self._send_runner_log(line)
+                    continue
+
+                payload_type = payload.get("type")
+                if payload_type == "log":
+                    self._send_runner_log(str(payload.get("message", "")))
+                elif payload_type == "result":
+                    result = MaaFWRunResult.model_validate(payload.get("data"))
+                elif payload_type == "error":
+                    self._send_runner_log(str(payload.get("message", "")))
+
+        async def read_stderr() -> None:
+            if process.stderr is None:
+                return
+            async for raw_line in process.stderr:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                stderr_lines.append(line)
+                del stderr_lines[:-20]
+
+        stdout_task = asyncio.create_task(read_stdout())
+        stderr_task = asyncio.create_task(read_stderr())
+        try:
+            returncode = await process.wait()
+            await asyncio.gather(stdout_task, stderr_task)
+        finally:
+            if process.returncode is None:
+                await self._terminate_runner_process()
+            elif self.runner_process is process:
+                self.runner_process = None
+            stdout_task.cancel()
+            stderr_task.cancel()
+            with suppress(Exception):
+                job_path.unlink()
+
+        if result is not None:
+            return result
+
+        detail = "\n".join(stderr_lines[-5:]).strip()
+        message = f"MaaFW Runner 子进程异常退出: exit={returncode}"
+        if detail:
+            message += f": {detail}"
+        raise RuntimeError(message)
+
+    async def _reset_runner_for_retry(self) -> None:
+        await self._terminate_runner_process()
+
+    async def _shutdown_runner(self) -> None:
+        await self._terminate_runner_process()
         self._cached_adb_address = None
         self._cached_adb_path = None
         self._cached_device_info = None
         self._cached_adb_profile = None
+
+    async def _terminate_runner_process(self) -> None:
+        process = self.runner_process
+        self.runner_process = None
+        if process is None or process.returncode is not None:
+            return
+
+        try:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=RUNNER_PROCESS_KILL_TIMEOUT)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            logger.warning(f"MaaFW Runner 子进程清理失败: {exc}")
+
+    def _runner_venv_path(self) -> Path:
+        project_key = str(self.project_path.resolve()).lower()
+        digest = hashlib.sha256(project_key.encode("utf-8")).hexdigest()[:16]
+        return Path.cwd() / "config" / "maafw_runner_venvs" / f"maafw_runner_{digest}"
+
+    def _ensure_runner_venv(self, venv_path: Path) -> Path:
+        if self._should_rebuild_runner_venv(venv_path):
+            self._reset_runner_venv(venv_path)
+
+        if not _is_valid_venv_path(venv_path):
+            venv_path.parent.mkdir(parents=True, exist_ok=True)
+            bootstrap_python = _venv_bootstrap_python()
+            self._append_log(
+                f"[MaaFW Runner] 创建隔离 venv: {venv_path} "
+                f"(引导 Python: {bootstrap_python})"
+            )
+            self._run_setup_command(
+                [
+                    bootstrap_python,
+                    "-m",
+                    "venv",
+                    str(venv_path),
+                ],
+                timeout=RUNNER_VENV_TIMEOUT,
+                cwd=Path.cwd(),
+            )
+
+        runner_python = _venv_python_path(venv_path)
+        manifest_path = venv_path / RUNNER_ENV_MANIFEST_NAME
+        manifest = self._runner_env_manifest()
+        if self._is_runner_manifest_current(manifest_path, manifest):
+            return runner_python
+
+        packages = [*RUNNER_VENV_PACKAGES, *_load_requirements_file(self.project_path)]
+        self._append_log(f"[MaaFW Runner] 安装隔离 venv 依赖: {', '.join(packages)}")
+        self._run_setup_command(
+            [
+                str(runner_python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--quiet",
+                *packages,
+            ],
+            timeout=RUNNER_PIP_TIMEOUT,
+            cwd=self.project_path,
+            env=self._build_runner_env(venv_path),
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return runner_python
+
+    def _should_rebuild_runner_venv(self, venv_path: Path) -> bool:
+        if venv_path.exists() and not _is_valid_venv_path(venv_path):
+            return True
+        return False
+
+    def _reset_runner_venv(self, venv_path: Path) -> None:
+        runner_venv_root = Path.cwd() / "config" / "maafw_runner_venvs"
+        resolved_root = runner_venv_root.resolve()
+        resolved_venv = venv_path.resolve()
+        if (
+            resolved_venv.parent != resolved_root
+            or not resolved_venv.name.startswith("maafw_runner_")
+        ):
+            raise RuntimeError(f"拒绝重建非托管 MaaFW Runner venv: {venv_path}")
+        shutil.rmtree(venv_path, ignore_errors=True)
+
+    def _runner_env_manifest(self) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "projectPath": str(self.project_path.resolve()),
+            "packages": list(RUNNER_VENV_PACKAGES),
+            "projectRequirements": _load_requirements_file(self.project_path),
+            "pythonVersion": f"{sys.version_info.major}.{sys.version_info.minor}",
+        }
+
+    @staticmethod
+    def _is_runner_manifest_current(
+        manifest_path: Path,
+        manifest: dict[str, Any],
+    ) -> bool:
+        try:
+            current = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return current == manifest
+
+    def _write_runner_job(self, device_config: MaaFWDeviceConfig) -> Path:
+        if self.run_plan is None:
+            raise RuntimeError("MaaFW 运行计划未初始化")
+
+        job_dir = Path.cwd() / "runtime" / "maafw_runner_jobs"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        job_path = (
+            job_dir
+            / f"{self.task_info.task_id}_{self.cur_user_uid}_{uuid.uuid4().hex}.json"
+        )
+        job_path.write_text(
+            json.dumps(
+                {
+                    "plan": self.run_plan.model_dump(mode="json"),
+                    "deviceConfig": device_config.model_dump(mode="json"),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return job_path
+
+    def _build_runner_env(self, runner_venv: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        for name in (
+            "PYTHONHOME",
+            "PYTHONUSERBASE",
+            "PIP_TARGET",
+            "PIP_PREFIX",
+            "PIP_USER",
+        ):
+            env.pop(name, None)
+
+        scripts_dir = runner_venv / ("Scripts" if os.name == "nt" else "bin")
+        repo_root = str(Path.cwd())
+        python_path = env.get("PYTHONPATH")
+        env["VIRTUAL_ENV"] = str(runner_venv)
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PATH"] = f"{scripts_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["PYTHONPATH"] = (
+            f"{repo_root}{os.pathsep}{python_path}" if python_path else repo_root
+        )
+        return env
+
+    def _run_setup_command(
+        self,
+        command: list[str],
+        *,
+        timeout: int,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=timeout,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"MaaFW Runner 环境命令超时: {command[:3]}") from exc
+
+        if result.returncode == 0:
+            return
+
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"MaaFW Runner 环境命令失败 (exit={result.returncode}): {detail[:800]}"
+        )
 
     async def _ensure_desktop_game_started(self) -> None:
         if self.run_plan is None or self.run_plan.controllerType not in {"Win32", "Gamepad"}:
@@ -897,11 +1152,12 @@ class AutoProxyTask(TaskExecuteBase):
         if not game_path.is_file():
             raise RuntimeError("当前 MaaFW controller 需要由 MAS 启动游戏，请在脚本管理页选择实际游戏 exe")
 
-        game_process_name = game_path.name
         if _is_process_path_running(game_path):
-            message = f"检测到游戏进程已在运行，跳过由 MAS 重复启动游戏: {game_process_name}"
+            message = f"检测到游戏进程已在运行，跳过由 MAS 重复启动游戏: {game_path.name}"
             logger.info(message)
             self.script_info.log = message
+            await self._wait_for_desktop_game_ready(game_path)
+            await self._activate_desktop_game_window(game_path)
             return
 
         game_arguments = shlex.split(str(self.script_config.get("Game", "Arguments") or "").strip())
@@ -910,10 +1166,111 @@ class AutoProxyTask(TaskExecuteBase):
             game_path,
             *game_arguments,
             cwd=game_path.parent,
-            target_process=ProcessInfo(exe=str(game_path.resolve())),
         )
+
+        try:
+            await self._wait_for_desktop_game_ready(game_path)
+        except Exception:
+            with suppress(Exception):
+                await self.game_process_manager.kill()
+            raise
+
         self.opened_game = True
-        await asyncio.sleep(int(self.script_config.get("Game", "WaitTime") or 0))
+        await self._activate_desktop_game_window(game_path)
+
+    async def _wait_for_desktop_game_ready(
+        self,
+        game_path: Path,
+        poll_interval: float = 1.0,
+    ) -> None:
+        wait_time = max(0, int(self.script_config.get("Game", "WaitTime") or 0))
+        if self.run_plan is None or self.interface_model is None:
+            raise RuntimeError("MaaFW 运行计划未完成初始化")
+
+        configured_hwnd = (
+            self.cur_user_config.get("Device", "HWnd")
+            or self.script_config.get("Device", "HWnd")
+        )
+        explicit_hwnd = _optional_int(configured_hwnd)
+        controller = _find_controller(self.interface_model, self.run_plan.controllerName)
+
+        self._append_log(
+            f"正在等待游戏客户端窗口就绪，最大等待时间 {wait_time}s: {game_path.name}"
+        )
+        if wait_time <= 0:
+            if not _is_process_path_running(game_path):
+                raise RuntimeError(f"游戏进程未启动: {game_path.name}")
+            if explicit_hwnd:
+                self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                return
+            if not match_controller_windows(controller):
+                raise RuntimeError(f"游戏窗口未就绪: {game_path.name}")
+            return
+
+        waited = 0.0
+        process_detected = False
+        while waited < wait_time:
+            if _is_process_path_running(game_path):
+                if not process_detected:
+                    self._append_log(f"检测到游戏进程已启动: {game_path.name}")
+                    process_detected = True
+
+                if explicit_hwnd:
+                    self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                    return
+
+                matches = match_controller_windows(controller)
+                if matches:
+                    selected = matches[0]
+                    self._append_log(
+                        "检测到游戏客户端窗口: "
+                        f"hWnd={selected.hWnd}, class={selected.className}, "
+                        f"title={selected.windowName}"
+                    )
+                    return
+
+            sleep_seconds = min(poll_interval, wait_time - waited)
+            await asyncio.sleep(sleep_seconds)
+            waited += sleep_seconds
+
+        if _is_process_path_running(game_path):
+            if explicit_hwnd:
+                self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                return
+
+            matches = match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                return
+
+            raise RuntimeError(f"游戏窗口在 {wait_time}s 内未就绪: {game_path.name}")
+
+        raise RuntimeError(f"游戏进程在 {wait_time}s 内未启动: {game_path.name}")
+
+    async def _activate_desktop_game_window(self, game_path: Path) -> None:
+        try:
+            await self.game_process_manager.search_process(
+                ProcessInfo(exe=str(game_path.resolve())),
+                datetime.now() + timedelta(seconds=5),
+            )
+        except Exception as exc:
+            logger.warning(f"MaaFW 定位游戏进程窗口失败: {exc}")
+            self._append_log(f"游戏进程已启动，但定位窗口失败: {exc}")
+            return
+
+        activate_end_time = datetime.now() + timedelta(seconds=5)
+        while datetime.now() < activate_end_time:
+            if await self.game_process_manager.activate_window():
+                self._append_log("游戏窗口已置于前台")
+                return
+            await asyncio.sleep(0.5)
+
+        self._append_log("游戏窗口前置失败，将继续启动 MaaFW 任务")
 
     async def _close_game(self) -> None:
         if not self.opened_game:
@@ -967,6 +1324,38 @@ def _load_json_dict(value: Any) -> dict[str, Any]:
             if isinstance(data, dict):
                 return data
     return {}
+
+
+def _load_requirements_file(project_path: Path) -> list[str]:
+    requirements_path = project_path / "requirements.txt"
+    packages: list[str] = []
+    try:
+        with requirements_path.open("r", encoding="utf-8") as file:
+            for raw_line in file:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                packages.append(line)
+    except FileNotFoundError:
+        pass
+    return packages
+
+
+def _venv_python_path(venv_path: Path) -> Path:
+    if os.name == "nt":
+        return venv_path / "Scripts" / "python.exe"
+    return venv_path / "bin" / "python"
+
+
+def _is_valid_venv_path(venv_path: Path) -> bool:
+    return _venv_python_path(venv_path).is_file() and (venv_path / "pyvenv.cfg").is_file()
+
+
+def _venv_bootstrap_python() -> str:
+    portable_python = Path.cwd() / "environment" / "python" / "python.exe"
+    if portable_python.is_file():
+        return str(portable_python)
+    return sys.executable
 
 
 def _is_process_path_running(executable_path: Path) -> bool:
