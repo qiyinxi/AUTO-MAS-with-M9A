@@ -69,7 +69,7 @@
                 <div class="script-details">
                   <h3 class="script-name">{{ script.name }}</h3>
                   <a-tag :color="getScriptTagColor(script.type)" class="script-type">
-                    {{ getScriptTypeLabel(script.type) }}
+                    {{ getScriptTypeLabel(script) }}
                   </a-tag>
                 </div>
               </div>
@@ -297,7 +297,10 @@
                           </a-tag>
                         </div>
                         <!-- 用户详细信息 - 后端提供 Tag 的脚本用户 -->
-                        <div v-if="script.type === 'General' || script.type === 'Okww'" class="user-info-tags">
+                        <div
+                          v-if="script.type === 'General' || script.type === 'Okww'"
+                          class="user-info-tags"
+                        >
                           <!-- 直接使用后端提供的Tag字段 -->
                           <a-tag
                             v-for="(tag, index) in parseStatusTagList(user.Info.Tag)"
@@ -477,7 +480,7 @@
 </template>
 
 <script setup lang="ts">
-import type { Script, User } from '../types/script'
+import type { MaaFWScriptConfig, Script, User } from '../types/script'
 import {
   DeleteOutlined,
   EditOutlined,
@@ -641,10 +644,15 @@ const handleToggleUserStatus = (user: User) => {
   emit('toggleUserStatus', user)
 }
 
-const getScriptTypeLabel = (type: Script['type']) => {
-  if (type === 'MaaFW') return 'MaaFramework'
-  if (type === 'Okww') return 'ok-ww'
-  return type
+const getMaaFWProjectLabel = (script: Script) => {
+  const config = script.config as Partial<MaaFWScriptConfig> | undefined
+  return config?.Info?.ProjectLabel?.trim() || 'MaaFW'
+}
+
+const getScriptTypeLabel = (script: Script) => {
+  if (script.type === 'MaaFW') return getMaaFWProjectLabel(script)
+  if (script.type === 'Okww') return 'ok-ww'
+  return script.type
 }
 
 const getScriptTagColor = (type: Script['type']) => {

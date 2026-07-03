@@ -64,6 +64,7 @@ except ImportError:
 PI_INTERFACE_VERSION = "v2.5.0"
 PI_CLIENT_LANGUAGE = "zh_cn"
 PI_CLIENT_NAME = "AUTO-MAS"
+MAAFW_DIRECT_CONTROLLER_TYPES = {"Adb", "Win32"}
 
 
 class MaaFWRunPlanError(ValueError):
@@ -247,11 +248,38 @@ def _select_controller(
         )
         if controller is None:
             raise MaaFWRunPlanError(f"未找到 controller: {controller_name}")
+        _ensure_direct_controller(controller)
         return controller
 
     if not interface_model.controller:
         raise MaaFWRunPlanError("interface 未声明 controller")
-    return interface_model.controller[0]
+    controller = next(
+        (
+            item
+            for item in interface_model.controller
+            if item.type in MAAFW_DIRECT_CONTROLLER_TYPES
+        ),
+        None,
+    )
+    if controller is None:
+        declared_types = ", ".join(
+            f"{item.name}({item.type})" for item in interface_model.controller
+        )
+        raise MaaFWRunPlanError(
+            "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
+            f"controllers; use the project UI for: {declared_types}"
+        )
+    return controller
+
+
+def _ensure_direct_controller(controller: MaaFWController) -> None:
+    if controller.type in MAAFW_DIRECT_CONTROLLER_TYPES:
+        return
+
+    raise MaaFWRunPlanError(
+        "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
+        f"controllers; use the project UI for {controller.name}({controller.type})"
+    )
 
 
 def _select_resource(

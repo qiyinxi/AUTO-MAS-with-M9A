@@ -39,13 +39,10 @@ from maa.controller import (
     AdbController,
     Controller,
     ControllerEventSink,
-    GamepadController,
     MaaAdbInputMethodEnum,
     MaaAdbScreencapMethodEnum,
-    MaaGamepadTypeEnum,
     MaaWin32InputMethodEnum,
     MaaWin32ScreencapMethodEnum,
-    PlayCoverController,
     Win32Controller,
 )
 from maa.event_sink import NotificationType
@@ -76,7 +73,7 @@ _MAAFW_INITIALIZED = False
 _MAAFW_INIT_LOCK = threading.Lock()
 
 
-MaaFWControllerType = Literal["Adb", "Win32", "Gamepad", "PlayCover"]
+MaaFWControllerType = Literal["Adb", "Win32"]
 AGENT_CONNECT_RETRY_COUNT = 30
 AGENT_CONNECT_RETRY_INTERVAL = 0.2
 AGENT_CONNECT_TIMEOUT_MS = 1000
@@ -290,13 +287,11 @@ class MaaFWDeviceConfig(BaseModel):
     adbPath: str | None = None
     address: str | None = None
     hWnd: int | None = None
-    uuid: str | None = None
     screencapMethods: int = MaaAdbScreencapMethodEnum.Default
     inputMethods: int = MaaAdbInputMethodEnum.Default
     screencapMethod: int = MaaWin32ScreencapMethodEnum.DXGI_DesktopDup
     mouseMethod: int = MaaWin32InputMethodEnum.Seize
     keyboardMethod: int = MaaWin32InputMethodEnum.Seize
-    gamepadType: int = MaaGamepadTypeEnum.Xbox360
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -507,21 +502,10 @@ class MaaFWRunner:
                 device_config.keyboardMethod,
             )
 
-        if device_config.type == "Gamepad":
-            if not device_config.hWnd:
-                raise RuntimeError("Gamepad controller 需要窗口句柄，请先扫描或填写 HWnd")
-            return GamepadController(
-                device_config.hWnd,
-                device_config.gamepadType,
-                device_config.screencapMethod,
-            )
-
-        if device_config.type == "PlayCover":
-            if not device_config.address or not device_config.uuid:
-                raise RuntimeError("PlayCover controller 需要 address 和 uuid")
-            return PlayCoverController(device_config.address, device_config.uuid)
-
-        raise RuntimeError(f"暂不支持的 controller 类型: {device_config.type}")
+        raise RuntimeError(
+            "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
+            f"controllers; use the project UI for {device_config.type}"
+        )
 
     def _wait_adb_device_ready(self, device_config: MaaFWDeviceConfig) -> None:
         if not device_config.adbPath or not device_config.address:

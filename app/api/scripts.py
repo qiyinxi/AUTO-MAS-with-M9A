@@ -829,7 +829,7 @@ def _select_maafw_window_controllers(interface, controller_name: str | None):
     controllers = [
         controller
         for controller in interface.controller
-        if controller.type in {"Win32", "Gamepad"}
+        if controller.type == "Win32"
     ]
     if not controller_name:
         return controllers
@@ -844,7 +844,7 @@ def _select_maafw_window_controllers(interface, controller_name: str | None):
     )
     if controller is None:
         raise ValueError(f"未找到 controller: {controller_name}")
-    if controller.type not in {"Win32", "Gamepad"}:
+    if controller.type != "Win32":
         raise ValueError(f"controller {controller_name} 不是 PC 窗口类型")
     return [controller]
 
@@ -859,7 +859,7 @@ def _select_maafw_window_controllers(interface, controller_name: str | None):
 async def preview_maafw_windows(
     payload: MaaFWWindowPreviewIn = Body(...),
 ) -> MaaFWWindowPreviewOut:
-    """按 interface.json 中的 Win32/Gamepad 窗口规则扫描本机桌面窗口。"""
+    """按 interface.json 中的 Win32 窗口规则扫描本机桌面窗口。"""
     from app.task.MaaFW.interface_loader import (
         MaaFWInterfaceLoadError,
         load_interface_model_cached,

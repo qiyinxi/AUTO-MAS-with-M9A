@@ -1357,6 +1357,7 @@ class MaaFWUserConfig(BaseModel):
 
 class MaaFWConfig_Info(BaseModel):
     Name: Optional[str] = Field(default=None, description="MaaFW 脚本名称")
+    ProjectLabel: Optional[str] = Field(default=None, description="MaaFW 项目显示标签")
     Path: Optional[str] = Field(default=None, description="MaaFW 项目根目录")
     Controller: Optional[str] = Field(default=None, description="MaaFW controller 名称")
     Resource: Optional[str] = Field(default=None, description="MaaFW resource 名称")
@@ -1599,7 +1600,7 @@ class MaaFWAgentEnvPrepareOut(OutBase):
 class MaaFWWindowPreviewIn(BaseModel):
     path: str = Field(..., description="MaaFW 项目根目录，应包含 interface.json")
     controllerName: Optional[str] = Field(
-        default=None, description="指定 controller 名称；留空时扫描全部 Win32/Gamepad controller"
+        default=None, description="指定 controller 名称；留空时扫描全部 Win32 controller"
     )
 
 

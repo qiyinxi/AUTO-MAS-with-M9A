@@ -175,6 +175,7 @@ export interface M9AScriptConfig {
 export interface MaaFWScriptConfig {
   Info: {
     Name: string
+    ProjectLabel?: string
     Path: string
     Controller: string
     Resource: string

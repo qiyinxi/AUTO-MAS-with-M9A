@@ -251,7 +251,7 @@
               <div class="script-name">{{ script.name }}</div>
               <div class="script-meta">
                 <span class="script-type" :class="{ 'script-type-okww': script.type === 'Okww' }">{{
-                  getScriptDisplayLabel(script.type)
+                  getScriptDisplayLabel(script)
                 }}</span>
                 <span class="script-users">
                   <UserOutlined />
@@ -527,6 +527,9 @@ import { Service } from '@/api/services/Service'
 import { TaskCreateIn } from '@/api/models/TaskCreateIn'
 import { openExternalUrl } from '@/utils/openExternal'
 import MarkdownIt from 'markdown-it'
+
+defineOptions({ name: 'ScriptsPage' })
+
 const logger = window.electronAPI.getLogger('脚本管理')
 
 const router = useRouter()
@@ -590,7 +593,7 @@ const SCRIPT_DISPLAY_LABELS: Record<ScriptType, string> = {
   SRC: 'SRC脚本',
   MaaEnd: 'MaaEnd脚本',
   M9A: 'M9A脚本',
-  MaaFW: 'MaaFramework 项目',
+  MaaFW: 'MaaFW',
   Okww: 'ok-ww脚本',
   HSR: 'HSR脚本',
   General: '通用脚本',
@@ -598,7 +601,13 @@ const SCRIPT_DISPLAY_LABELS: Record<ScriptType, string> = {
 
 const getScriptRouteSegment = (type: ScriptType) => SCRIPT_ROUTE_SEGMENTS[type] ?? 'general'
 
-const getScriptDisplayLabel = (type: ScriptType) => SCRIPT_DISPLAY_LABELS[type] ?? '通用脚本'
+const getScriptDisplayLabel = (script: Script) => {
+  if (script.type === 'MaaFW') {
+    const config = script.config as { Info?: { ProjectLabel?: string | null } }
+    return config.Info?.ProjectLabel?.trim() || SCRIPT_DISPLAY_LABELS.MaaFW
+  }
+  return SCRIPT_DISPLAY_LABELS[script.type] ?? '通用脚本'
+}
 
 // 解析模板描述的markdown
 const parseMarkdown = (text: string) => {

@@ -37,7 +37,6 @@ import psutil
 from maa.controller import (
     MaaAdbInputMethodEnum,
     MaaAdbScreencapMethodEnum,
-    MaaGamepadTypeEnum,
     MaaWin32InputMethodEnum,
     MaaWin32ScreencapMethodEnum,
 )
@@ -158,7 +157,7 @@ class AutoProxyTask(TaskExecuteBase):
             if emulator_id == "-" or emulator_index in ("", "-"):
                 self.cur_user_item.status = "异常"
                 return "当前 MaaFW controller 需要 ADB，请在脚本管理页选择模拟器和实例"
-        elif self.run_plan.controllerType in {"Win32", "Gamepad"}:
+        elif self.run_plan.controllerType == "Win32":
             game_path = Path(str(self.script_config.get("Game", "Path") or "").strip())
             if not game_path.is_file():
                 self.cur_user_item.status = "异常"
@@ -532,6 +531,12 @@ class AutoProxyTask(TaskExecuteBase):
         plan: MaaFWRunPlan,
         interface_model: MaaFWInterface,
     ) -> MaaFWDeviceConfig:
+        if plan.controllerType not in {"Adb", "Win32"}:
+            raise RuntimeError(
+                "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
+                f"controllers; use the project UI for {plan.controllerType}"
+            )
+
         controller = _find_controller(interface_model, plan.controllerName)
 
         if plan.controllerType == "Adb":
@@ -566,35 +571,10 @@ class AutoProxyTask(TaskExecuteBase):
                 ),
             )
 
-        if plan.controllerType == "Gamepad":
-            return MaaFWDeviceConfig(
-                type="Gamepad",
-                hWnd=self._resolve_window_handle(controller),
-                gamepadType=int(
-                    self.script_config.get("Device", "GamepadType")
-                    or MaaGamepadTypeEnum.Xbox360
-                ),
-                screencapMethod=self._resolve_win32_screencap_method(controller),
-            )
-
-        if plan.controllerType == "PlayCover":
-            address = (
-                self.cur_user_config.get("Device", "PlayCoverAddress")
-                or self.script_config.get("Device", "PlayCoverAddress")
-            )
-            playcover_uuid = (
-                self.cur_user_config.get("Device", "PlayCoverUuid")
-                or self.script_config.get("Device", "PlayCoverUuid")
-            )
-            if not address or not playcover_uuid:
-                raise RuntimeError("当前 controller 需要 PlayCover 地址和 UUID")
-            return MaaFWDeviceConfig(
-                type="PlayCover",
-                address=address,
-                uuid=playcover_uuid,
-            )
-
-        raise RuntimeError(f"暂不支持的 MaaFW controller 类型: {plan.controllerType}")
+        raise RuntimeError(
+            "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
+            f"controllers; use the project UI for {plan.controllerType}"
+        )
 
     async def _resolve_adb_address(self) -> tuple[str, DeviceInfo | None]:
         if self._cached_adb_address is not None and self._cached_device_info is not None:
@@ -1143,7 +1123,7 @@ class AutoProxyTask(TaskExecuteBase):
         )
 
     async def _ensure_desktop_game_started(self) -> None:
-        if self.run_plan is None or self.run_plan.controllerType not in {"Win32", "Gamepad"}:
+        if self.run_plan is None or self.run_plan.controllerType != "Win32":
             return
         if self.opened_game:
             return
@@ -1151,6 +1131,22 @@ class AutoProxyTask(TaskExecuteBase):
         game_path = Path(str(self.script_config.get("Game", "Path") or "").strip())
         if not game_path.is_file():
             raise RuntimeError("当前 MaaFW controller 需要由 MAS 启动游戏，请在脚本管理页选择实际游戏 exe")
+
+        if self.interface_model is not None and self.run_plan is not None:
+            controller = _find_controller(
+                self.interface_model,
+                self.run_plan.controllerName,
+            )
+            matches = match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                await self._activate_desktop_game_window(game_path)
+                return
 
         if _is_process_path_running(game_path):
             message = f"检测到游戏进程已在运行，跳过由 MAS 重复启动游戏: {game_path.name}"
@@ -1210,6 +1206,17 @@ class AutoProxyTask(TaskExecuteBase):
         waited = 0.0
         process_detected = False
         while waited < wait_time:
+            if not explicit_hwnd:
+                matches = match_controller_windows(controller)
+                if matches:
+                    selected = matches[0]
+                    self._append_log(
+                        "检测到游戏客户端窗口: "
+                        f"hWnd={selected.hWnd}, class={selected.className}, "
+                        f"title={selected.windowName}"
+                    )
+                    return
+
             if _is_process_path_running(game_path):
                 if not process_detected:
                     self._append_log(f"检测到游戏进程已启动: {game_path.name}")
@@ -1232,6 +1239,17 @@ class AutoProxyTask(TaskExecuteBase):
             sleep_seconds = min(poll_interval, wait_time - waited)
             await asyncio.sleep(sleep_seconds)
             waited += sleep_seconds
+
+        if not explicit_hwnd:
+            matches = match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                return
 
         if _is_process_path_running(game_path):
             if explicit_hwnd:
@@ -1308,11 +1326,27 @@ class AutoProxyTask(TaskExecuteBase):
             return
         self.script_info.log = "".join(self.cur_user_log.content[-80:])
 
+    def _publish_log_update(self, message: str) -> None:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self.loop is not None and not self.loop.is_closed():
+                with suppress(RuntimeError):
+                    self.loop.call_soon_threadsafe(self._publish_runner_log, message)
+            return
+
+        if self.loop is None or running_loop is self.loop:
+            self._publish_runner_log(message)
+            return
+
+        with suppress(RuntimeError):
+            self.loop.call_soon_threadsafe(self._publish_runner_log, message)
+
     def _append_log(self, message: str) -> None:
         logger.info(message)
         if self.cur_user_log is not None:
             self.cur_user_log.content.append(f"{message}\n")
-            self.script_info.log = "".join(self.cur_user_log.content[-80:])
+        self._publish_log_update(message)
 
 
 def _load_json_dict(value: Any) -> dict[str, Any]:

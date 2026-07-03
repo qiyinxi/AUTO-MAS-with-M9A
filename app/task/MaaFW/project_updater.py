@@ -17,6 +17,8 @@
 #   License along with AUTO-MAS. If not, see <https://www.gnu.org/licenses/>.
 
 
+import asyncio
+import hashlib
 import json
 import shutil
 import zipfile
@@ -41,6 +43,8 @@ logger = get_logger("MaaFW 项目更新")
 UPDATE_WORK_DIR = ".mas-update"
 DOWNLOAD_FILE_NAME = "download.zip"
 DOWNLOAD_TEMP_NAME = "download.tmp"
+DOWNLOAD_RETRY_TIMES = 3
+HTTP_HEADERS = {"User-Agent": "AutoMasGui"}
 
 
 @dataclass
@@ -48,6 +52,7 @@ class MaaFWProjectUpdateCandidate:
     source: str
     version: str
     download_url: str | None = None
+    sha256: str | None = None
 
 
 @dataclass
@@ -143,21 +148,27 @@ async def update_maafw_project_if_needed(
         f"发现 MaaFW 项目更新: {current_version} -> {candidate.version} ({candidate.source})"
     )
     download_url = candidate.download_url
-    if not download_url and candidate.source == "MirrorChyan" and interface_model.github:
-        send_update_log("MirrorChyan 未返回下载链接，尝试从 GitHub release 下载")
-        download_url = await _find_github_release_asset(
-            interface_model,
-            target_version=candidate.version,
-            channel=channel,
-            proxy=proxy,
-        )
+    if not download_url and candidate.source == "MirrorChyan":
+        if interface_model.github:
+            send_update_log(
+                "MirrorChyan 未返回下载链接（通常是未填写有效 CDK），尝试从 GitHub release 下载"
+            )
+            download_url = await _find_github_release_asset(
+                interface_model,
+                target_version=candidate.version,
+                channel=channel,
+                proxy=proxy,
+            )
 
     if not download_url:
-        raise MaaFWProjectUpdateError(f"{candidate.source} 未返回可用下载链接")
+        raise MaaFWProjectUpdateError(
+            f"{candidate.source} 未返回可用下载链接，请填写有效 Mirror 酱 CDK 或切换 GitHub 更新源"
+        )
 
     package_path = await _download_update_package(
         resolved_project_path,
         download_url,
+        expected_sha256=candidate.sha256,
         proxy=proxy,
         send_log=send_update_log,
     )
@@ -199,7 +210,7 @@ async def _check_mirrorchyan_update(
 
     url = f"https://mirrorchyan.com/api/resources/{rid}/latest"
     async with httpx.AsyncClient(proxy=proxy, follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url, params=params)
+        response = await client.get(url, params=params, headers=HTTP_HEADERS)
 
     result = _load_response_json(response)
     if response.status_code != 200 or result.get("code", 0) != 0:
@@ -224,6 +235,7 @@ async def _check_mirrorchyan_update(
         source="MirrorChyan",
         version=latest_version,
         download_url=str(data.get("url") or "").strip() or None,
+        sha256=str(data.get("sha256") or "").strip() or None,
     )
 
 
@@ -267,9 +279,8 @@ async def _fetch_github_releases(
 
     owner, name = repo
     url = f"https://api.github.com/repos/{owner}/{name}/releases"
-    headers = {"User-Agent": "AutoMasGui"}
     async with httpx.AsyncClient(proxy=proxy, follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url, headers=headers)
+        response = await client.get(url, headers=HTTP_HEADERS)
 
     if response.status_code != 200:
         raise MaaFWProjectUpdateError(f"GitHub 返回异常: HTTP {response.status_code}")
@@ -307,6 +318,7 @@ async def _download_update_package(
     project_path: Path,
     download_url: str,
     *,
+    expected_sha256: str | None = None,
     proxy: httpx.Proxy | None,
     send_log: Callable[[str], None],
 ) -> Path:
@@ -318,10 +330,50 @@ async def _download_update_package(
     _remove_path(temp_path)
     _remove_path(package_path)
 
-    send_log(f"开始下载 MaaFW 更新包: {sanitize_log_message(download_url)}")
+    safe_url = sanitize_log_message(download_url)
+    send_log(f"开始下载 MaaFW 更新包: {safe_url}")
+    last_error: Exception | None = None
+    for attempt in range(1, DOWNLOAD_RETRY_TIMES + 1):
+        _remove_path(temp_path)
+        try:
+            await _stream_update_package(
+                temp_path,
+                download_url,
+                proxy=proxy,
+            )
+            _ensure_downloaded_zip(temp_path)
+            _ensure_expected_sha256(temp_path, expected_sha256)
+            temp_path.replace(package_path)
+            return package_path
+        except Exception as exc:
+            last_error = exc
+            _remove_path(temp_path)
+            if attempt >= DOWNLOAD_RETRY_TIMES:
+                break
+            send_log(
+                f"下载 MaaFW 更新包失败，正在重试 ({attempt}/{DOWNLOAD_RETRY_TIMES}): {exc}"
+            )
+            await asyncio.sleep(1)
+
+    if isinstance(last_error, MaaFWProjectUpdateError):
+        raise last_error from last_error
+    raise MaaFWProjectUpdateError(f"下载 MaaFW 更新包失败: {last_error}") from last_error
+
+
+async def _stream_update_package(
+    temp_path: Path,
+    download_url: str,
+    *,
+    proxy: httpx.Proxy | None,
+) -> None:
     async with httpx.AsyncClient(proxy=proxy, follow_redirects=True, timeout=30.0) as client:
-        async with client.stream("GET", download_url) as response:
+        async with client.stream("GET", download_url, headers=HTTP_HEADERS) as response:
             if response.status_code not in (200, 206):
+                error_hint = await _read_download_error_hint(response)
+                if error_hint:
+                    raise MaaFWProjectUpdateError(
+                        f"下载更新包失败: HTTP {response.status_code}, {error_hint}"
+                    )
                 raise MaaFWProjectUpdateError(f"下载更新包失败: HTTP {response.status_code}")
 
             async with aiofiles.open(temp_path, "wb") as file:
@@ -329,8 +381,92 @@ async def _download_update_package(
                     if chunk:
                         await file.write(chunk)
 
-    temp_path.replace(package_path)
-    return package_path
+
+async def _read_download_error_hint(response: httpx.Response) -> str:
+    try:
+        content = await response.aread()
+    except Exception:
+        return ""
+    return _build_download_error_hint(content)
+
+
+def _ensure_downloaded_zip(package_path: Path) -> None:
+    if not package_path.exists() or package_path.stat().st_size == 0:
+        raise MaaFWProjectUpdateError("下载更新包失败: 更新源返回空文件")
+    if zipfile.is_zipfile(package_path):
+        return
+
+    error_hint = _read_local_download_error_hint(package_path)
+    if error_hint:
+        raise MaaFWProjectUpdateError(f"下载更新包失败: {error_hint}")
+    raise MaaFWProjectUpdateError("下载更新包失败: 更新源返回内容不是有效 zip 文件")
+
+
+def _ensure_expected_sha256(package_path: Path, expected_sha256: str | None) -> None:
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        return
+
+    actual = _calculate_sha256(package_path)
+    if actual == expected:
+        return
+
+    raise MaaFWProjectUpdateError(
+        f"下载更新包校验失败: sha256 不一致，期望 {expected[:12]}...，实际 {actual[:12]}..."
+    )
+
+
+def _calculate_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_local_download_error_hint(path: Path) -> str:
+    try:
+        content = path.read_bytes()[:4096]
+    except Exception:
+        return ""
+    return _build_download_error_hint(content)
+
+
+def _build_download_error_hint(content: bytes) -> str:
+    if not content:
+        return "更新源返回空响应"
+
+    text = _decode_download_error_text(content)
+    if not text:
+        return ""
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        if text.lstrip().startswith("<"):
+            return "更新源返回 HTML 页面，不是 zip 文件"
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+
+    error_code = data.get("code")
+    if error_code in MIRROR_ERROR_INFO:
+        return MIRROR_ERROR_INFO[error_code]
+
+    message = str(data.get("msg") or data.get("message") or "").strip()
+    if not message:
+        return ""
+    return f"更新源返回错误: {sanitize_log_message(message)}"
+
+
+def _decode_download_error_text(content: bytes) -> str:
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return content.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+    return ""
 
 
 async def _apply_update_package(
@@ -370,20 +506,19 @@ async def _apply_update_package(
 
 def _apply_full_package(project_path: Path, package_root: Path, backup_dir: Path) -> None:
     backup_dir.mkdir(parents=True, exist_ok=True)
+    touched_paths: set[Path] = set()
 
     try:
-        for child in project_path.iterdir():
-            if child.name == UPDATE_WORK_DIR:
-                continue
-            target = backup_dir / child.name
-            shutil.move(str(child), str(target))
-
         for child in package_root.iterdir():
             if child.name in {UPDATE_WORK_DIR, "changes.json"}:
                 continue
-            _copy_path(child, project_path / child.name)
+
+            target = _resolve_project_relative_path(project_path, child.name)
+            touched_paths.add(target)
+            _backup_target(project_path, target, backup_dir)
+            _copy_path(child, target)
     except Exception:
-        _restore_full_backup(project_path, backup_dir)
+        _restore_incremental_backup(project_path, backup_dir, touched_paths)
         raise
     else:
         _remove_path(backup_dir)
@@ -636,17 +771,6 @@ def _backup_target(project_path: Path, target: Path, backup_dir: Path) -> None:
 
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(target), str(backup_path))
-
-
-def _restore_full_backup(project_path: Path, backup_dir: Path) -> None:
-    for child in project_path.iterdir():
-        if child.name != UPDATE_WORK_DIR:
-            _remove_path(child)
-
-    if not backup_dir.exists():
-        return
-    for backup_child in backup_dir.iterdir():
-        shutil.move(str(backup_child), str(project_path / backup_child.name))
 
 
 def _restore_incremental_backup(

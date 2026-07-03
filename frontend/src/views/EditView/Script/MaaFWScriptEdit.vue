@@ -232,8 +232,10 @@
                     v-for="item in controllerOptions"
                     :key="item.name"
                     :value="item.name"
+                    :disabled="!isDirectControllerType(item.type)"
                   >
                     {{ item.label || item.name }} · {{ item.type }}
+                    <span v-if="!isDirectControllerType(item.type)"> · 建议使用原 UI</span>
                   </a-select-option>
                 </a-select>
               </a-form-item>
@@ -269,6 +271,13 @@
               </a-form-item>
             </a-col>
           </a-row>
+          <a-alert
+            v-if="unsupportedControllerOptions.length"
+            class="control-strategy-alert"
+            type="info"
+            show-icon
+            :message="unsupportedControllerMessage"
+          />
 
           <template v-if="isAdbController">
             <a-row :gutter="24" class="control-detail-row">
@@ -455,9 +464,7 @@
               <a-col :span="18">
                 <a-form-item>
                   <template #label>
-                    <a-tooltip
-                      title="扫描并选择 MaaFW Win32/Gamepad controller 要连接的游戏客户端窗口"
-                    >
+                    <a-tooltip title="扫描并选择 MaaFW Win32 controller 要连接的游戏客户端窗口">
                       <span class="form-label">
                         游戏客户端
                         <QuestionCircleOutlined class="help-icon" />
@@ -505,7 +512,7 @@
               class="control-strategy-alert"
               type="info"
               show-icon
-              message="Win32 / Gamepad 控制方式会连接已打开的游戏客户端；未选择时按 interface 规则自动匹配。"
+              message="Win32 控制方式会连接已打开的游戏客户端；未选择时按 interface 规则自动匹配。"
             />
           </template>
         </div>
@@ -749,6 +756,7 @@ const isSaving = ref(false)
 const previewData = ref<MaaFWInterfacePreviewData | null>(null)
 const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const desktopWindows = ref<MaaFWDesktopWindowInfo[]>([])
+const lastAutoScriptName = ref('')
 const weeklyOnceTasks = ref<string[]>([])
 const monthlyOnceTasks = ref<string[]>([])
 const globalUpdateSource = ref<string>('')
@@ -768,6 +776,16 @@ type MaaFWConcreteUpdateChannel = Exclude<MaaFWScriptConfig['Update']['Channel']
 
 const MAAFW_UPDATE_SOURCES: MaaFWConcreteUpdateSource[] = ['MirrorChyan', 'GitHub']
 const MAAFW_UPDATE_CHANNELS: MaaFWConcreteUpdateChannel[] = ['stable', 'beta']
+const MAAFW_DIRECT_CONTROLLER_TYPES = ['Adb', 'Win32'] as const
+
+type MaaFWDirectControllerType = (typeof MAAFW_DIRECT_CONTROLLER_TYPES)[number]
+
+const isDirectControllerType = (
+  controllerType?: string | null
+): controllerType is MaaFWDirectControllerType =>
+  MAAFW_DIRECT_CONTROLLER_TYPES.includes(controllerType as MaaFWDirectControllerType)
+
+const DEFAULT_MAAFW_SCRIPT_NAME = '新 MaaFW 脚本'
 
 const updateSourceOptions = MAAFW_UPDATE_SOURCES.map(value => ({ label: value, value }))
 
@@ -793,6 +811,7 @@ const EMULATOR_TYPE_LABELS: Record<EmulatorType, string> = {
 const getDefaultMaaFWScriptConfig = (): MaaFWScriptConfig => ({
   Info: {
     Name: '',
+    ProjectLabel: '',
     Path: '',
     Controller: '',
     Resource: '',
@@ -870,6 +889,74 @@ const previewProjectTitle = computed(() => {
   return project.title || project.label || project.name
 })
 
+const normalizeProjectScriptName = (rawName?: string | null) => {
+  if (!rawName) return ''
+
+  const primaryName = rawName
+    .split(/[|｜]/)[0]
+    .replace(/\s+(?:版本号\s*[:：]?\s*)?v?\d+(?:\.\d+)+(?:[-+][\w.]+)?$/i, '')
+    .replace(/\s+$/g, '')
+    .trim()
+
+  return primaryName || rawName.trim()
+}
+
+const normalizeProjectLabel = (rawName?: string | null) => {
+  if (!rawName) return ''
+
+  const primaryLabel = rawName
+    .split(/[|｜]/)[0]
+    .replace(/\s+(?:版本号\s*[:：]?\s*)?v?\d+(?:\.\d+)+(?:[-+][\w.]+)?$/i, '')
+    .replace(/\s+$/g, '')
+    .trim()
+
+  return primaryLabel || rawName.trim()
+}
+
+const resolveProjectScriptName = (data: MaaFWInterfacePreviewData) => {
+  const project = data.project
+  return (
+    normalizeProjectScriptName(project.title) ||
+    normalizeProjectScriptName(project.label) ||
+    normalizeProjectScriptName(project.name)
+  )
+}
+
+const resolveProjectLabel = (data: MaaFWInterfacePreviewData) => {
+  const project = data.project
+  return (
+    normalizeProjectLabel(project.title) ||
+    normalizeProjectLabel(project.label) ||
+    normalizeProjectLabel(project.name)
+  )
+}
+
+const syncScriptNameFromProject = async (data: MaaFWInterfacePreviewData) => {
+  const nextName = resolveProjectScriptName(data)
+  if (!nextName || nextName === maafwConfig.Info.Name) return
+
+  const currentName = maafwConfig.Info.Name.trim()
+  if (
+    currentName &&
+    currentName !== DEFAULT_MAAFW_SCRIPT_NAME &&
+    currentName !== lastAutoScriptName.value
+  ) {
+    return
+  }
+
+  maafwConfig.Info.Name = nextName
+  lastAutoScriptName.value = nextName
+  await handleChange('Info', 'Name', nextName)
+}
+
+const syncProjectLabelFromProject = async (data: MaaFWInterfacePreviewData) => {
+  const nextLabel = resolveProjectLabel(data)
+  if (!nextLabel || nextLabel === maafwConfig.Info.ProjectLabel) return
+
+  maafwConfig.Info.ProjectLabel = nextLabel
+  await handleChange('Info', 'ProjectLabel', nextLabel)
+}
+
 const getAgentRuntimeLabel = (runtimeKind?: string | null) => {
   if (runtimeKind === 'embedded') return '主进程内嵌'
   if (runtimeKind === 'project_python') return '项目自带 Python'
@@ -913,18 +1000,30 @@ const agentEnvDescription = computed(() => {
 })
 
 const controllerOptions = computed(() => previewData.value?.controllers || [])
+const directControllerOptions = computed(() =>
+  controllerOptions.value.filter(controller => isDirectControllerType(controller.type))
+)
+const unsupportedControllerOptions = computed(() =>
+  controllerOptions.value.filter(controller => !isDirectControllerType(controller.type))
+)
+const unsupportedControllerMessage = computed(() => {
+  const names = unsupportedControllerOptions.value
+    .map(controller => `${controller.label || controller.name}(${controller.type})`)
+    .join('、')
+  return `AUTO-MAS MaaFW Direct 只联动 ADB / Win32；${names} 建议使用项目原 UI。`
+})
 
 const getDefaultControllerName = () => {
   const wantsAdb = maafwConfig.Emulator.Id && maafwConfig.Emulator.Id !== '-'
   if (wantsAdb) {
-    const adbController = controllerOptions.value.find(c => c.type === 'Adb')
+    const adbController = directControllerOptions.value.find(c => c.type === 'Adb')
     if (adbController) return adbController.name
   }
-  return controllerOptions.value[0]?.name || ''
+  return directControllerOptions.value[0]?.name || ''
 }
 
 const resolveControllerName = (controllerName?: string) => {
-  if (controllerName && controllerOptions.value.some(c => c.name === controllerName)) {
+  if (controllerName && directControllerOptions.value.some(c => c.name === controllerName)) {
     return controllerName
   }
   return getDefaultControllerName()
@@ -936,9 +1035,7 @@ const effectiveController = computed(
 )
 const effectiveControllerType = computed(() => effectiveController.value?.type || '')
 const isAdbController = computed(() => effectiveControllerType.value === 'Adb')
-const isDesktopController = computed(
-  () => effectiveControllerType.value === 'Win32' || effectiveControllerType.value === 'Gamepad'
-)
+const isDesktopController = computed(() => effectiveControllerType.value === 'Win32')
 
 const getResourceOptionsByController = (controllerName: string) => {
   const resources = previewData.value?.resources || []
@@ -1192,6 +1289,8 @@ const handlePreviewInterface = async () => {
   const data = await previewInterface(maafwConfig.Info.Path)
   if (data) {
     previewData.value = data
+    await syncScriptNameFromProject(data)
+    await syncProjectLabelFromProject(data)
     syncControllerResourceSelection(!isInitializing.value)
     await prunePeriodTaskSelections()
     if (isDesktopController.value) {
@@ -1228,6 +1327,7 @@ const refreshPreviewIfPossible = async () => {
   const data = await previewInterface(maafwConfig.Info.Path)
   if (data) {
     previewData.value = data
+    await syncProjectLabelFromProject(data)
     syncControllerResourceSelection(!isInitializing.value)
     await prunePeriodTaskSelections()
     if (isDesktopController.value) {

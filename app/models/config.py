@@ -2065,7 +2065,7 @@ class MaaFWUserConfig(ConfigBase):
         ## Device ----------------------------------------------------------
         ## 当前用户覆盖 ADB 地址，留空时使用脚本级模拟器配置
         self.Device_AdbAddress = ConfigItem("Device", "AdbAddress", "")
-        ## Win32 / Gamepad 窗口句柄，0 表示未指定
+        ## Win32 窗口句柄，0 表示未指定
         self.Device_HWnd = ConfigItem(
             "Device", "HWnd", 0, RangeValidator(0, 999999999999)
         )
@@ -2186,6 +2186,8 @@ class MaaFWConfig(ConfigBase):
         ## Info ------------------------------------------------------------
         ## MaaFW 脚本名称
         self.Info_Name = ConfigItem("Info", "Name", "新 MaaFW 脚本")
+        ## MaaFW 项目显示标签，用于脚本列表区分不同 ProjectInterface 项目
+        self.Info_ProjectLabel = ConfigItem("Info", "ProjectLabel", "")
         ## MaaFW 项目根目录，应包含 interface.json
         self.Info_Path = ConfigItem("Info", "Path", "", FolderValidator())
         ## MaaFW controller 名称，留空时按 interface 和设备配置自动选择
@@ -2217,7 +2219,7 @@ class MaaFWConfig(ConfigBase):
         self.Device_AdbInputMethods = ConfigItem(
             "Device", "AdbInputMethods", -1, RangeValidator(-999, 999999999999)
         )
-        ## Win32 / Gamepad 窗口句柄，0 表示未指定
+        ## Win32 窗口句柄，0 表示未指定
         self.Device_HWnd = ConfigItem(
             "Device", "HWnd", 0, RangeValidator(0, 999999999999)
         )
