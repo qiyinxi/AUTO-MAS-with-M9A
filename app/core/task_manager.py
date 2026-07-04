@@ -222,7 +222,10 @@ class Task(TaskExecuteBase):
         await Config.send_websocket_message(
             id=str(self.task_info.task_id),
             type="Signal",
-            data={"Accomplish": self.task_info.result},
+            data={
+                "Accomplish": self.task_info.result,
+                "task_info": self.task_info.asdict,
+            },
         )
 
         if self.task_info.mode == "AutoProxy" and self.task_info.queue_id is not None:

@@ -2,10 +2,10 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type OkwwUserConfig_Task = {
+export type MaaFWProjectUpdateIn = {
     /**
-     * 启动后执行第 N 个任务（-t N，从 1 开始）
+     * MaaFW 脚本 ID
      */
-    TaskIndex?: (number | null);
+    scriptId: string;
 };
 

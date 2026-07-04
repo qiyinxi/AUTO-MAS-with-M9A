@@ -1393,8 +1393,8 @@ class MaaFWConfig_Game(BaseModel):
 
 class MaaFWConfig_Update(BaseModel):
     IfAutoUpdate: Optional[bool] = Field(default=None, description="是否在运行前自动更新 MaaFW 项目")
-    Source: Optional[Literal["", "MirrorChyan", "GitHub"]] = Field(
-        default=None, description="项目更新源，留空时使用全局更新源"
+    Source: Optional[Literal["MirrorChyan"]] = Field(
+        default=None, description="项目更新源，暂仅支持 MirrorChyan"
     )
     Channel: Optional[Literal["", "stable", "beta"]] = Field(
         default=None, description="项目更新渠道，留空时使用全局更新渠道"
@@ -1423,6 +1423,23 @@ class MaaFWConfig(BaseModel):
     Game: Optional[MaaFWConfig_Game] = Field(default=None, description="游戏生命周期配置")
     Update: Optional[MaaFWConfig_Update] = Field(default=None, description="项目更新配置")
     Run: Optional[MaaFWConfig_Run] = Field(default=None, description="脚本运行配置")
+
+
+class MaaFWProjectUpdateIn(BaseModel):
+    scriptId: str = Field(..., description="MaaFW 脚本 ID")
+
+
+class MaaFWProjectUpdateData(BaseModel):
+    checked: bool = Field(..., description="是否完成更新检查")
+    updated: bool = Field(..., description="是否实际更新了 MaaFW 项目资源")
+    currentVersion: str = Field(..., description="更新前的项目版本")
+    latestVersion: Optional[str] = Field(default=None, description="最新项目版本")
+    source: Optional[str] = Field(default=None, description="实际使用的更新源")
+    logs: List[str] = Field(default_factory=list, description="项目更新日志")
+
+
+class MaaFWProjectUpdateOut(OutBase):
+    data: Optional[MaaFWProjectUpdateData] = Field(default=None, description="MaaFW 项目更新结果")
 
 
 class MaaFWInterfacePreviewIn(BaseModel):

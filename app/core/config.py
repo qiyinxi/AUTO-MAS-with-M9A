@@ -59,6 +59,7 @@ from app.models.config import (
     GeneralUserConfig,
     OkwwUserConfig,
     GlobalConfig,
+    ConfigBase,
     CLASS_BOOK,
     Webhook,
     TimeSet,
@@ -1645,6 +1646,15 @@ class AppConfig(GlobalConfig):
 
         return json.loads(self.get("Data", "Stage"))
 
+    def _get_script_combox_label(self, script: ConfigBase) -> str:
+        script_name = script.get("Info", "Name")
+        if isinstance(script, MaaFWConfig):
+            return script_name or "MaaFW"
+        return f"{TYPE_BOOK[type(script).__name__]} - {script_name}"
+
+    def _get_task_combox_label(self, script: ConfigBase) -> str:
+        return f"脚本 - {self._get_script_combox_label(script)}"
+
     async def get_script_combox(self):
         """获取脚本下拉框信息"""
 
@@ -1653,7 +1663,7 @@ class AppConfig(GlobalConfig):
         for uid, script in self.ScriptConfig.items():
             data.append(
                 {
-                    "label": f"{TYPE_BOOK[type(script).__name__]} - {script.get('Info', 'Name')}",
+                    "label": self._get_script_combox_label(script),
                     "value": str(uid),
                 }
             )
@@ -1677,7 +1687,7 @@ class AppConfig(GlobalConfig):
             if not script.is_locked:
                 data.append(
                     {
-                        "label": f"脚本 - {TYPE_BOOK[type(script).__name__]} - {script.get('Info', 'Name')}",
+                        "label": self._get_task_combox_label(script),
                         "value": str(uid),
                     }
                 )

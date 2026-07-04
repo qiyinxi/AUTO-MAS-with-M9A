@@ -30,6 +30,7 @@ import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Literal, TextIO
 
@@ -68,6 +69,23 @@ except ImportError:
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 ENCODINGS = ("utf-8", "gbk", "shift_jis", "utf-16")
+MAAFW_DEBUG_LOG_PATH = Path("config") / "debug" / "maafw.log"
+MAAFW_SCREENCAP_RESULT_RE = re.compile(
+    r"\[method=([^\]]+)\]\s+\[duration=([^\]]+)\]"
+)
+MAAFW_FASTEST_SCREENCAP_RE = re.compile(
+    r"The fastest method is\s+([^\s]+)\s+\[cost=([^\]]+)\]"
+)
+MAAFW_INPUT_ACTION_RE = re.compile(
+    r"CtrlUnitNs::([A-Za-z0-9_]+)::"
+    r"(?:touch_down|touch_up|click|swipe|press_key|input_text)"
+)
+MAAFW_PC_INPUT_MODE_RE = re.compile(r"\[config_\.mode=([^\]]+)\]")
+MAAFW_CTRL_EVENT_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?"
+    r"\[message=Controller\.Action\.(Starting|Succeeded)\].*?"
+    r"\[details_json=(\{.*?\})\]\s+\[trans_arg="
+)
 
 _MAAFW_INITIALIZED = False
 _MAAFW_INIT_LOCK = threading.Lock()
@@ -133,6 +151,64 @@ def decode_bytes(data: bytes) -> str:
         except (UnicodeDecodeError, LookupError):
             continue
     return data.decode("latin1", errors="replace")
+
+
+def _should_adb_connect(address: str, attempt: int) -> bool:
+    return _is_network_adb_address(address) and (
+        attempt == 0 or (attempt + 1) % 5 == 0
+    )
+
+
+def _is_network_adb_address(address: str) -> bool:
+    host, separator, port = address.rpartition(":")
+    return bool(separator and host and port.isdigit())
+
+
+def _subprocess_detail(result: subprocess.CompletedProcess[str]) -> str:
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout and stderr:
+        return f"{stdout}; {stderr}"
+    return stderr or stdout or f"exit={result.returncode}"
+
+
+def _is_adb_connect_success(detail: str) -> bool:
+    normalized = detail.lower()
+    if not normalized:
+        return False
+    failed_markers = ("failed", "unable", "cannot", "refused", "timed out")
+    return (
+        ("connected to" in normalized or "already connected" in normalized)
+        and not any(marker in normalized for marker in failed_markers)
+    )
+
+
+def _format_enum_methods(enum_cls: Any, value: int) -> str:
+    raw_value = int(value)
+    members = getattr(enum_cls, "__members__", {})
+    for name, member in members.items():
+        if int(member) == raw_value:
+            return f"{name}({raw_value})"
+
+    names: list[str] = []
+    remaining = raw_value
+    for name, member in members.items():
+        member_value = int(member)
+        if member_value == 0:
+            continue
+        if raw_value & member_value == member_value:
+            names.append(name)
+            remaining &= ~member_value
+
+    if names and remaining == 0:
+        return f"{'|'.join(names)}({raw_value})"
+    if names:
+        return f"{'|'.join(names)}+{remaining}({raw_value})"
+    return str(raw_value)
+
+
+def _format_latency(seconds: float) -> str:
+    return f"{seconds * 1000:.0f} ms"
 
 
 def _ensure_maafw_client_library_mode(runtime_path: Path | None = None) -> None:
@@ -322,6 +398,7 @@ class MaaFWRunner:
         self.event_sinks: list[Any] = []
         self.embedded_agent_sys_paths: list[str] = []
         self.send_log: Callable[[str], None] = send_log or (lambda _: None)
+        self.maafw_debug_log_tailer: _MaaFWDebugLogTailer | None = None
         self._initialized: bool = False
         self._python_env_checked: dict[str, bool] = {}
         self._stop_requested: threading.Event = threading.Event()
@@ -384,6 +461,8 @@ class MaaFWRunner:
                 failedTask=failed_task,
                 errorMessage=str(exc),
             )
+        finally:
+            self._stop_maafw_debug_log_tailer()
 
     def cleanup(self) -> None:
         self._stop_requested.set()
@@ -447,6 +526,8 @@ class MaaFWRunner:
                 except RuntimeError:
                     pass
 
+            self._stop_maafw_debug_log_tailer()
+
             self.agent_clients.clear()
             self.agent_processes.clear()
             self.agent_output_threads.clear()
@@ -472,6 +553,8 @@ class MaaFWRunner:
         if device_config.type == "Adb":
             self._wait_adb_device_ready(device_config)
 
+        self._start_maafw_debug_log_tailer(device_config)
+        self._log_controller_config(device_config)
         self.controller = self._create_controller(device_config)
         self._install_controller_sink(self.controller)
         self._wait_job(self.controller.post_connection())
@@ -507,12 +590,67 @@ class MaaFWRunner:
             f"controllers; use the project UI for {device_config.type}"
         )
 
+    def _log_controller_config(self, device_config: MaaFWDeviceConfig) -> None:
+        if device_config.type == "Adb":
+            self.send_log(
+                "ADB controller 配置: "
+                f"截图方式={_format_enum_methods(MaaAdbScreencapMethodEnum, device_config.screencapMethods)}; "
+                f"触控方式={_format_enum_methods(MaaAdbInputMethodEnum, device_config.inputMethods)}; "
+                f"地址={device_config.address}"
+            )
+            if device_config.config:
+                self.send_log(
+                    "ADB controller 扩展配置: "
+                    f"{json.dumps(device_config.config, ensure_ascii=False)}"
+                )
+            return
+
+        if device_config.type == "Win32":
+            self.send_log(
+                "Win32 controller 配置: "
+                f"截图方式={_format_enum_methods(MaaWin32ScreencapMethodEnum, device_config.screencapMethod)}; "
+                f"鼠标方式={_format_enum_methods(MaaWin32InputMethodEnum, device_config.mouseMethod)}; "
+                f"键盘方式={_format_enum_methods(MaaWin32InputMethodEnum, device_config.keyboardMethod)}; "
+                f"HWnd={device_config.hWnd}"
+            )
+
+    def _start_maafw_debug_log_tailer(self, device_config: MaaFWDeviceConfig) -> None:
+        if self.maafw_debug_log_tailer is not None:
+            return
+        tailer = _MaaFWDebugLogTailer(
+            Path.cwd() / MAAFW_DEBUG_LOG_PATH,
+            self.send_log,
+            device_config=device_config,
+        )
+        tailer.start()
+        self.maafw_debug_log_tailer = tailer
+
+    def _stop_maafw_debug_log_tailer(self) -> None:
+        tailer = self.maafw_debug_log_tailer
+        if tailer is None:
+            return
+        tailer.stop()
+        self.maafw_debug_log_tailer = None
+
     def _wait_adb_device_ready(self, device_config: MaaFWDeviceConfig) -> None:
         if not device_config.adbPath or not device_config.address:
             return
 
         last_detail = ""
+        network_connect_logged = False
         for attempt in range(ADB_READY_RETRY_COUNT):
+            connect_detail = ""
+            if _should_adb_connect(device_config.address, attempt):
+                connected, connect_detail = self._connect_adb_network_device(
+                    device_config,
+                )
+                if connected and not network_connect_logged:
+                    self.send_log(
+                        f"ADB 网络设备已连接: {device_config.address}; "
+                        f"{connect_detail}"
+                    )
+                    network_connect_logged = True
+
             try:
                 result = subprocess.run(
                     [
@@ -530,12 +668,23 @@ class MaaFWRunner:
                 state = (result.stdout or "").strip()
                 detail = (result.stderr or state or "").strip()
                 if result.returncode == 0 and state == "device":
+                    self.send_log(
+                        f"ADB 设备已就绪: {device_config.address}; "
+                        f"延迟={self._measure_adb_latency(device_config)}"
+                    )
                     return
                 last_detail = detail or f"exit={result.returncode}"
             except subprocess.TimeoutExpired:
                 last_detail = f"get-state 超时 ({ADB_COMMAND_TIMEOUT}s)"
             except Exception as exc:
                 last_detail = str(exc)
+
+            if connect_detail and not network_connect_logged:
+                last_detail = (
+                    f"{last_detail}; connect: {connect_detail}"
+                    if last_detail
+                    else f"connect: {connect_detail}"
+                )
 
             should_log = (
                 attempt == 0
@@ -555,6 +704,66 @@ class MaaFWRunner:
             f"请确认模拟器已完全启动，且 "
             f"`{device_config.adbPath} devices` 中该设备状态为 device，而不是 offline/unauthorized。"
         )
+
+    def _measure_adb_latency(self, device_config: MaaFWDeviceConfig) -> str:
+        if not device_config.adbPath or not device_config.address:
+            return "unknown"
+
+        try:
+            started_at = time.perf_counter()
+            result = subprocess.run(
+                [
+                    device_config.adbPath,
+                    "-s",
+                    device_config.address,
+                    "shell",
+                    "echo",
+                    "auto_mas_ready",
+                ],
+                capture_output=True,
+                timeout=ADB_COMMAND_TIMEOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            elapsed = time.perf_counter() - started_at
+        except subprocess.TimeoutExpired:
+            return f"检测超时 ({ADB_COMMAND_TIMEOUT}s)"
+        except Exception as exc:
+            return str(exc)
+
+        detail = _subprocess_detail(result)
+        if result.returncode == 0 and "auto_mas_ready" in (result.stdout or ""):
+            return _format_latency(elapsed)
+        return f"检测失败: {detail}"
+
+    def _connect_adb_network_device(
+        self,
+        device_config: MaaFWDeviceConfig,
+    ) -> tuple[bool, str]:
+        if not device_config.adbPath or not device_config.address:
+            return False, ""
+
+        try:
+            result = subprocess.run(
+                [
+                    device_config.adbPath,
+                    "connect",
+                    device_config.address,
+                ],
+                capture_output=True,
+                timeout=ADB_COMMAND_TIMEOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"connect 超时 ({ADB_COMMAND_TIMEOUT}s)"
+        except Exception as exc:
+            return False, str(exc)
+
+        detail = _subprocess_detail(result)
+        return result.returncode == 0 and _is_adb_connect_success(detail), detail
 
     def _start_agents(self) -> None:
         self._load_embedded_agents()
@@ -1692,6 +1901,149 @@ def prepare_maafw_agent_python_envs(
     return agent_plans
 
 
+class _MaaFWDebugLogTailer:
+    def __init__(
+        self,
+        log_path: Path,
+        send_log: Callable[[str], None],
+        *,
+        device_config: MaaFWDeviceConfig,
+    ) -> None:
+        self.log_path = log_path
+        self.send_log = send_log
+        self.device_config = device_config
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._logged_actual_screencap = False
+        self._logged_actual_input = False
+        self._screencap_results: dict[str, str] = {}
+        self._pc_screencap_started_at: dict[int, datetime] = {}
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="maafw-debug-log-tailer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+
+    def _run(self) -> None:
+        open_from_end = self.log_path.is_file()
+        while not self._stop_event.is_set():
+            try:
+                with self.log_path.open("r", encoding="utf-8", errors="replace") as file:
+                    if open_from_end:
+                        file.seek(0, os.SEEK_END)
+                    else:
+                        file.seek(0)
+                    open_from_end = True
+
+                    while not self._stop_event.is_set():
+                        line = file.readline()
+                        if line:
+                            self._handle_line(line.strip())
+                            continue
+
+                        try:
+                            if self.log_path.stat().st_size < file.tell():
+                                open_from_end = False
+                                break
+                        except OSError:
+                            open_from_end = False
+                            break
+                        time.sleep(0.05)
+            except FileNotFoundError:
+                open_from_end = False
+                time.sleep(0.05)
+            except Exception:
+                time.sleep(0.1)
+
+    def _handle_line(self, line: str) -> None:
+        if not line:
+            return
+
+        if self.device_config.type == "Win32":
+            self._handle_win32_controller_event(line)
+
+        if self.device_config.type == "Adb" and "ScreencapAgent::speed_test" in line:
+            self._handle_adb_screencap_speed_test_line(line)
+            return
+
+        if not self._logged_actual_input:
+            method = _extract_maafw_debug_input_method(line)
+            if method:
+                prefix = "ADB" if self.device_config.type == "Adb" else "PC"
+                self.send_log(f"{prefix} 实际触控方式: {method}")
+                self._logged_actual_input = True
+
+    def _handle_adb_screencap_speed_test_line(self, line: str) -> None:
+        result_match = MAAFW_SCREENCAP_RESULT_RE.search(line)
+        if result_match is not None:
+            self._screencap_results[result_match.group(1)] = result_match.group(2)
+            return
+
+        fastest_match = MAAFW_FASTEST_SCREENCAP_RE.search(line)
+        if fastest_match is None or self._logged_actual_screencap:
+            return
+
+        method = fastest_match.group(1)
+        cost = fastest_match.group(2)
+        result_parts = [
+            f"{name}={duration}"
+            for name, duration in self._screencap_results.items()
+        ]
+        result_summary = "; ".join(result_parts)
+        if result_summary:
+            self.send_log(
+                f"ADB 截图测速: {result_summary}; 实际截图方式={method} ({cost})"
+            )
+        else:
+            self.send_log(f"ADB 实际截图方式: {method} ({cost})")
+        self._logged_actual_screencap = True
+
+    def _handle_win32_controller_event(self, line: str) -> None:
+        if self._logged_actual_screencap:
+            return
+
+        event = _extract_maafw_debug_controller_event(line)
+        if event is None:
+            return
+
+        event_time, stage, details = event
+        if details.get("action") != "screencap":
+            return
+        info = details.get("info")
+        if not isinstance(info, dict) or info.get("type") != "win32":
+            return
+
+        ctrl_id = _optional_int(details.get("ctrl_id"))
+        if ctrl_id is None:
+            return
+        if stage == "Starting":
+            self._pc_screencap_started_at[ctrl_id] = event_time
+            return
+        if stage != "Succeeded":
+            return
+
+        started_at = self._pc_screencap_started_at.pop(ctrl_id, None)
+        if started_at is None:
+            return
+        elapsed_ms = (event_time - started_at).total_seconds() * 1000
+        method = _format_enum_methods(
+            MaaWin32ScreencapMethodEnum,
+            self.device_config.screencapMethod,
+        )
+        self.send_log(f"PC 实际截图方式: {method}; 截图耗时={elapsed_ms:.0f} ms")
+        self._logged_actual_screencap = True
+
+
 class _MaaFWResourceLogSink(ResourceEventSink):
     def __init__(self, send_log: Callable[[str], None]) -> None:
         super().__init__()
@@ -1752,6 +2104,33 @@ class _MaaFWTaskerLogSink(TaskerEventSink):
         details: dict[str, Any],
     ) -> None:
         self.record_failure(msg, details)
+
+
+def _extract_maafw_debug_input_method(line: str) -> str | None:
+    match = MAAFW_INPUT_ACTION_RE.search(line)
+    if match is None:
+        return None
+    method = match.group(1)
+    mode_match = MAAFW_PC_INPUT_MODE_RE.search(line)
+    if mode_match is not None:
+        return f"{method}({mode_match.group(1)})"
+    return method
+
+
+def _extract_maafw_debug_controller_event(
+    line: str,
+) -> tuple[datetime, str, dict[str, Any]] | None:
+    match = MAAFW_CTRL_EVENT_RE.search(line)
+    if match is None:
+        return None
+    try:
+        event_time = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S.%f")
+        details = json.loads(match.group(3))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(details, dict):
+        return None
+    return event_time, match.group(2), details
 
 
 def _notification_label(noti_type: NotificationType) -> str:

@@ -205,7 +205,7 @@ export interface MaaFWScriptConfig {
   }
   Update: {
     IfAutoUpdate: boolean
-    Source: '' | 'MirrorChyan' | 'GitHub'
+    Source: 'MirrorChyan'
     Channel: '' | 'stable' | 'beta'
     MirrorChyanCDK: string
   }

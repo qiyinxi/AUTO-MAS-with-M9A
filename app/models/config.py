@@ -2120,8 +2120,16 @@ class MaaFWUserConfig(ConfigBase):
         """生成 MaaFW 用户标签列表"""
         tags = []
 
-        last_status = self.get("Data", "LastProxyStatus")
-        tags.append({"text": f"上次：{last_status}", "color": "green"})
+        last_status = self._normalize_maafw_last_status(
+            self.get("Data", "LastProxyStatus")
+        )
+        status_color = {
+            "成功": "green",
+            "失败": "red",
+            "运行中": "blue",
+            "未知": "orange",
+        }.get(last_status, "orange")
+        tags.append({"text": f"上次：{last_status}", "color": status_color})
 
         if not self.get("Data", "IfPassCheck"):
             tags.append({"text": "人工排查未通过", "color": "red"})
@@ -2130,14 +2138,27 @@ class MaaFWUserConfig(ConfigBase):
             datetime.strptime(self.get("Data", "LastProxyDate"), "%Y-%m-%d").date()
             == datetime.now(tz=UTC4).date()
         ):
+            proxy_times = self.get("Data", "ProxyTimes")
+            if proxy_times > 0:
+                today_text = f"今日：已运行{proxy_times}次"
+                today_color = "green"
+            elif last_status == "运行中":
+                today_text = "今日：运行中"
+                today_color = "blue"
+            elif last_status == "失败":
+                today_text = "今日：运行失败"
+                today_color = "red"
+            else:
+                today_text = "今日：已尝试0次"
+                today_color = "orange"
             tags.append(
                 {
-                    "text": f"任务：已代理{self.get('Data', 'ProxyTimes')}次",
-                    "color": "green",
+                    "text": today_text,
+                    "color": today_color,
                 }
             )
         else:
-            tags.append({"text": "任务：未代理", "color": "orange"})
+            tags.append({"text": "今日：未运行", "color": "orange"})
 
         remained_day = self.get("Info", "RemainedDay")
         if remained_day == -1:
@@ -2174,6 +2195,16 @@ class MaaFWUserConfig(ConfigBase):
         )
 
         return json.dumps(tags, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_maafw_last_status(status: str) -> str:
+        status_map = {
+            "鏈煡": "未知",
+            "鎴愬姛": "成功",
+            "澶辫触": "失败",
+            "杩愯涓?": "运行中",
+        }
+        return status_map.get(status, status or "未知")
 
 
 class MaaFWConfig(ConfigBase):
@@ -2261,12 +2292,12 @@ class MaaFWConfig(ConfigBase):
         self.Update_IfAutoUpdate = ConfigItem(
             "Update", "IfAutoUpdate", True, BoolValidator()
         )
-        ## 更新源，留空时使用全局更新源
+        ## 更新源，暂仅支持 MirrorChyan
         self.Update_Source = ConfigItem(
             "Update",
             "Source",
-            "",
-            OptionsValidator(["", "MirrorChyan", "GitHub"]),
+            "MirrorChyan",
+            OptionsValidator(["MirrorChyan"]),
         )
         ## 更新渠道，留空时使用全局更新渠道
         self.Update_Channel = ConfigItem(

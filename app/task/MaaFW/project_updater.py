@@ -25,7 +25,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
 
 import aiofiles
 import httpx
@@ -73,7 +72,6 @@ async def update_maafw_project_if_needed(
     project_path: Path,
     interface_model: MaaFWInterface,
     *,
-    source: str = "MirrorChyan",
     mirror_cdk: str = "",
     channel: str = "stable",
     proxy: httpx.Proxy | None,
@@ -84,6 +82,7 @@ async def update_maafw_project_if_needed(
     resolved_project_path = project_path.resolve()
     send_update_log = send_log or (lambda _: None)
     current_version = interface_model.version or ""
+    update_channel = channel or "stable"
 
     if not current_version:
         message = "interface 未声明版本，跳过 MaaFW 项目更新"
@@ -95,47 +94,40 @@ async def update_maafw_project_if_needed(
             message=message,
         )
 
+    send_update_log("开始检查 MaaFW 项目更新")
+    send_update_log(f"当前版本: {current_version}")
+    send_update_log(f"更新渠道: {update_channel}")
+
     candidate: MaaFWProjectUpdateCandidate | None = None
-    update_source = source if source in {"MirrorChyan", "GitHub"} else "MirrorChyan"
 
-    if update_source == "MirrorChyan":
-        if interface_model.mirrorchyan_rid:
-            try:
-                candidate = await _check_mirrorchyan_update(
-                    interface_model,
-                    current_version=current_version,
-                    mirror_cdk=mirror_cdk,
-                    channel=channel,
-                    proxy=proxy,
-                )
-            except Exception as exc:
-                send_update_log(f"MirrorChyan 更新检查失败: {exc}")
+    if not interface_model.mirrorchyan_rid:
+        message = "未配置 MirrorChyan RID，跳过 MaaFW 项目更新"
+        send_update_log(message)
+        return MaaFWProjectUpdateResult(
+            checked=True,
+            updated=False,
+            current_version=current_version,
+            message=message,
+        )
 
-        if candidate is None and interface_model.github:
-            send_update_log("MirrorChyan 更新源不可用，尝试 GitHub 公共 release")
-            try:
-                candidate = await _check_github_update(
-                    interface_model,
-                    current_version=current_version,
-                    channel=channel,
-                    proxy=proxy,
-                )
-            except Exception as exc:
-                send_update_log(f"GitHub 更新检查失败: {exc}")
+    send_update_log(f"MirrorChyan RID: {interface_model.mirrorchyan_rid}")
+    if interface_model.mirrorchyan_multiplatform:
+        send_update_log("MirrorChyan 多平台资源: win/x64")
 
-    if update_source == "GitHub" and interface_model.github:
-        try:
-            candidate = await _check_github_update(
-                interface_model,
-                current_version=current_version,
-                channel=channel,
-                proxy=proxy,
-            )
-        except Exception as exc:
-            send_update_log(f"GitHub 更新检查失败: {exc}")
+    try:
+        candidate = await _check_mirrorchyan_update(
+            interface_model,
+            current_version=current_version,
+            mirror_cdk=mirror_cdk,
+            channel=update_channel,
+            proxy=proxy,
+        )
+    except Exception as exc:
+        send_update_log(f"MirrorChyan 更新检查失败: {exc}")
+        raise
 
     if candidate is None:
-        message = "MaaFW 项目已是最新或未配置可用更新源"
+        message = f"MaaFW 项目已是最新: {current_version}"
         send_update_log(message)
         return MaaFWProjectUpdateResult(
             checked=True,
@@ -148,21 +140,10 @@ async def update_maafw_project_if_needed(
         f"发现 MaaFW 项目更新: {current_version} -> {candidate.version} ({candidate.source})"
     )
     download_url = candidate.download_url
-    if not download_url and candidate.source == "MirrorChyan":
-        if interface_model.github:
-            send_update_log(
-                "MirrorChyan 未返回下载链接（通常是未填写有效 CDK），尝试从 GitHub release 下载"
-            )
-            download_url = await _find_github_release_asset(
-                interface_model,
-                target_version=candidate.version,
-                channel=channel,
-                proxy=proxy,
-            )
 
     if not download_url:
         raise MaaFWProjectUpdateError(
-            f"{candidate.source} 未返回可用下载链接，请填写有效 Mirror 酱 CDK 或切换 GitHub 更新源"
+            "MirrorChyan 未返回可用下载链接，请填写有效 Mirror 酱 CDK"
         )
 
     package_path = await _download_update_package(
@@ -239,81 +220,6 @@ async def _check_mirrorchyan_update(
     )
 
 
-async def _check_github_update(
-    interface_model: MaaFWInterface,
-    *,
-    current_version: str,
-    channel: str,
-    proxy: httpx.Proxy | None,
-) -> MaaFWProjectUpdateCandidate | None:
-    releases = await _fetch_github_releases(interface_model, proxy=proxy)
-    release = _select_github_release(releases, channel=channel)
-    if release is None:
-        return None
-
-    latest_version = str(release.get("tag_name") or release.get("name") or "").strip()
-    if not latest_version:
-        raise MaaFWProjectUpdateError("GitHub release 未返回版本号")
-    if not _is_remote_newer(latest_version, current_version):
-        return None
-
-    asset = _select_github_asset(release.get("assets"), interface_model.name)
-    if asset is None:
-        raise MaaFWProjectUpdateError("GitHub release 未找到可下载的 zip 资源包")
-
-    return MaaFWProjectUpdateCandidate(
-        source="GitHub",
-        version=latest_version,
-        download_url=asset,
-    )
-
-
-async def _fetch_github_releases(
-    interface_model: MaaFWInterface,
-    *,
-    proxy: httpx.Proxy | None,
-) -> list[dict[str, Any]]:
-    repo = _parse_github_repo(interface_model.github or "")
-    if repo is None:
-        raise MaaFWProjectUpdateError("GitHub 地址格式不支持")
-
-    owner, name = repo
-    url = f"https://api.github.com/repos/{owner}/{name}/releases"
-    async with httpx.AsyncClient(proxy=proxy, follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url, headers=HTTP_HEADERS)
-
-    if response.status_code != 200:
-        raise MaaFWProjectUpdateError(f"GitHub 返回异常: HTTP {response.status_code}")
-
-    return _load_response_json_list(response)
-
-
-async def _find_github_release_asset(
-    interface_model: MaaFWInterface,
-    *,
-    target_version: str,
-    channel: str,
-    proxy: httpx.Proxy | None,
-) -> str:
-    releases = await _fetch_github_releases(interface_model, proxy=proxy)
-    wants_prerelease = channel == "beta"
-    normalized_target = _normalize_version(target_version)
-    for release in releases:
-        if bool(release.get("draft")):
-            continue
-        if bool(release.get("prerelease")) != wants_prerelease:
-            continue
-        release_version = str(release.get("tag_name") or release.get("name") or "")
-        if _normalize_version(release_version) != normalized_target:
-            continue
-        asset = _select_github_asset(release.get("assets"), interface_model.name)
-        if asset is None:
-            break
-        return asset
-
-    raise MaaFWProjectUpdateError("GitHub release 未找到可下载的 zip 资源包")
-
-
 async def _download_update_package(
     project_path: Path,
     download_url: str,
@@ -343,7 +249,12 @@ async def _download_update_package(
             )
             _ensure_downloaded_zip(temp_path)
             _ensure_expected_sha256(temp_path, expected_sha256)
+            if expected_sha256:
+                send_log("MaaFW 更新包 sha256 校验通过")
+            else:
+                send_log("MaaFW 更新包未提供 sha256，跳过校验")
             temp_path.replace(package_path)
+            send_log(f"MaaFW 更新包下载完成: {package_path.stat().st_size} bytes")
             return package_path
         except Exception as exc:
             last_error = exc
@@ -499,6 +410,7 @@ async def _apply_update_package(
                 backup_dir,
                 extract_dir,
             )
+        send_log("MaaFW 更新包应用完成")
     finally:
         _remove_path(extract_dir)
         _remove_path(package_path)
@@ -579,16 +491,6 @@ def _load_response_json(response: httpx.Response) -> dict[str, Any]:
     return data
 
 
-def _load_response_json_list(response: httpx.Response) -> list[dict[str, Any]]:
-    try:
-        data = response.json()
-    except Exception as exc:
-        raise MaaFWProjectUpdateError("更新源返回的不是 JSON") from exc
-    if not isinstance(data, list):
-        raise MaaFWProjectUpdateError("更新源返回的数据格式不正确")
-    return [item for item in data if isinstance(item, dict)]
-
-
 def _is_remote_newer(remote_version: str, current_version: str) -> bool:
     remote = remote_version.strip()
     current = current_version.strip()
@@ -607,64 +509,6 @@ def _is_remote_newer(remote_version: str, current_version: str) -> bool:
 
 def _normalize_version(raw_version: str) -> str:
     return raw_version.strip().lstrip("vV")
-
-
-def _parse_github_repo(github_url: str) -> tuple[str, str] | None:
-    parsed = urlparse(github_url.strip())
-    if parsed.netloc.lower() != "github.com":
-        return None
-
-    parts = [item for item in parsed.path.strip("/").split("/") if item]
-    if len(parts) < 2:
-        return None
-
-    repo = parts[1]
-    if repo.endswith(".git"):
-        repo = repo[:-4]
-    return parts[0], repo
-
-
-def _select_github_release(
-    releases: list[dict[str, Any]],
-    *,
-    channel: str,
-) -> dict[str, Any] | None:
-    wants_prerelease = channel == "beta"
-    for release in releases:
-        if bool(release.get("draft")):
-            continue
-        if bool(release.get("prerelease")) == wants_prerelease:
-            return release
-    return None
-
-
-def _select_github_asset(raw_assets: Any, project_name: str) -> str | None:
-    if not isinstance(raw_assets, list):
-        return None
-
-    assets: list[tuple[int, str]] = []
-    for asset in raw_assets:
-        if not isinstance(asset, dict):
-            continue
-        name = str(asset.get("name") or "").lower()
-        url = str(asset.get("browser_download_url") or "").strip()
-        if not name.endswith(".zip") or not url:
-            continue
-
-        score = 0
-        if project_name and project_name.lower() in name:
-            score += 2
-        if "win" in name or "windows" in name:
-            score += 3
-        if "x64" in name or "x86_64" in name or "amd64" in name:
-            score += 2
-        if "linux" in name or "mac" in name or "darwin" in name:
-            score -= 6
-        assets.append((score, url))
-
-    if not assets:
-        return None
-    return sorted(assets, key=lambda item: item[0], reverse=True)[0][1]
 
 
 def _safe_extract_zip(package_path: Path, extract_dir: Path) -> None:

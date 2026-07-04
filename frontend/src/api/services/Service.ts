@@ -4,7 +4,6 @@
 /* eslint-disable */
 import type { AbyssSnapshotImportOut } from '../models/AbyssSnapshotImportOut';
 import type { Body_batch_update_okww_configs_api_scripts_okww_configs_batch_update_post } from '../models/Body_batch_update_okww_configs_api_scripts_okww_configs_batch_update_post';
-import type { Body_update_okww_config_api_scripts_okww_configs_update_post } from '../models/Body_update_okww_config_api_scripts_okww_configs_update_post';
 import type { ComboBoxOut } from '../models/ComboBoxOut';
 import type { DispatchIn } from '../models/DispatchIn';
 import type { EmulatorCreateOut } from '../models/EmulatorCreateOut';
@@ -27,6 +26,8 @@ import type { MaaFWAgentEnvPrepareIn } from '../models/MaaFWAgentEnvPrepareIn';
 import type { MaaFWAgentEnvPrepareOut } from '../models/MaaFWAgentEnvPrepareOut';
 import type { MaaFWInterfacePreviewIn } from '../models/MaaFWInterfacePreviewIn';
 import type { MaaFWInterfacePreviewOut } from '../models/MaaFWInterfacePreviewOut';
+import type { MaaFWProjectUpdateIn } from '../models/MaaFWProjectUpdateIn';
+import type { MaaFWProjectUpdateOut } from '../models/MaaFWProjectUpdateOut';
 import type { MaaFWWindowPreviewIn } from '../models/MaaFWWindowPreviewIn';
 import type { MaaFWWindowPreviewOut } from '../models/MaaFWWindowPreviewOut';
 import type { NoticeOut } from '../models/NoticeOut';
@@ -738,6 +739,26 @@ export class Service {
         });
     }
     /**
+     * 手动更新 MaaFW 项目资源
+     * 按脚本更新配置手动检查并应用 MaaFW 项目资源更新。
+     * @param requestBody
+     * @returns MaaFWProjectUpdateOut Successful Response
+     * @throws ApiError
+     */
+    public static updateMaafwProjectApiScriptsMaafwProjectUpdatePost(
+        requestBody: MaaFWProjectUpdateIn,
+    ): CancelablePromise<MaaFWProjectUpdateOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/project/update',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Prepare MaaFW agent Python env
      * Prepare MaaFW agent Python envs without loading resources or starting agents.
      * @param requestBody
@@ -783,7 +804,7 @@ export class Service {
     }
     /**
      * 扫描 MaaFW PC 客户端窗口
-     * 按 interface.json 中的 Win32/Gamepad 窗口规则扫描本机桌面窗口。
+     * 按 interface.json 中的 Win32 窗口规则扫描本机桌面窗口。
      * @param requestBody
      * @returns MaaFWWindowPreviewOut Successful Response
      * @throws ApiError
@@ -853,35 +874,6 @@ export class Service {
                 'script_id': scriptId,
                 'user_id': userId,
             },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 更新 OK-WW 配置文件
-     * 更新 OK-WW 配置文件
-     *
-     * Args:
-     * script_id: OK-WW 脚本 ID
-     * user_id: 用户 ID
-     * filename: 配置文件名（如 DailyTask.json）
-     * data: 要更新的配置数据
-     *
-     * Returns:
-     * dict: 操作结果
-     * @param requestBody
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static updateOkwwConfigApiScriptsOkwwConfigsUpdatePost(
-        requestBody: Body_update_okww_config_api_scripts_okww_configs_update_post,
-    ): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/okww/configs/update',
-            body: requestBody,
-            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

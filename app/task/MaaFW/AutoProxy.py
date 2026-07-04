@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import IntEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import psutil
 from maa.controller import (
@@ -74,6 +75,10 @@ RUNNER_VENV_PACKAGES = ("maafw==5.8.1", "pydantic==2.11.7", "json5==0.14.0")
 RUNNER_VENV_TIMEOUT = 300
 RUNNER_PIP_TIMEOUT = 300
 RUNNER_PROCESS_KILL_TIMEOUT = 5
+REQUIREMENT_NAME_RE = re.compile(
+    r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"\s*(?:\[[^\]]+\])?\s*(?:===|[<>=!~]=?|@|;|\s|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,7 @@ class AutoProxyTask(TaskExecuteBase):
         script_config: MaaFWConfig,
         user_config: MultipleConfig[MaaFWUserConfig],
         emulator_manager: DeviceBase | None,
+        project_update_logs: list[str] | None = None,
     ):
         super().__init__()
 
@@ -104,6 +110,7 @@ class AutoProxyTask(TaskExecuteBase):
         self.script_config = script_config
         self.user_config = user_config
         self.emulator_manager = emulator_manager
+        self.project_update_logs = list(project_update_logs or [])
         self.cur_user_item = self.script_info.user_list[self.script_info.current_index]
         self.cur_user_uid = uuid.UUID(self.cur_user_item.user_id)
         self.cur_user_config = self.user_config[self.cur_user_uid]
@@ -128,9 +135,15 @@ class AutoProxyTask(TaskExecuteBase):
         self._cached_adb_profile: MaaFWAdbControlProfile | None = None
 
     async def check(self) -> str:
-        if self.script_config.get("Run", "ProxyTimesLimit") != 0 and self.cur_user_config.get(
-            "Data", "ProxyTimes"
-        ) >= self.script_config.get("Run", "ProxyTimesLimit"):
+        proxy_times = (
+            self.cur_user_config.get("Data", "ProxyTimes")
+            if self.cur_user_config.get("Data", "LastProxyDate") == self.curdate
+            else 0
+        )
+        if (
+            self.script_config.get("Run", "ProxyTimesLimit") != 0
+            and proxy_times >= self.script_config.get("Run", "ProxyTimesLimit")
+        ):
             self.cur_user_item.status = "跳过"
             return "今日代理次数已达上限, 跳过该用户"
 
@@ -177,13 +190,12 @@ class AutoProxyTask(TaskExecuteBase):
         self.cur_user_item.log_record[self.log_start_time] = self.cur_user_log = (
             LogRecord()
         )
+        if self.project_update_logs:
+            self.cur_user_log.content.extend(self.project_update_logs)
+            self.script_info.log = "".join(self.cur_user_log.content[-80:])
 
     async def main_task(self):
         self.curdate = datetime.now(tz=UTC4).strftime("%Y-%m-%d")
-        if self.cur_user_config.get("Data", "LastProxyDate") != self.curdate:
-            await self.cur_user_config.set("Data", "LastProxyDate", self.curdate)
-            await self.cur_user_config.set("Data", "ProxyTimes", 0)
-
         self.check_result = await self.check()
         if self.check_result != "Pass":
             if self.cur_user_item.status == "异常":
@@ -198,6 +210,7 @@ class AutoProxyTask(TaskExecuteBase):
                 self.script_info.log = self.check_result
             return
 
+        await self._mark_run_started()
         await self.prepare()
         if self.run_plan is None or self.interface_model is None:
             raise RuntimeError("MaaFW 运行计划未完成初始化")
@@ -268,6 +281,12 @@ class AutoProxyTask(TaskExecuteBase):
                         await self._reset_runner_for_retry()
         finally:
             await self._shutdown_runner()
+
+    async def _mark_run_started(self) -> None:
+        if self.cur_user_config.get("Data", "LastProxyDate") != self.curdate:
+            await self.cur_user_config.set("Data", "LastProxyDate", self.curdate)
+            await self.cur_user_config.set("Data", "ProxyTimes", 0)
+        await self.cur_user_config.set("Data", "LastProxyStatus", "运行中")
 
     async def final_task(self):
         await self._shutdown_runner()
@@ -587,9 +606,13 @@ class AutoProxyTask(TaskExecuteBase):
         if emulator_index in ("", "-"):
             raise RuntimeError("当前 controller 需要 ADB，请在脚本管理页选择模拟器实例")
 
-        self.script_info.log = "正在启动模拟器"
+        self._append_log(f"正在启动模拟器: {emulator_index}")
         self.opened_emulator = True
-        device_info = await self.emulator_manager.open(emulator_index)
+        try:
+            device_info = await self.emulator_manager.open(emulator_index)
+        except Exception as exc:
+            self._append_log(f"模拟器启动失败: {exc}")
+            raise
 
         if Config.get("Function", "IfSilence"):
             with suppress(Exception):
@@ -598,6 +621,7 @@ class AutoProxyTask(TaskExecuteBase):
         if not device_info.adb_address or device_info.adb_address == "Unknown":
             raise RuntimeError("模拟器未返回可用 ADB 地址")
 
+        self._append_log(f"模拟器启动完成，ADB 地址: {device_info.adb_address}")
         self._cached_adb_address = device_info.adb_address
         self._cached_device_info = device_info
         return device_info.adb_address, device_info
@@ -957,9 +981,7 @@ class AutoProxyTask(TaskExecuteBase):
             logger.warning(f"MaaFW Runner 子进程清理失败: {exc}")
 
     def _runner_venv_path(self) -> Path:
-        project_key = str(self.project_path.resolve()).lower()
-        digest = hashlib.sha256(project_key.encode("utf-8")).hexdigest()[:16]
-        return Path.cwd() / "config" / "maafw_runner_venvs" / f"maafw_runner_{digest}"
+        return _runner_venv_path(self.project_path)
 
     def _ensure_runner_venv(self, venv_path: Path) -> Path:
         if self._should_rebuild_runner_venv(venv_path):
@@ -989,7 +1011,7 @@ class AutoProxyTask(TaskExecuteBase):
         if self._is_runner_manifest_current(manifest_path, manifest):
             return runner_python
 
-        packages = [*RUNNER_VENV_PACKAGES, *_load_requirements_file(self.project_path)]
+        packages = list(manifest["packages"])
         self._append_log(f"[MaaFW Runner] 安装隔离 venv 依赖: {', '.join(packages)}")
         self._run_setup_command(
             [
@@ -1028,13 +1050,7 @@ class AutoProxyTask(TaskExecuteBase):
         shutil.rmtree(venv_path, ignore_errors=True)
 
     def _runner_env_manifest(self) -> dict[str, Any]:
-        return {
-            "schemaVersion": 1,
-            "projectPath": str(self.project_path.resolve()),
-            "packages": list(RUNNER_VENV_PACKAGES),
-            "projectRequirements": _load_requirements_file(self.project_path),
-            "pythonVersion": f"{sys.version_info.major}.{sys.version_info.minor}",
-        }
+        return _runner_env_manifest(self.project_path)
 
     @staticmethod
     def _is_runner_manifest_current(
@@ -1070,27 +1086,7 @@ class AutoProxyTask(TaskExecuteBase):
         return job_path
 
     def _build_runner_env(self, runner_venv: Path) -> dict[str, str]:
-        env = os.environ.copy()
-        for name in (
-            "PYTHONHOME",
-            "PYTHONUSERBASE",
-            "PIP_TARGET",
-            "PIP_PREFIX",
-            "PIP_USER",
-        ):
-            env.pop(name, None)
-
-        scripts_dir = runner_venv / ("Scripts" if os.name == "nt" else "bin")
-        repo_root = str(Path.cwd())
-        python_path = env.get("PYTHONPATH")
-        env["VIRTUAL_ENV"] = str(runner_venv)
-        env["PYTHONNOUSERSITE"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PATH"] = f"{scripts_dir}{os.pathsep}{env.get('PATH', '')}"
-        env["PYTHONPATH"] = (
-            f"{repo_root}{os.pathsep}{python_path}" if python_path else repo_root
-        )
-        return env
+        return _build_runner_env(runner_venv)
 
     def _run_setup_command(
         self,
@@ -1315,7 +1311,7 @@ class AutoProxyTask(TaskExecuteBase):
 
     def _send_runner_log(self, message: str) -> None:
         if self.cur_user_log is not None:
-            self.cur_user_log.content.append(f"{message}\n")
+            self.cur_user_log.content.append(self._format_user_log_line(message))
         if self.loop is not None and not self.loop.is_closed():
             with suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self._publish_runner_log, message)
@@ -1345,8 +1341,14 @@ class AutoProxyTask(TaskExecuteBase):
     def _append_log(self, message: str) -> None:
         logger.info(message)
         if self.cur_user_log is not None:
-            self.cur_user_log.content.append(f"{message}\n")
+            self.cur_user_log.content.append(self._format_user_log_line(message))
         self._publish_log_update(message)
+
+    @staticmethod
+    def _format_user_log_line(message: str) -> str:
+        timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
+        lines = str(message).splitlines() or [""]
+        return "".join(f"[{timestamp}] {line}\n" for line in lines)
 
 
 def _load_json_dict(value: Any) -> dict[str, Any]:
@@ -1373,6 +1375,216 @@ def _load_requirements_file(project_path: Path) -> list[str]:
     except FileNotFoundError:
         pass
     return packages
+
+
+def prepare_maafw_runner_env(
+    project_path: str | Path,
+    *,
+    send_log: Callable[[str], None] | None = None,
+) -> Path:
+    resolved_project_path = Path(project_path).resolve()
+    venv_path = _runner_venv_path(resolved_project_path)
+    return _prepare_runner_venv(
+        resolved_project_path,
+        venv_path,
+        send_log=send_log,
+    )
+
+
+def _runner_venv_path(project_path: Path) -> Path:
+    project_key = str(project_path.resolve()).lower()
+    digest = hashlib.sha256(project_key.encode("utf-8")).hexdigest()[:16]
+    return Path.cwd() / "config" / "maafw_runner_venvs" / f"maafw_runner_{digest}"
+
+
+def _prepare_runner_venv(
+    project_path: Path,
+    venv_path: Path,
+    *,
+    send_log: Callable[[str], None] | None,
+) -> Path:
+    if _should_rebuild_runner_venv_path(venv_path):
+        _reset_runner_venv_path(venv_path)
+
+    if not _is_valid_venv_path(venv_path):
+        venv_path.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap_python = _venv_bootstrap_python()
+        _send_runner_env_log(
+            send_log,
+            f"[MaaFW Runner] 创建隔离 venv: {venv_path} "
+            f"(引导 Python: {bootstrap_python})",
+        )
+        _run_runner_setup_command(
+            [
+                bootstrap_python,
+                "-m",
+                "venv",
+                str(venv_path),
+            ],
+            timeout=RUNNER_VENV_TIMEOUT,
+            cwd=Path.cwd(),
+        )
+
+    runner_python = _venv_python_path(venv_path)
+    manifest_path = venv_path / RUNNER_ENV_MANIFEST_NAME
+    manifest = _runner_env_manifest(project_path)
+    if _is_runner_env_manifest_current(manifest_path, manifest):
+        _send_runner_env_log(send_log, f"[MaaFW Runner] 隔离 venv 已就绪: {venv_path}")
+        return runner_python
+
+    packages = list(manifest["packages"])
+    _send_runner_env_log(
+        send_log,
+        f"[MaaFW Runner] 安装隔离 venv 依赖: {', '.join(packages)}",
+    )
+    _run_runner_setup_command(
+        [
+            str(runner_python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--quiet",
+            *packages,
+        ],
+        timeout=RUNNER_PIP_TIMEOUT,
+        cwd=project_path,
+        env=_build_runner_env(venv_path),
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _send_runner_env_log(send_log, f"[MaaFW Runner] 隔离 venv 依赖已准备: {venv_path}")
+    return runner_python
+
+
+def _should_rebuild_runner_venv_path(venv_path: Path) -> bool:
+    return venv_path.exists() and not _is_valid_venv_path(venv_path)
+
+
+def _reset_runner_venv_path(venv_path: Path) -> None:
+    runner_venv_root = Path.cwd() / "config" / "maafw_runner_venvs"
+    resolved_root = runner_venv_root.resolve()
+    resolved_venv = venv_path.resolve()
+    if (
+        resolved_venv.parent != resolved_root
+        or not resolved_venv.name.startswith("maafw_runner_")
+    ):
+        raise RuntimeError(f"拒绝重建非托管 MaaFW Runner venv: {venv_path}")
+    shutil.rmtree(venv_path, ignore_errors=True)
+
+
+def _runner_env_manifest(project_path: Path) -> dict[str, Any]:
+    project_requirements = _load_requirements_file(project_path)
+    return {
+        "schemaVersion": 2,
+        "projectPath": str(project_path.resolve()),
+        "packages": _merge_runner_requirements(
+            RUNNER_VENV_PACKAGES,
+            project_requirements,
+        ),
+        "projectRequirements": project_requirements,
+        "pythonVersion": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }
+
+
+def _is_runner_env_manifest_current(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> bool:
+    try:
+        current = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return current == manifest
+
+
+def _build_runner_env(runner_venv: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in (
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "PIP_TARGET",
+        "PIP_PREFIX",
+        "PIP_USER",
+    ):
+        env.pop(name, None)
+
+    scripts_dir = runner_venv / ("Scripts" if os.name == "nt" else "bin")
+    repo_root = str(Path.cwd())
+    python_path = env.get("PYTHONPATH")
+    env["VIRTUAL_ENV"] = str(runner_venv)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PATH"] = f"{scripts_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["PYTHONPATH"] = (
+        f"{repo_root}{os.pathsep}{python_path}" if python_path else repo_root
+    )
+    return env
+
+
+def _run_runner_setup_command(
+    command: list[str],
+    *,
+    timeout: int,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=timeout,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"MaaFW Runner 环境命令超时: {command[:3]}") from exc
+
+    if result.returncode == 0:
+        return
+
+    detail = (result.stderr or result.stdout or "").strip()
+    raise RuntimeError(
+        f"MaaFW Runner 环境命令失败 (exit={result.returncode}): {detail[:800]}"
+    )
+
+
+def _send_runner_env_log(
+    send_log: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if send_log is not None:
+        send_log(message)
+
+
+def _merge_runner_requirements(
+    default_packages: tuple[str, ...],
+    project_packages: list[str],
+) -> list[str]:
+    project_package_names = {
+        name
+        for package in project_packages
+        if (name := _requirement_distribution_name(package)) is not None
+    }
+    packages = [
+        package
+        for package in default_packages
+        if _requirement_distribution_name(package) not in project_package_names
+    ]
+    packages.extend(project_packages)
+    return packages
+
+
+def _requirement_distribution_name(requirement: str) -> str | None:
+    match = REQUIREMENT_NAME_RE.match(requirement)
+    if match is None:
+        return None
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
 
 
 def _venv_python_path(venv_path: Path) -> Path:

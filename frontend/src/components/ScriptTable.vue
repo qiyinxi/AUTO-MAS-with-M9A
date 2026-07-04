@@ -48,7 +48,7 @@
                   />
                   <img
                     v-else-if="script.type === 'MaaFW'"
-                    src="@/assets/AUTO-MAS.ico"
+                    :src="autoMasIconUrl"
                     alt="MaaFramework"
                     class="script-logo"
                   />
@@ -481,6 +481,7 @@
 
 <script setup lang="ts">
 import type { MaaFWScriptConfig, Script, User } from '../types/script'
+import autoMasIconUrl from '@/assets/AUTO-MAS.ico'
 import {
   DeleteOutlined,
   EditOutlined,
