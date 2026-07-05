@@ -759,8 +759,8 @@ export class Service {
         });
     }
     /**
-     * Prepare MaaFW agent Python env
-     * Prepare MaaFW agent Python envs without loading resources or starting agents.
+     * Prepare MaaFW runtime env
+     * Prepare MaaFW Runner and agent Python envs before starting tasks.
      * @param requestBody
      * @returns MaaFWAgentEnvPrepareOut Successful Response
      * @throws ApiError
