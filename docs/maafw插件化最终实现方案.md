@@ -35,7 +35,7 @@ AUTO-MAS 插件宿主
 2. `automas-maafw-interface` 只解析 ProjectInterface，不启动 tasker、不读写用户配置、不依赖 emulator、通知、任务管理器，也不包含 M9A / MaaEnd 任务语义。
 3. agent 环境准备属于 project 服务；agent 子进程的启动、连接和回收属于 runner 会话。
 4. ADB 路径、模拟器实例和模拟器扩展能力来自 emulator 插件；MaaFW runner 不复刻 MuMuManager 逻辑。
-5. 控制器按插件族拆分。第一批实现 adb 和 desktop，gamepad / playcover 只预留。
+5. 控制器按插件族拆分。第一批实现 adb 和 win32，gamepad / playcover 只预留。
 6. M9A 的目标形态是 MaaFW project pack，不在最终形态里注册独立脚本类型。只有 pack SDK 尚未落地时，允许临时用 ScriptAdapterPlugin 做过渡 PoC，但不能复制 runner。
 7. 周/月任务机制通用，规则由 project pack 声明。通用 MaaFW 层不内置任何 M9A 默认周月任务。
 8. 通知通道走 `automas-notification`，MaaFW / M9A 只产出结构化结果和专项文案。
@@ -86,7 +86,7 @@ P0 / P1 明确禁止：
 | `automas-maafw-project` | 基础包 | `maafw.project.v1`、`maafw.agent.v1` | interface | 项目更新、agent 环境准备、agent command plan |
 | `automas-maafw-runner` | 基础包 | `maafw.runner.v1` | interface、project、maa wheel | runner session、worker 子进程、Tasker 直控、事件流 |
 | `automas-maafw-controller-adb` | 控制器包 | `maafw.controller.adb` | registry；wants emulator | ADB device spec、模拟器能力消费、ADB precheck |
-| `automas-maafw-controller-desktop` | 控制器包 | `maafw.controller.desktop` | registry | Win32 窗口扫描、句柄匹配、desktop device spec |
+| `automas-maafw-controller-win32` | 控制器包 | `maafw.controller.win32` | registry | Win32 窗口扫描、句柄匹配、Win32 device spec |
 | `automas-script-maafw` | 编排插件 | `maafw.registry.v1`、`ScriptType=MaaFW` | interface、project、runner | MaaFW 脚本生命周期、provider registry、共享 UI 组件层 |
 | `automas-script-maafw-pack-m9a` | project pack | M9A pack definition | script-maafw、notification | M9A 默认队列、周月规则、专项页面、文案和迁移入口 |
 
@@ -260,7 +260,7 @@ config: dict
 实现边界：
 
 - runner 不扫描模拟器，不调用 MuMuManager。
-- runner 不关心 provider 来自 adb、desktop 还是未来 playcover，只接受 `DeviceSpec`。
+- runner 不关心 provider 来自 adb、win32 还是未来 playcover，只接受 `DeviceSpec`。
 - runner core 不 import `PluginContext`，插件适配层只负责把 service / route / callback 接进 core。
 
 ## 5. 控制器插件族
@@ -286,7 +286,7 @@ class ControllerProvider:
 | provider | 包 | 范围 |
 | --- | --- | --- |
 | `adb` | `automas-maafw-controller-adb` | 消费 emulator 服务，生成 ADB device spec，处理 ADB capability precheck |
-| `desktop` | `automas-maafw-controller-desktop` | 窗口扫描、句柄选择、Win32 device spec |
+| `win32` | `automas-maafw-controller-win32` | 窗口扫描、句柄选择、Win32 device spec |
 
 运行规则：
 
@@ -427,7 +427,7 @@ M9A 项目资产不进 AUTO-MAS 安装器。`resource/**`、`agent/main.py`、`b
 | `app/task/MaaFW/runner.py` | `automas-maafw-runner` | worker 侧 MaaFW 直控 |
 | `app/task/MaaFW/runner_worker.py` | `automas-maafw-runner` | worker 子进程入口和 JSON 行协议 |
 | `app/task/MaaFW/control_capabilities.py` | runner + controller-adb | runtime DLL 探测归 runner；模拟器能力归 controller-adb |
-| `app/task/MaaFW/window_service.py` | controller-desktop | 窗口扫描、句柄匹配、正则选择 |
+| `app/task/MaaFW/window_service.py` | controller-win32 | 窗口扫描、句柄匹配、正则选择 |
 | `app/task/MaaFW/manager.py` | `automas-script-maafw` | 改写为 ScriptAdapterHooks |
 | `app/task/MaaFW/AutoProxy.py` | `automas-script-maafw` | 会话驱动改走 `maafw.runner.v1` |
 | `app/task/M9A/**` | `automas-script-maafw-pack-m9a` | 专项队列、周月、文案；通用部分消解 |
@@ -696,7 +696,7 @@ maafw-smoke
 交付：
 
 - `automas-script-maafw`。
-- `automas-maafw-controller-desktop`。
+- `automas-maafw-controller-win32`。
 - `ScriptType=MaaFW`。
 - 共享前端组件层。
 - 旧内置 MaaFW 进入兼容期。

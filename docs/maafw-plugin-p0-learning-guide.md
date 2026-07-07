@@ -366,7 +366,7 @@ ADB 和 Win32 控制器的差异很大：
 
 如果把它们放在一起，用户只装了 ADB 但代码里还有 Win32 的依赖，导致包体积增大。按插件族拆分让用户只装需要的控制器：
 - 只用 ADB → 装 `automas-maafw-controller-adb`
-- 只用桌面 → 装 `automas-maafw-controller-desktop`
+- 只用 Win32 窗口 → 装 `automas-maafw-controller-win32`
 - 都用 → 两个都装
 
 这就像 Linux 内核的模块化驱动——按需加载，不装就不占空间。

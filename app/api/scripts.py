@@ -60,7 +60,6 @@ _MAAFW_IMAGE_SUFFIXES = {
     ".jpeg",
     ".jpg",
     ".png",
-    ".svg",
     ".webp",
 }
 
@@ -69,6 +68,15 @@ def _maafw_asset_file_path(root: str, asset_path: str) -> Path:
     root_path = Path(root).resolve()
     if not root_path.is_dir():
         raise ValueError("MaaFW 项目目录不存在")
+
+    if not (root_path / "interface.json").is_file() and not (
+        root_path / "interface.jsonc"
+    ).is_file():
+        raise ValueError("MaaFW asset root must be an interface project root")
+
+    from automas_maafw_interface.service import MaaFWInterfaceService
+
+    MaaFWInterfaceService().load(root_path)
 
     normalized_asset_path = asset_path.replace("\\", "/").strip()
     relative_path = Path(normalized_asset_path)
@@ -111,6 +119,7 @@ SCRIPT_BOOK = {
     "GeneralConfig": GeneralConfig,
     "OkwwConfig": OkwwConfig,
     "HSRConfig": HSRConfig,
+    "PluginScriptConfig": PluginScriptConfig,
 }
 USER_BOOK = {
     "MaaConfig": MaaUserConfig,
@@ -121,7 +130,76 @@ USER_BOOK = {
     "GeneralConfig": GeneralUserConfig,
     "OkwwConfig": OkwwUserConfig,
     "HSRConfig": HSRUserConfig,
+    "PluginScriptConfig": PluginUserConfig,
 }
+
+
+def _is_plugin_payload(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("PluginData"), dict) or payload.get("type") in {
+        "PluginScriptConfig",
+        "PluginUserConfig",
+    }
+
+
+def _is_plugin_type(type_key: str) -> bool:
+    try:
+        from app.core.script_types import script_type_registry
+
+        return not script_type_registry.get(type_key).is_builtin
+    except Exception:
+        return False
+
+
+def _script_schema_for_config(config: Any):
+    return SCRIPT_BOOK.get(type(config).__name__, PluginScriptConfig)
+
+
+def _script_schema_for_payload(type_key: str, payload: dict[str, Any]):
+    if _is_plugin_payload(payload) or _is_plugin_type(type_key):
+        return PluginScriptConfig
+    return SCRIPT_BOOK.get(type_key, GeneralConfig)
+
+
+def _user_schema_for_script_config(config: Any):
+    return USER_BOOK.get(type(config).__name__, PluginUserConfig)
+
+
+def _plugin_provider(type_key: str):
+    try:
+        from app.core.script_types import script_type_registry
+
+        return script_type_registry.get(type_key)
+    except Exception:
+        return None
+
+
+def _plugin_type_key_from_payload(payload: dict[str, Any]) -> str:
+    meta = payload.get("Meta")
+    if isinstance(meta, dict):
+        raw_type_key = meta.get("PluginTypeKey")
+        if isinstance(raw_type_key, str) and raw_type_key.strip():
+            return raw_type_key.strip()
+    return ""
+
+
+def _script_index_type(index_type: str, payload: dict[str, Any]) -> str:
+    if index_type != "PluginScriptConfig":
+        return index_type
+    provider = _plugin_provider(_plugin_type_key_from_payload(payload))
+    if provider is None:
+        return "PluginScriptConfig"
+    return provider.legacy_config_class_name or provider.script_config_class.__name__
+
+
+def _user_index_type(index_type: str, script_config: Any) -> str:
+    if index_type != "PluginUserConfig":
+        return index_type
+    get_value = getattr(script_config, "get", None)
+    raw_type_key = get_value("Meta", "PluginTypeKey") if callable(get_value) else ""
+    provider = _plugin_provider(str(raw_type_key or "").strip())
+    if provider is None:
+        return "PluginUserConfig"
+    return provider.legacy_user_config_class_name or provider.user_config_class.__name__
 
 
 @router.post(
@@ -135,7 +213,7 @@ async def add_script(script: ScriptCreateIn = Body(...)) -> ScriptCreateOut:
 
     try:
         uid, config = await Config.add_script(script.type, script.scriptId)
-        data = SCRIPT_BOOK[type(config).__name__](**(await config.toDict()))
+        data = _script_schema_for_config(config)(**(await config.toDict()))
     except Exception as e:
         return ScriptCreateOut(
             code=500,
@@ -158,11 +236,24 @@ async def get_script(script: ScriptGetIn = Body(...)) -> ScriptGetOut:
 
     try:
         index, data = await Config.get_script(script.scriptId)
-        index = [ScriptIndexItem(**_) for _ in index]
-        data = {
-            uid: SCRIPT_BOOK[next((_.type for _ in index if _.uid == uid), "General")](
-                **cfg
+        index = [
+            ScriptIndexItem(
+                **{
+                    **item,
+                    "type": _script_index_type(
+                        str(item.get("type") or ""),
+                        data.get(item.get("uid"), {}),
+                    ),
+                }
             )
+            for item in index
+            if isinstance(item, dict)
+        ]
+        data = {
+            uid: _script_schema_for_payload(
+                next((_.type for _ in index if _.uid == uid), "General"),
+                cfg,
+            )(**cfg)
             for uid, cfg in data.items()
         }
     except Exception as e:
@@ -337,11 +428,22 @@ async def get_user(user: UserGetIn = Body(...)) -> UserGetOut:
 
     try:
         index, data = await Config.get_user(user.scriptId, user.userId)
-        index = [UserIndexItem(**_) for _ in index]
+        script_config = Config.ScriptConfig[uuid.UUID(user.scriptId)]
+        index = [
+            UserIndexItem(
+                **{
+                    **item,
+                    "type": _user_index_type(str(item.get("type") or ""), script_config),
+                }
+            )
+            for item in index
+            if isinstance(item, dict)
+        ]
+        schema_model = _user_schema_for_script_config(
+            script_config
+        )
         data = {
-            uid: USER_BOOK[
-                type(Config.ScriptConfig[uuid.UUID(user.scriptId)]).__name__
-            ](**cfg)
+            uid: schema_model(**cfg)
             for uid, cfg in data.items()
         }
     except Exception as e:
@@ -366,9 +468,10 @@ async def add_user(user: UserInBase = Body(...)) -> UserCreateOut:
 
     try:
         uid, config = await Config.add_user(user.scriptId)
-        data = USER_BOOK[type(Config.ScriptConfig[uuid.UUID(user.scriptId)]).__name__](
-            **(await config.toDict())
+        schema_model = _user_schema_for_script_config(
+            Config.ScriptConfig[uuid.UUID(user.scriptId)]
         )
+        data = schema_model(**(await config.toDict()))
     except Exception as e:
         return UserCreateOut(
             code=500,
@@ -645,9 +748,13 @@ async def reorder_webhook(webhook: WebhookReorderIn = Body(...)) -> OutBase:
     "/m9a/tasks/available",
     tags=["M9A"],
     summary="获取 M9A 可用任务列表（排除 standalone 任务）",
+    response_model=M9AAvailableTasksOut,
     status_code=200,
 )
-async def get_m9a_available_tasks(script_id: str):
+async def get_m9a_available_tasks(
+    payload: M9AAvailableTasksIn | None = Body(default=None),
+    script_id: str | None = Query(default=None),
+) -> M9AAvailableTasksOut:
     """
     获取 M9A 可用任务列表（排除 standalone 任务）
 
@@ -664,7 +771,16 @@ async def get_m9a_available_tasks(script_id: str):
     from pathlib import Path
 
     try:
-        script_config = Config.ScriptConfig[uuid.UUID(script_id)]
+        resolved_script_id = (payload.scriptId if payload is not None else script_id) or ""
+        if not resolved_script_id:
+            return M9AAvailableTasksOut(
+                code=400,
+                status="error",
+                message="scriptId is required",
+                data=[],
+            )
+
+        script_config = Config.ScriptConfig[uuid.UUID(resolved_script_id)]
         m9a_path = Path(script_config.get("Info", "Path"))
         loader = await asyncio.to_thread(M9ATaskLoader.get_cached, m9a_path)
         
@@ -677,19 +793,17 @@ async def get_m9a_available_tasks(script_id: str):
             if full_def:
                 result_tasks.append(full_def)
         
-        return {
-            "code": 200,
-            "status": "success",
-            "message": f"共 {len(result_tasks)} 个可用任务",
-            "data": result_tasks
-        }
+        return M9AAvailableTasksOut(
+            message=f"共 {len(result_tasks)} 个可用任务",
+            data=result_tasks,
+        )
     except Exception as e:
-        return {
-            "code": 500,
-            "status": "error",
-            "message": f"{type(e).__name__}: {str(e)}",
-            "data": []
-        }
+        return M9AAvailableTasksOut(
+            code=500,
+            status="error",
+            message=f"{type(e).__name__}: {str(e)}",
+            data=[],
+        )
 
 
 @router.post(
@@ -703,16 +817,11 @@ async def preview_maafw_interface(
     payload: MaaFWInterfacePreviewIn = Body(...),
 ) -> MaaFWInterfacePreviewOut:
     """读取 MaaFW 项目目录中的 interface.json，返回 MAS UI 可消费的摘要。"""
-    from app.task.MaaFW.interface_loader import (
-        MaaFWInterfaceLoadError,
-        load_interface_model_cached,
-    )
-    from app.task.MaaFW.interface_preview import build_maafw_interface_preview_data
+    from automas_maafw_interface.loader import MaaFWInterfaceLoadError
+    from automas_maafw_interface.service import MaaFWInterfaceService
 
     try:
-        root_path = Path(payload.path).resolve()
-        interface = load_interface_model_cached(root_path)
-        data = build_maafw_interface_preview_data(root_path, interface)
+        data = MaaFWInterfaceService().preview(Path(payload.path).resolve())
     except MaaFWInterfaceLoadError as e:
         return MaaFWInterfacePreviewOut(
             code=400,
@@ -745,12 +854,10 @@ async def update_maafw_project(
     payload: MaaFWProjectUpdateIn = Body(...),
 ) -> MaaFWProjectUpdateOut:
     """按脚本更新配置手动检查并应用 MaaFW 项目资源更新。"""
-    from app.task.MaaFW.interface_loader import (
-        MaaFWInterfaceLoadError,
-        load_interface_model_cached,
-    )
-    from app.task.MaaFW.project_updater import update_maafw_project_if_needed
-    from app.task.MaaFW.runner import prepare_maafw_agent_python_envs
+    from automas_maafw_agent_env.service import MaaFWAgentEnvService
+    from automas_maafw_interface.loader import MaaFWInterfaceLoadError
+    from automas_maafw_interface.service import MaaFWInterfaceService
+    from automas_maafw_project_update.service import MaaFWProjectUpdateService
 
     logs: list[str] = []
     current_version = ""
@@ -808,7 +915,7 @@ async def update_maafw_project(
             )
 
         project_path = Path(project_path_raw).resolve()
-        interface_model = load_interface_model_cached(project_path)
+        interface_model = MaaFWInterfaceService().load(project_path)
         current_version = interface_model.version or ""
 
         mirror_cdk = (
@@ -816,7 +923,7 @@ async def update_maafw_project(
             or Config.get("Update", "MirrorChyanCDK")
         )
         channel = script_config.get("Update", "Channel") or Config.get("Update", "Channel")
-        update_result = await update_maafw_project_if_needed(
+        update_result = await MaaFWProjectUpdateService().update_if_needed(
             project_path,
             interface_model,
             mirror_cdk=mirror_cdk,
@@ -826,13 +933,13 @@ async def update_maafw_project(
         )
 
         if update_result.updated:
-            refreshed_interface = load_interface_model_cached(
+            refreshed_interface = MaaFWInterfaceService().load(
                 project_path,
                 force_reload=True,
             )
             append_log("MaaFW 项目已更新，准备 Agent Python 环境")
             await asyncio.to_thread(
-                prepare_maafw_agent_python_envs,
+                MaaFWAgentEnvService().prepare_env,
                 project_path,
                 refreshed_interface,
                 send_log=append_log,
@@ -902,30 +1009,23 @@ async def prepare_maafw_agent_env(
 ) -> MaaFWAgentEnvPrepareOut:
     """Prepare MaaFW Runner and agent Python envs before starting tasks."""
 
-    from app.task.MaaFW.interface_loader import (
-        MaaFWInterfaceLoadError,
-        load_interface_model_cached,
-    )
-    from app.task.MaaFW.AutoProxy import prepare_maafw_runner_env
-    from app.task.MaaFW.runner import prepare_maafw_agent_python_envs
+    from automas_maafw_agent_env.service import MaaFWAgentEnvService
+    from automas_maafw_interface.loader import MaaFWInterfaceLoadError
+    from automas_maafw_interface.service import MaaFWInterfaceService
 
     logs: list[str] = []
     root_path: Path | None = None
     agent_plans: list[Any] = []
     try:
         root_path = Path(payload.path).resolve()
-        interface = load_interface_model_cached(root_path)
-        await asyncio.to_thread(
-            prepare_maafw_runner_env,
-            root_path,
-            send_log=logs.append,
-        )
-        agent_plans = await asyncio.to_thread(
-            prepare_maafw_agent_python_envs,
+        interface = MaaFWInterfaceService().load(root_path)
+        prepare_result = await asyncio.to_thread(
+            MaaFWAgentEnvService().prepare_env,
             root_path,
             interface,
             send_log=logs.append,
         )
+        agent_plans = prepare_result.plans
         agents = _build_maafw_agent_env_info_items(agent_plans)
         data = MaaFWAgentEnvPrepareData(
             path=str(root_path),
@@ -1023,26 +1123,22 @@ async def preview_maafw_windows(
     payload: MaaFWWindowPreviewIn = Body(...),
 ) -> MaaFWWindowPreviewOut:
     """按 interface.json 中的 Win32 窗口规则扫描本机桌面窗口。"""
-    from app.task.MaaFW.interface_loader import (
-        MaaFWInterfaceLoadError,
-        load_interface_model_cached,
-    )
-    from app.task.MaaFW.window_service import (
-        list_desktop_windows,
-        match_controller_windows,
-    )
+    from automas_maafw_controller_win32.service import MaaFWWin32ControllerService
+    from automas_maafw_interface.loader import MaaFWInterfaceLoadError
+    from automas_maafw_interface.service import MaaFWInterfaceService
 
     try:
         root_path = Path(payload.path).resolve()
-        interface = load_interface_model_cached(root_path)
+        interface = MaaFWInterfaceService().load(root_path)
         controllers = _select_maafw_window_controllers(
             interface,
             payload.controllerName,
         )
-        desktop_windows = list_desktop_windows()
+        win32_service = MaaFWWin32ControllerService()
+        win32_windows = win32_service.list_windows()
         windows: list[MaaFWDesktopWindowInfo] = []
         for controller in controllers:
-            for window in match_controller_windows(controller, desktop_windows):
+            for window in win32_service.match_controller_windows(controller, win32_windows):
                 windows.append(
                     MaaFWDesktopWindowInfo(
                         hWnd=window.hWnd,

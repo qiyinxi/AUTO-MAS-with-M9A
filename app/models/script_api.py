@@ -25,6 +25,7 @@ class ScriptTypeDescriptor(BaseModel):
         default=None, description="旧用户配置类名"
     )
     is_builtin: bool = Field(default=False, description="是否为内建脚本类型")
+    available: bool = Field(default=True, description="脚本类型是否已加载并可操作")
 
 
 class ScriptTypeGetOut(OutBase):

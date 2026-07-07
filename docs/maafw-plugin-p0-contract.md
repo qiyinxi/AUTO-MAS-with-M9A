@@ -16,7 +16,7 @@
 | `maafw.agent.v1` | `automas-maafw-project` | agent 运行形态分类、命令方案 | 严 |
 | `maafw.runner.v1` | `automas-maafw-runner` | runner session、worker 子进程、Tasker 直控、事件流 | 严 |
 | `maafw.controller.adb` | `automas-maafw-controller-adb` | ADB device spec、模拟器能力消费 | 中 |
-| `maafw.controller.desktop` | `automas-maafw-controller-desktop` | Win32 窗口扫描、句柄匹配 | 中 |
+| `maafw.controller.win32` | `automas-maafw-controller-win32` | Win32 窗口扫描、句柄匹配 | 中 |
 | `maafw.registry.v1` | `automas-script-maafw` | controller provider 和 project pack 注册中心 | 中 |
 
 版本策略：
@@ -742,7 +742,7 @@ stdout 每行一个 JSON，三种 type：
 ### 5.6 实现边界
 
 - runner 不扫描模拟器，不调用 MuMuManager。
-- runner 不关心 provider 来自 adb、desktop 还是未来 playcover，只接受 `DeviceSpec`。
+- runner 不关心 provider 来自 adb、win32 还是未来 playcover，只接受 `DeviceSpec`。
 - runner core 不 import `PluginContext`，插件适配层只负责把 service / route / callback 接进 core。
 - runner worker 是第二道宿主无关边界，任何宿主只要能拉子进程并读写 stdio 就可以驱动 MaaFW 会话。
 
@@ -774,7 +774,7 @@ class ControllerProvider:
 | provider | 包 | controller_types | 范围 |
 | --- | --- | --- | --- |
 | `adb` | `automas-maafw-controller-adb` | `["Adb"]` | 消费 emulator 服务，生成 ADB device spec，处理 ADB capability precheck |
-| `desktop` | `automas-maafw-controller-desktop` | `["Win32"]` | 窗口扫描、句柄匹配、Win32 device spec |
+| `win32` | `automas-maafw-controller-win32` | `["Win32"]` | 窗口扫描、句柄匹配、Win32 device spec |
 
 ### 6.3 运行规则
 

@@ -58,7 +58,7 @@
 | `runner.py` | 2255 | worker 侧 MaaFW 直控（上帝类） | `automas-maafw-runner` | 是(重度) | 否 | 高：2255 行，含 device/agent/venv/sink/tailer 全部职责 | P1+ 拆分 |
 | `runner_worker.py` | 77 | 子进程入口 + JSON 行协议 | `automas-maafw-runner` | 否(间接) | 否 | 低：77 行，协议清晰 | P1 迁移 |
 | `control_capabilities.py` | 126 | DLL 探测 + 模拟器能力 | runner + controller-adb | 是 | 否 | 中：runtime DLL 探测归 runner，模拟器能力归 controller-adb | P1 拆分 |
-| `window_service.py` | 155 | 窗口扫描、句柄匹配 | `automas-maafw-controller-desktop` | 是 | 否 | 低：155 行，职责单一 | P1 迁移 |
+| `window_service.py` | 155 | 窗口扫描、句柄匹配 | `automas-maafw-controller-win32` | 是 | 否 | 低：155 行，职责单一 | P1 迁移 |
 | `manager.py` | 271 | 脚本管理器（ScriptAdapterHooks 雏形） | `automas-script-maafw` | 否 | 是(Config/EmulatorManager) | 中：METHOD_BOOK 是扩展点，依赖 app.core | P1+ 改写 |
 | `AutoProxy.py` | 1679 | 单用户会话驱动 | `automas-script-maafw` | 是 | 是(Config) | 高：1679 行，含 venv/agent/game/period 全部逻辑 | P1+ 改写 |
 | `__init__.py` | 70 | 懒加载包导出 | 各包各自维护 | 否 | 否 | 低 | P1 重建 |
@@ -491,7 +491,7 @@ M9A 与 MaaFW 的内建 provider 定义（`app/core/script_types.py`）：
 
 ### 7.4 运行层（maa 重度依赖）
 
-`runner.py` 是上帝类（2255 行），含 device / agent / venv / sink / tailer 全部职责。是后续拆分的重点候选。`runner_worker.py`（77 行）是清晰的进程边界。`control_capabilities.py` 需拆分：runtime DLL 探测归 runner，模拟器能力归 controller-adb。`window_service.py`（155 行）职责单一，可直接迁入 controller-desktop。
+`runner.py` 是上帝类（2255 行），含 device / agent / venv / sink / tailer 全部职责。是后续拆分的重点候选。`runner_worker.py`（77 行）是清晰的进程边界。`control_capabilities.py` 需拆分：runtime DLL 探测归 runner，模拟器能力归 controller-adb。`window_service.py`（155 行）职责单一，可直接迁入 controller-win32。
 
 ### 7.5 编排层（与主框架集成）
 

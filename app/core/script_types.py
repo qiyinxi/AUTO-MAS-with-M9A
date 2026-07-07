@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import importlib.metadata as importlib_metadata
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -64,6 +65,26 @@ LEGACY_SCRIPT_TYPE_METADATA = (
         "icon": "MaaEnd",
         "editor_kind": "builtin:maaend",
         "is_builtin": True,
+    },
+    {
+        "type_key": "M9A",
+        "display_name": "M9A脚本",
+        "script_class_name": "M9AConfig",
+        "user_class_name": "M9AUserConfig",
+        "supported_modes": ("AutoProxy", "ScriptConfig"),
+        "icon": "M9A",
+        "editor_kind": "builtin:m9a",
+        "is_builtin": False,
+    },
+    {
+        "type_key": "MaaFW",
+        "display_name": "MaaFramework 项目",
+        "script_class_name": "MaaFWConfig",
+        "user_class_name": "MaaFWUserConfig",
+        "supported_modes": ("AutoProxy", "ScriptConfig"),
+        "icon": "MaaFW",
+        "editor_kind": "builtin:maafw",
+        "is_builtin": False,
     },
     {
         "type_key": "General",
@@ -137,6 +158,7 @@ class ScriptTypeRegistry:
         self._providers_by_user_class: dict[str, ScriptTypeProvider] = {}
         self._provider_owners: dict[str, str | None] = {}
         self._bootstrapped = False
+        self._bootstrap_lock = threading.Lock()
 
     def register(self, provider: ScriptTypeProvider, owner: str | None = None) -> None:
         """注册脚本类型提供者。"""
@@ -251,9 +273,13 @@ class ScriptTypeRegistry:
         if self._bootstrapped:
             return
 
-        self._register_builtin_providers()
-        self._load_entry_point_providers(plugins_dir)
-        self._bootstrapped = True
+        with self._bootstrap_lock:
+            if self._bootstrapped:
+                return
+
+            self._register_builtin_providers()
+            self._load_entry_point_providers(plugins_dir)
+            self._bootstrapped = True
 
     def _register_builtin_providers(self) -> None:
         """注册内建脚本类型。"""
@@ -261,12 +287,8 @@ class ScriptTypeRegistry:
         from app.models.config import (
             HSRConfig,
             HSRUserConfig,
-            M9AConfig,
-            M9AUserConfig,
             MaaEndConfig,
             MaaEndUserConfig,
-            MaaFWConfig,
-            MaaFWUserConfig,
             OkwwConfig,
             SrcConfig,
             SrcUserConfig,
@@ -307,28 +329,6 @@ class ScriptTypeRegistry:
                 manager_factory=_lazy_manager("app.task.MaaEnd.manager", "MaaEndManager"),
                 icon="MaaEnd",
                 editor_kind="builtin:maaend",
-                is_builtin=True,
-            ),
-            ScriptTypeProvider(
-                type_key="M9A",
-                display_name="M9A脚本",
-                script_config_class=M9AConfig,
-                user_config_class=M9AUserConfig,
-                supported_modes=("AutoProxy", "ScriptConfig"),
-                manager_factory=_lazy_manager("app.task.M9A.manager", "M9AManager"),
-                icon="M9A",
-                editor_kind="builtin:m9a",
-                is_builtin=True,
-            ),
-            ScriptTypeProvider(
-                type_key="MaaFW",
-                display_name="MaaFramework 项目",
-                script_config_class=MaaFWConfig,
-                user_config_class=MaaFWUserConfig,
-                supported_modes=("AutoProxy", "ScriptConfig"),
-                manager_factory=_lazy_manager("app.task.MaaFW.manager", "MaaFWManager"),
-                icon="MaaFW",
-                editor_kind="builtin:maafw",
                 is_builtin=True,
             ),
             ScriptTypeProvider(
@@ -452,6 +452,7 @@ def build_descriptor(provider: ScriptTypeProvider) -> dict[str, Any]:
         "legacy_config_class_name": provider.legacy_config_class_name,
         "legacy_user_config_class_name": provider.legacy_user_config_class_name,
         "is_builtin": provider.is_builtin,
+        "available": provider.metadata.get("available", True) is not False,
     }
 
 
@@ -749,9 +750,13 @@ def _resolve_legacy_config_classes(
     from app.models.config import (
         GeneralConfig,
         GeneralUserConfig,
+        M9AConfig,
+        M9AUserConfig,
         MaaConfig,
         MaaEndConfig,
         MaaEndUserConfig,
+        MaaFWConfig,
+        MaaFWUserConfig,
         MaaUserConfig,
         SrcConfig,
         SrcUserConfig,
@@ -759,13 +764,17 @@ def _resolve_legacy_config_classes(
 
     script_classes: dict[str, type[ConfigBase]] = {
         "GeneralConfig": GeneralConfig,
+        "M9AConfig": M9AConfig,
         "MaaConfig": MaaConfig,
         "MaaEndConfig": MaaEndConfig,
+        "MaaFWConfig": MaaFWConfig,
         "SrcConfig": SrcConfig,
     }
     user_classes: dict[str, type[ConfigBase]] = {
         "GeneralUserConfig": GeneralUserConfig,
+        "M9AUserConfig": M9AUserConfig,
         "MaaEndUserConfig": MaaEndUserConfig,
+        "MaaFWUserConfig": MaaFWUserConfig,
         "MaaUserConfig": MaaUserConfig,
         "SrcUserConfig": SrcUserConfig,
     }

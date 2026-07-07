@@ -2200,6 +2200,10 @@ class MaaFWUserConfig(ConfigBase):
     @staticmethod
     def _normalize_maafw_last_status(status: str) -> str:
         status_map = {
+            "未知": "未知",
+            "成功": "成功",
+            "失败": "失败",
+            "运行中": "运行中",
             "鏈煡": "未知",
             "鎴愬姛": "成功",
             "澶辫触": "失败",

@@ -7,6 +7,8 @@
 
 本文档定义 MaaFW 插件化过程中 old（现有 app/task/MaaFW/** + app/task/M9A/** 实现）与 new（automas-maafw-* 插件包实现）的兼容验收门。每个对照对象都有明确的验收标准和测试方法。只有全部对照通过并经人工确认后，才允许把旧 MaaFW/M9A 路径切到新服务。
 
+M9A 的目标状态是作为 MaaFW project pack 迁入插件体系，并直接复用 MaaFW runner 运行；本验收门用于证明旧 `M9A.exe` 进程驱动行为能被新 runner 等价承载，而不是重新决定 M9A 是否插件化。
+
 ## 1. 验收门总览
 
 | 对照对象 | 验收要求 | 状态 |
@@ -14,8 +16,9 @@
 | interface 解析结果 | import 合并后的 task、option、preset、controller、resource 列表不丢字段 | P1 待执行 |
 | TaskSnapshot | 旧队列能 normalize 成新快照，新快照能还原旧运行所需信息 | P1 待执行 |
 | option 选择结果 | 旧 task option 照常可读；新增 scope、value、args、raw 只增不删 | P1 待执行 |
-| runner payload | 旧 runner 所需 task name / option 参数仍能生成；结构化 payload 不能丢 agent args | P3 待执行 |
+| runner payload | 旧 MaaFW runner 所需 task name / option 参数仍能生成；M9A pack 迁入后能生成 MaaFW runner 可消费的等价 payload，且默认项目/controller/resource/preset 均通过通用约束 | P3/P5 待执行 |
 | 前端任务构建 | 通用 MaaFW 和 M9A 共用 MaaFWTaskBuilder；M9A 不能复制一套任务构建器 | P4/P5 待执行 |
+| project update | MaaFW 现有资源升级能力迁入 `maafw.project.v1`；M9A 旧更新能力由通用更新服务替换；MaaEnd 消费范围另验收 | P2/P5 待执行 |
 | 旧配置迁移 | 只创建新配置，不覆盖旧配置；插件缺失时旧配置仍可只读查看 | P5/P6 待执行 |
 
 ## 2. 对照对象 1：interface 解析结果
@@ -153,7 +156,7 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 
 ### 5.1 验收要求
 
-旧 runner 所需 task name / option 参数仍能生成；结构化 payload 不能丢 agent args。
+旧 MaaFW runner 所需 task name / option 参数仍能生成；结构化 payload 不能丢 agent args。M9A 迁入 MaaFW runner 时，还必须证明 M9A 默认项目来源、默认 controller、默认 resource（服务器）、默认 preset、默认队列、周期规则、任务 option 和日志/通知语义能映射为 runner 可消费的 payload 或 pack sidecar 数据。
 
 ### 5.2 对照表
 
@@ -164,6 +167,8 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 | controller name | MaaFWRunPlan.controllerName | RunPlan.controller_name | 一致 |
 | controller type | MaaFWRunPlan.controllerType | RunPlan.controller_type | 一致 |
 | resource name | MaaFWRunPlan.resourceName | RunPlan.resource_name | 一致 |
+| M9A 默认 controller/resource/preset | 旧 M9A 配置和默认资源 | pack 预填值 + 通用 MaaFW interface 校验 | 不绕过通用约束 |
+| M9A 默认项目来源 | 旧 M9A 路径配置 | pack 推荐来源 + maafw.project.v1 管理 | 按普通 MaaFW 脚本拉取 |
 | resource paths | MaaFWResourceBundlePlan.paths | ResourceBundlePlan.paths | 一致 |
 | agent plans | MaaFWAgentCommandPlan[] | AgentPlan[] | 字段一致 |
 | pi_env | MaaFWRunPlan.piEnv | RunPlan.pi_env | 一致 |
@@ -206,8 +211,8 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 | MaaFW 任务构建器 | MaaFWUserEdit.vue（1907 行，自包含） | MaaFWTaskBuilder + MaaFWTaskQueueEditor + MaaFWTaskOptionEditor | 功能等价 |
 | MaaFW 选项编辑器 | MaaFWTaskOptionEditor.vue（540 行，递归） | MaaFWTaskOptionEditor（共享组件） | 功能等价 |
 | MaaFW 说明查看 | MaaFWDescriptionView.vue（198 行） | MaaFWDescriptionView（共享组件） | 功能等价 |
-| M9A 任务构建器 | TaskQueueSection.vue（826 行）+ TaskOptionRenderer.vue（350 行） | M9A 工作台页复用 MaaFWTaskBuilder | M9A 不复制构建器 |
-| M9A 选项编辑器 | TaskOptionRenderer.vue（独立实现） | 复用 MaaFWTaskOptionEditor | 功能等价 |
+| M9A 任务构建器 | TaskQueueSection.vue（826 行）+ TaskOptionRenderer.vue（350 行） | M9A 工作台页复用 MaaFWTaskBuilder，pack 只预填默认项目/controller/resource/preset 并注入模板/文案/周期规则 | M9A 不复制构建器 |
+| M9A 选项编辑器 | TaskOptionRenderer.vue（独立实现） | 复用 MaaFWTaskOptionEditor，并通过兼容层承载 M9A 数据结构差异 | 功能等价 |
 | M9A 说明查看 | 无 | 复用 MaaFWDescriptionView | 新增功能 |
 | 任务队列拖拽 | draggable | draggable | 一致 |
 | controller/resource 联动 | MaaFWUserEdit 内部实现 | useMaaFWTaskBuilder composable | 功能等价 |
@@ -217,13 +222,14 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 ### 6.3 测试方法
 
 1. 在通用 MaaFW 脚本中用新共享组件构建任务队列。
-2. 在 M9A pack 中用新共享组件构建任务队列（注入 M9A 模板和周月标签）。
+2. 在 M9A pack 中用新共享组件构建任务队列（预填默认项目来源、controller、resource、preset，注入 M9A 模板和周月标签）。
 3. 对比：
    - 两者使用同一套 MaaFWTaskBuilder
    - M9A 没有复制任务构建器
    - TaskSnapshot 输出格式一致
    - controller/resource 联动一致
    - preset 应用一致
+   - M9A 默认值只作为预填，不绕过通用 MaaFW 校验
 
 ### 6.4 落地时机
 
@@ -231,13 +237,43 @@ P4：共享前端组件层随 `automas-script-maafw` 落地。
 P5：M9A pack 复用共享组件。
 P6：内置页降级为只读兼容入口。
 
-## 7. 对照对象 6：旧配置迁移
+## 7. 对照对象 6：project update
 
 ### 7.1 验收要求
 
-只创建新配置，不覆盖旧配置；插件缺失时旧配置仍可只读查看。
+MaaFW 现有资源升级能力迁入 `maafw.project.v1` 后，更新检查、下载、应用、失败回滚和路径安全行为保持等价。M9A pack 迁入后，旧 M9A 残缺更新能力不再参与运行，项目资源升级统一走 `maafw.project.v1`。MaaEnd 是否消费 project update / runner 需要 MaaEnd + MXU 样例单独验收，不作为 P1 默认承诺。
 
 ### 7.2 对照表
+
+| 维度 | 旧实现 | 新实现 | 兼容要求 |
+| --- | --- | --- | --- |
+| MaaFW 更新检查 | `app/task/MaaFW/project_updater.py` | `maafw.project.v1.check_update` | 更新源、版本、latest 判定一致 |
+| MaaFW 更新应用 | `project_updater.py` 全量/增量包应用 | `maafw.project.v1.apply_update` | 路径安全、临时目录、失败不破坏项目目录 |
+| 更新源 | `Update.Source` / `Channel` / `MirrorChyanCDK` | project service 入参或插件配置 | 字段语义不漂移 |
+| M9A 旧更新 | `M9AConfig.Run.IfAutoUpdateAfterQueue` 等旧字段 | pack-m9a 调用 `maafw.project.v1` | 旧字段只读迁移，不作为运行期更新路径 |
+| MaaEnd 可能消费 | MaaEnd / MXU 现有更新和运行方式 | 待验收后选择 project / runner 服务 | 不把 MXU 业务语义写进 project 包 |
+
+### 7.3 测试方法
+
+1. 准备同一 MaaFW 项目目录，分别用旧 `project_updater.py` 和新 `maafw.project.v1` 做 dry-run/update 对照。
+2. 对比 `UpdateCandidate` / `UpdateResult`：版本、来源、日志、updated、message、raw。
+3. 构造失败场景，确认项目目录未被破坏，临时目录被清理或可恢复。
+4. 对 M9A pack，确认旧更新字段迁移后只作为输入，运行期调用的是 `maafw.project.v1`。
+5. 对 MaaEnd，只记录样例验收结论：是否需要 project update、是否需要 runner、是否仍只消费 interface。
+
+### 7.4 落地时机
+
+P2：`maafw.project.v1` 抽出并完成 MaaFW 更新对照。
+P5：M9A pack 接入通用 project update。
+MaaEnd：后续由 MaaEnd + MXU 样例验证，不绑定 P1/P2。
+
+## 8. 对照对象 7：旧配置迁移
+
+### 8.1 验收要求
+
+只创建新配置，不覆盖旧配置；插件缺失时旧配置仍可只读查看。
+
+### 8.2 对照表
 
 | 维度 | 旧实现 | 新实现 | 兼容要求 |
 | --- | --- | --- | --- |
@@ -250,15 +286,18 @@ P6：内置页降级为只读兼容入口。
 | MonthlyOnceTasks | MaaFWConfig_Run | pack 的 period_rules | 迁移只创建，不覆盖 |
 | PeriodTaskRecords | MaaFWUserConfig_Data | 用户级 Data | 迁移只创建，不覆盖 |
 | M9A LastPsychubeDate | M9AUserConfig_Data | pack 的 period_rules storage_key | 迁移只创建，不覆盖 |
+| M9A Resource（服务器） | M9AUserConfig_Info.Resource | PluginUserConfig resource | 迁移只创建，不覆盖；必须匹配通用 resource |
+| M9A 默认 preset / 队列 | M9A 默认模板和用户 Task.Queue | PluginUserConfig TaskSnapshot | 迁移只创建，不覆盖 |
+| M9A 旧更新字段 | M9AConfig_Run.IfAutoUpdateAfterQueue 等 | pack/project update 配置 | 迁移只创建，不覆盖；运行期不再使用旧字段 |
 
-### 7.3 迁移规则
+### 8.3 迁移规则
 
 1. 迁移工具只创建新配置，不覆盖旧值。
 2. 旧值保留只读，迁移后仍可查看。
 3. 插件缺失时旧配置仍可只读查看（通过 legacy fallback provider）。
 4. M9A 和 MaaFW 不在 LEGACY_SCRIPT_TYPE_METADATA 中——需新增或通过 pack 的迁移入口处理。
 
-### 7.4 测试方法
+### 8.4 测试方法
 
 1. 准备有旧 MaaFWConfig/M9AConfig 的用户数据。
 2. 执行迁移工具。
@@ -268,23 +307,24 @@ P6：内置页降级为只读兼容入口。
    - 禁用插件后旧配置仍可只读查看
    - 启用插件后新配置走插件路径
 
-### 7.5 落地时机
+### 8.5 落地时机
 
 P5：M9A pack 迁移入口。
 P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 
-## 8. 验收流程
+## 9. 验收流程
 
-### 8.1 阶段门
+### 9.1 阶段门
 
 | 阶段 | 验收门 | 通过条件 |
 | --- | --- | --- |
 | P1 完成时 | interface 解析结果 + TaskSnapshot + option 选择结果对照 | 全部对照通过 + 人工确认 |
+| P2 完成时 | project update 对照 | MaaFW 旧更新等价 + M9A 替换映射明确 |
 | P3 完成时 | runner payload 对照 | 全部对照通过 + 人工确认 |
 | P4/P5 完成时 | 前端任务构建对照 | 全部对照通过 + 人工确认 |
 | P5/P6 完成时 | 旧配置迁移对照 | 全部对照通过 + 人工确认 |
 
-### 8.2 人工确认要求
+### 9.2 人工确认要求
 
 每个验收门通过后，需人工确认以下事项：
 1. 对照报告完整且可复现。
@@ -293,7 +333,7 @@ P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 4. 旧路径仍可正常运行（P1 facade 默认不启用，且不新增旧配置项）。
 5. 新路径可独立运行（不依赖旧路径）。
 
-### 8.3 切换条件
+### 9.3 切换条件
 
 只有以下条件全部满足，才允许把旧 MaaFW/M9A 路径切到新服务：
 1. 当前阶段验收门全部通过。
@@ -302,7 +342,7 @@ P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 4. 切换可通过新增的独立机制控制（默认不切换），**不通过修改 `MaaFWConfig` / `M9AConfig` 旧配置项实现**。
 5. 切换后有回退机制。
 
-## 9. 已知风险与处理
+## 10. 已知风险与处理
 
 | 风险 | 处理 |
 | --- | --- |
@@ -312,14 +352,17 @@ P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 | 迁移误覆盖 | 迁移工具只创建，不覆盖；旧值保留只读 |
 | interface_preview 耦合 | 解耦 run_plan/task_config 的私有函数依赖，迁入 interface 包内 |
 | M9A task_loader 独立 import 合并 | P5 评估是否统一到 interface 包，还是保持 M9A 独立实现 |
+| MaaEnd 消费范围不明 | P1 只承诺 interface；project update / runner 消费必须另做 MaaEnd + MXU 样例验收 |
 
-## 10. 待人工确认事项
+## 11. 待人工确认事项
 
 1. **本地样例来源**：验收门测试需要至少 2 个本地样例（M9A + MaaEnd）。当前硬性限制不允许访问外部目录，需人工提供样例。
 
 2. **M9A task_loader 是否统一**：M9A 有独立的 import 合并逻辑（task_loader.py），与 MaaFW interface_loader 存在逻辑重叠但数据结构不同。需确认：P5 是否统一到 interface 包，还是保持 M9A 独立实现。本文档建议保持独立，因为 M9A 有回退到 resource/tasks/*.json 的双路径加载。
 
 3. **MaaFW/M9A legacy fallback**：M9A 和 MaaFW 不在 LEGACY_SCRIPT_TYPE_METADATA 中。需确认：是否新增 legacy 映射，还是通过 pack 的迁移入口处理。本文档建议通过 pack 迁移入口处理，因为 legacy 映射是给完全移除的脚本类型用的。
+
+4. **MaaEnd 是否消费 project update / runner**：MaaEnd P1 只确认 `maafw.interface.v1`。是否还要消费 `maafw.project.v1` 更新能力和 `maafw.runner.v1` 运行能力，需要 MaaEnd + MXU 样例验证后再决定。
 
 4. **facade 启用方式**：P1 只允许只读 facade / compat proxy 和 old/new 对照测试，**不新增旧配置项（不引入 `MaaFWConfig.UsePluginInterface` 之类的字段）**，不切换默认运行路径。facade 默认不启用，启用方式（环境变量？feature flag？测试入口？）留待 P1 实现前由人工确认，且启用方式不应导致旧 `MaaFWConfig` / `M9AConfig` 结构变更。
 
