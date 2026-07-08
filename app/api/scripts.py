@@ -838,8 +838,8 @@ async def preview_maafw_interface(
         )
 
     return MaaFWInterfacePreviewOut(
-        message=f"已读取 MaaFW 项目 {data.project.name}，共 {len(data.tasks)} 个任务",
-        data=data,
+        message=f"已读取 MaaFW 项目 {data.project['name']}，共 {len(data.tasks)} 个任务",
+        data=data.model_dump(mode="json"),
     )
 
 
