@@ -156,7 +156,7 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 
 ### 5.1 验收要求
 
-旧 MaaFW runner 所需 task name / option 参数仍能生成；结构化 payload 不能丢 agent args。M9A 迁入 MaaFW runner 时，还必须证明 M9A 默认项目来源、默认 controller、默认 resource（服务器）、默认 preset、默认队列、周期规则、任务 option 和日志/通知语义能映射为 runner 可消费的 payload 或 pack sidecar 数据。
+旧 MaaFW runner 所需 task name / option 参数仍能生成；结构化 payload 不能丢 agent args。M9A 迁入 MaaFW runner 时，还必须证明 M9A 默认项目来源、默认 controller、默认 resource（服务器）、默认 preset、默认队列、新脚本一次性任务初始值、任务 option 和日志/通知语义能映射为 runner 可消费的 payload 或 pack sidecar 数据。
 
 ### 5.2 对照表
 
@@ -211,7 +211,7 @@ import 合并后的 task、option、preset、controller、resource 列表不丢�
 | MaaFW 任务构建器 | MaaFWUserEdit.vue（1907 行，自包含） | MaaFWTaskBuilder + MaaFWTaskQueueEditor + MaaFWTaskOptionEditor | 功能等价 |
 | MaaFW 选项编辑器 | MaaFWTaskOptionEditor.vue（540 行，递归） | MaaFWTaskOptionEditor（共享组件） | 功能等价 |
 | MaaFW 说明查看 | MaaFWDescriptionView.vue（198 行） | MaaFWDescriptionView（共享组件） | 功能等价 |
-| M9A 任务构建器 | TaskQueueSection.vue（826 行）+ TaskOptionRenderer.vue（350 行） | M9A 工作台页复用 MaaFWTaskBuilder，pack 只预填默认项目/controller/resource/preset 并注入模板/文案/周期规则 | M9A 不复制构建器 |
+| M9A 任务构建器 | TaskQueueSection.vue（826 行）+ TaskOptionRenderer.vue（350 行） | M9A 工作台页复用 MaaFWTaskBuilder，pack 只预填默认项目/controller/resource/preset 并提供模板/文案/一次性任务初始值 | M9A 不复制构建器 |
 | M9A 选项编辑器 | TaskOptionRenderer.vue（独立实现） | 复用 MaaFWTaskOptionEditor，并通过兼容层承载 M9A 数据结构差异 | 功能等价 |
 | M9A 说明查看 | 无 | 复用 MaaFWDescriptionView | 新增功能 |
 | 任务队列拖拽 | draggable | draggable | 一致 |
@@ -282,10 +282,10 @@ MaaEnd：后续由 MaaEnd + MXU 样例验证，不绑定 P1/P2。
 | M9AConfig | app/models/config.py M9AConfig（3 分组） | PluginScriptConfig（pack-m9a） | 旧配置只读兼容 |
 | M9AUserConfig | app/models/config.py M9AUserConfig（4 分组） | PluginUserConfig（pack-m9a） | 旧配置只读兼容 |
 | TaskSnapshot | JSON 字符串存 in Task.TaskSnapshot | 同 | 格式兼容 |
-| WeeklyOnceTasks | MaaFWConfig_Run | pack 的 period_rules | 迁移只创建，不覆盖 |
-| MonthlyOnceTasks | MaaFWConfig_Run | pack 的 period_rules | 迁移只创建，不覆盖 |
+| WeeklyOnceTasks | MaaFWConfig_Run | pack schema 新脚本初始值 | 迁移只创建，不覆盖 |
+| MonthlyOnceTasks | MaaFWConfig_Run | pack schema 新脚本初始值 | 迁移只创建，不覆盖 |
 | PeriodTaskRecords | MaaFWUserConfig_Data | 用户级 Data | 迁移只创建，不覆盖 |
-| M9A LastPsychubeDate | M9AUserConfig_Data | pack 的 period_rules storage_key | 迁移只创建，不覆盖 |
+| M9A LastPsychubeDate | M9AUserConfig_Data | 用户级周期记录兼容字段 | 迁移只创建，不覆盖 |
 | M9A Resource（服务器） | M9AUserConfig_Info.Resource | PluginUserConfig resource | 迁移只创建，不覆盖；必须匹配通用 resource |
 | M9A 默认 preset / 队列 | M9A 默认模板和用户 Task.Queue | PluginUserConfig TaskSnapshot | 迁移只创建，不覆盖 |
 | M9A 旧更新字段 | M9AConfig_Run.IfAutoUpdateAfterQueue 等 | pack/project update 配置 | 迁移只创建，不覆盖；运行期不再使用旧字段 |

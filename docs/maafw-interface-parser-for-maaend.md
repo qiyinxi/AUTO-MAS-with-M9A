@@ -73,7 +73,7 @@ MaaEnd update flow
 | --- | --- | --- |
 | MaaFW runner | `automas-maafw-runner` | 需要 MaaEnd + MXU 真实运行样例确认任务是否能等价转换成 MaaFW run plan |
 | agent 环境准备 | `automas-maafw-agent-env` | 只有 MaaEnd 确认需要 ProjectInterface agent 声明时再接 |
-| M9A pack | `automas-script-maafw-pack-m9a` | 只包含 M9A 专项周/月规则、通知翻译和迁移入口，MaaEnd 不应消费 |
+| M9A pack | `automas-script-maafw-pack-m9a` | 只包含 M9A 专项一次性任务初始值、通知翻译和迁移入口，MaaEnd 不应消费 |
 | controller provider | `automas-maafw-controller-*` | 只有 MaaEnd 决定复用 MaaFW controller 直控时再接 |
 
 ## 6. Review 检查点
@@ -81,5 +81,5 @@ MaaEnd update flow
 - MaaEnd 不 import `automas-maafw-runner`，除非后续单独验证运行样例。
 - MaaEnd 可单独 import `automas-maafw-project-update`，且不会因此隐式安装 runner。
 - MaaEnd 不复制 `interface_loader.py`，只消费 `maafw.interface.v1`。
-- MaaEnd 不拿 M9A 的 `Psychube` / `SleepDream` 周月规则。
+- MaaEnd 不拿 M9A 的 `Psychube` / `SleepDream` 一次性任务初始值。
 - GitHub Release 和 MirrorChyan 更新源需要用 MaaEnd/MXU 实际发行包样例验收。

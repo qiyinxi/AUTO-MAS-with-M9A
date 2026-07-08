@@ -778,6 +778,28 @@
         </div>
       </a-form>
     </a-card>
+
+    <div v-if="scriptEditHint" class="script-edit-hint">
+      <img
+        :src="getScriptIcon(formData.type)"
+        :alt="formData.type"
+        class="script-edit-hint-logo"
+        @error="event => handleScriptIconError(event, formData.type)"
+      />
+      <div class="script-edit-hint-message">
+        <span>{{ scriptEditHint.text }}</span>
+        <a
+          v-if="scriptEditHint.url"
+          :href="scriptEditHint.url"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="script-edit-hint-link"
+        >
+          {{ scriptEditHint.link_text || scriptEditHint.url }}
+        </a>
+        <span>{{ scriptEditHint.suffix }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -796,7 +818,7 @@ import {
 } from '@ant-design/icons-vue'
 import { Service, type ComboBoxItem } from '@/api'
 import { useMaaFWApi } from '@/composables/useMaaFWApi'
-import { useScriptApi } from '@/composables/useScriptApi'
+import { useScriptRegistryApi } from '@/composables/useScriptRegistryApi'
 import { useSettingsApi } from '@/composables/useSettingsApi'
 import { getScriptIcon, handleScriptIconError } from '@/utils/scriptRegistry'
 import type {
@@ -804,6 +826,7 @@ import type {
   MaaFWDesktopWindowInfo,
   MaaFWInterfacePreviewData,
   MaaFWScriptConfig,
+  Script,
   ScriptType,
 } from '@/types/script'
 
@@ -811,7 +834,7 @@ const logger = window.electronAPI.getLogger('MaaFW脚本编辑')
 
 const route = useRoute()
 const router = useRouter()
-const { getScript, updateScript } = useScriptApi()
+const registryApi = useScriptRegistryApi()
 const { getSettings } = useSettingsApi()
 const { loading: interfaceLoading, previewInterface } = useMaaFWApi()
 const { loading: windowLoading, previewWindows } = useMaaFWApi()
@@ -827,6 +850,7 @@ const previewData = ref<MaaFWInterfacePreviewData | null>(null)
 const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const projectUpdateLogs = ref<string[]>([])
 const desktopWindows = ref<MaaFWDesktopWindowInfo[]>([])
+const scriptEditHint = ref<Script['editHint']>(null)
 const dailyOnceTasks = ref<string[]>([])
 const weeklyOnceTasks = ref<string[]>([])
 const monthlyOnceTasks = ref<string[]>([])
@@ -1285,6 +1309,17 @@ const applyScriptConfig = (config: Partial<MaaFWScriptConfig> | null | undefined
   maafwConfig.Run.MonthlyOnceTasks = stringifyTaskNameList(monthlyOnceTasks.value)
 }
 
+const updateScriptConfig = async (config: Record<string, unknown>) => {
+  try {
+    await registryApi.updateScript(scriptId, config)
+    return true
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    message.error(errorMsg)
+    return false
+  }
+}
+
 const handleChange = async (
   category: keyof MaaFWScriptConfig,
   key: string,
@@ -1295,7 +1330,7 @@ const handleChange = async (
 
   isSaving.value = true
   try {
-    const success = await updateScript(scriptId, { [category]: { [key]: value } })
+    const success = await updateScriptConfig({ [category]: { [key]: value } })
     if (success) {
       logger.info(`配置已保存: ${category}.${key}`)
     }
@@ -1406,7 +1441,7 @@ const handleManualProjectUpdate = async () => {
   projectUpdateLogs.value = []
   isSaving.value = true
   try {
-    const saved = await updateScript(scriptId, {
+    const saved = await updateScriptConfig({
       Update: { ...maafwConfig.Update },
     })
     if (!saved) return
@@ -1478,14 +1513,15 @@ const loadScript = async () => {
       applyScriptConfig(routeState.scriptData.config as MaaFWScriptConfig)
     }
 
-    const scriptDetail = await getScript(scriptId)
+    const scriptDetail = (await registryApi.getScripts(scriptId))[0]
     if (!scriptDetail) {
       message.error('脚本不存在或加载失败')
       router.push('/scripts')
       return
     }
 
-    formData.type = scriptDetail.type
+    formData.type = scriptDetail.type as ScriptType
+    scriptEditHint.value = scriptDetail.edit_hint ?? null
     applyScriptConfig(scriptDetail.config as MaaFWScriptConfig)
 
     if (maafwConfig.Emulator.Id && maafwConfig.Emulator.Id !== '-') {
@@ -1900,6 +1936,37 @@ onMounted(async () => {
   color: var(--ant-color-text-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.script-edit-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-container);
+  color: var(--ant-color-text-secondary);
+}
+
+.script-edit-hint-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.script-edit-hint-message {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.script-edit-hint-link {
+  margin: 0 4px;
+  color: var(--ant-color-primary);
+  font-weight: 600;
 }
 
 .controller-resource-row,

@@ -33,7 +33,15 @@ export interface ScriptRecord {
   icon?: string | null
   icon_url?: string | null
   docs_url?: string | null
+  edit_hint?: ScriptEditHint | null
   user_count: number
+}
+
+export interface ScriptEditHint {
+  text?: string
+  link_text?: string
+  url?: string
+  suffix?: string
 }
 
 export interface ScriptRecordGetOut {

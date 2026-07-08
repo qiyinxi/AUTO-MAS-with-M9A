@@ -11,7 +11,7 @@
 MaaFW 插件化完成后，系统应满足四个结果：
 
 1. MaaFW 的通用能力从主程序内置代码迁出，形成稳定的基础插件服务。
-2. M9A 不再复制 MaaFW 运行逻辑，而是作为 MaaFW project pack 声明自己的默认值、任务语义、周月规则、文案和页面。
+2. M9A 不再复制 MaaFW 运行逻辑，而是作为 MaaFW project pack 声明自己的默认值、任务语义、一次性任务初始值、文案和页面。
 3. 前端仍保持专用队列、option、说明等复杂体验，不退化成纯 schema 表单。
 4. 插件包、前端资产、离线 seed、maa runtime 和 maafw 风味发行版都有明确打包路径。
 
@@ -37,7 +37,7 @@ AUTO-MAS 插件宿主
 4. ADB 路径、模拟器实例和模拟器扩展能力来自 emulator 插件；MaaFW runner 不复刻 MuMuManager 逻辑。
 5. 控制器按插件族拆分。第一批实现 adb 和 win32，gamepad / playcover 只预留。
 6. M9A 的目标形态是 MaaFW project pack，同时 pack 加载后注册用户可见的独立 `ScriptType=M9A`。这个脚本类型只是 M9A 专项入口和 schema/页面外壳，运行时必须复用 MaaFW hooks、runner、controller provider 和 project pack metadata，不能复制 runner 或另起 M9A 专属运行链路。
-7. 周/月任务机制通用，规则由 project pack 声明。通用 MaaFW 层不内置任何 M9A 默认周月任务。
+7. 周/月/日一次性任务默认值由 project pack 的脚本 schema 声明，只在新建脚本时初始化；通用 MaaFW 层不在运行时内置或重写任何 M9A 默认任务。
 8. 通知通道走 `automas-notification`，MaaFW / M9A 只产出结构化结果和专项文案。
 9. 后端 schema 变更后，前端 API 代码只能通过 OpenAPI 生成器更新，不手改 `frontend/src/api/**`。
 10. 旧 `MaaFWConfig` / `M9AConfig` 只读兼容和迁移，迁移工具只创建新配置，不覆盖旧值。
@@ -88,7 +88,7 @@ P0 / P1 明确禁止：
 | `automas-maafw-controller-adb` | 控制器包 | `maafw.controller.adb` | registry；wants emulator | ADB device spec、模拟器能力消费、ADB precheck |
 | `automas-maafw-controller-win32` | 控制器包 | `maafw.controller.win32` | registry | Win32 窗口扫描、句柄匹配、Win32 device spec |
 | `automas-script-maafw` | 编排插件 | `maafw.registry.v1`、`ScriptType=MaaFW` | interface、project、runner | MaaFW 脚本生命周期、provider registry、共享 UI 组件层 |
-| `automas-script-maafw-pack-m9a` | project pack + 脚本类型入口 | M9A pack definition、`ScriptType=M9A` | script-maafw、notification | M9A 默认队列、周月规则、专项页面、文案、独立入口和迁移入口 |
+| `automas-script-maafw-pack-m9a` | project pack + 脚本类型入口 | M9A pack definition、`ScriptType=M9A` | script-maafw、notification | M9A 默认队列、一次性任务初始值、专项页面、文案、独立入口和迁移入口 |
 
 安装组合：
 
@@ -330,7 +330,7 @@ on_crash
 - `maafw.registry.v1`，用于注册 controller provider 和 project pack。
 - `decorate_script_schema`，按 controller provider 注入脚本级配置字段。
 - `decorate_user_schema`，注入用户级 resource、任务队列、通知、运行选项。
-- 通用周期机制：读取 pack 的 `period_rules`，运行时维护 `Data.PeriodTaskRecords`。
+- 一次性任务默认值：由 pack 的脚本 schema 初始化到新脚本配置；运行时只消费用户当前配置，不再重新合并 pack 默认值。
 - 旧配置只读兼容入口和迁移入口。
 
 ### 6.2 数据归属
@@ -350,7 +350,7 @@ on_crash
 
 ### 6.3 Project Pack SDK
 
-M9A 这种专项不复制 runner，而是声明一个 project pack。为了保留用户体验，`pack-m9a` 加载后同时注册正式的 `ScriptType=M9A`；该类型的 hooks_factory 复用 `automas-script-maafw` 的 MaaFW hooks，metadata 中声明 `project_pack="m9a"`，由通用 MaaFW 层读取 pack definition 注入默认值和周期规则。
+M9A 这种专项不复制 runner，而是声明一个 project pack。为了保留用户体验，`pack-m9a` 加载后同时注册正式的 `ScriptType=M9A`；该类型的 hooks_factory 复用 `automas-script-maafw` 的 MaaFW hooks，metadata 中声明 `project_pack="m9a"`。M9A 的脚本名称、项目路径文案和周/月/日一次性任务默认值由 pack 提供的 schema 在新建脚本时初始化，后续用户修改由用户配置本身持有，运行前不再由通用 MaaFW 层回写默认值。
 
 ```python
 class MaaFWProjectPackDefinition(BaseModel):
@@ -384,7 +384,7 @@ class MaaFWProjectPackPlugin:
 - 注册用户可见的独立 `ScriptType=M9A`，并把该类型绑定到 MaaFW 通用 hooks/runner。
 - 提供默认项目来源、默认 controller、默认 resource、默认 preset。
 - 提供默认任务队列、日常/周常/月常模板。
-- 声明 M9A 周/月周期规则，例如 `Psychube` 每周一次、`SleepDream` 每月一次。
+- 声明 M9A 一次性任务初始值，例如新脚本默认把 `Psychube` 放入每日一次任务、`SleepDream` 放入每月一次任务。
 - 提供 M9A 专项用户页，复用共享任务队列、option、说明组件。
 - 把通用 runner 结果翻译成 M9A 用户能理解的通知标题和正文。
 - 提供旧 M9A 配置到插件配置的只创建迁移入口。
@@ -718,7 +718,7 @@ maafw-smoke
 
 - `automas-script-maafw-pack-m9a`。
 - `ScriptType=M9A` 独立入口，底层复用 MaaFW hooks/runner。
-- M9A 默认模板、周月规则、专项用户页、通知文案。
+- M9A 默认模板、一次性任务初始值、专项用户页、通知文案。
 - 旧 M9A 队列和用户配置迁移入口。
 
 验收：

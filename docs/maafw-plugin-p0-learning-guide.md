@@ -373,16 +373,16 @@ ADB 和 Win32 控制器的差异很大：
 
 ### 7.6 M9A 的 project pack 路径是设计目标，不是 P1 范围
 
-**口径说明**：M9A 的最终形态是 project pack，这是方案文档的设计目标。但 P0/P1 不迁移 M9A runtime，M9A 后续是否真的迁入 MaaFW project pack / 共享 runner，必须另走兼容验收门。本节讲的是"为什么有这个设计目标"，不是"P1 就这么做"。
+**口径说明**：M9A 的最终形态是 project pack，同时 pack 加载后注册用户可见的独立 `ScriptType=M9A`。这个独立入口不代表另起 M9A 专属 runner，而是复用 MaaFW hooks / runner，并由 pack 声明 M9A 的默认值、任务语义和文案。本节讲的是"为什么采用 pack + 独立入口"这个目标，不是"P1 就这么做"。
 
 **设计目标的理由**：
 1. M9A 当前运行逻辑由 M9A.exe 处理，不需要独立的 runner（现状审计事实）
-2. M9A 只需要声明自己的默认值、任务语义、周月规则、文案和页面
-3. project pack SDK 比 ScriptAdapter 简单得多（只声明元数据，不开放 run plan hook）
+2. M9A 只需要声明自己的默认值、任务语义、周/月/日一次性任务默认值、文案和页面入口
+3. project pack 让 M9A 拥有独立 `ScriptType=M9A` 入口，同时复用 MaaFW 的 ScriptAdapterHooks
 
-如果 M9A 注册独立脚本类型，就需要实现完整的 ScriptAdapterHooks（9 个方法），但 M9A 的运行逻辑和 MaaFW 不同（M9A 是进程驱动，MaaFW 是引擎驱动），强行套 MaaFW 的 hooks 会出现大量"空实现"。
+M9A 不需要再实现一套独立 ScriptAdapterHooks。`pack-m9a` 注册 `ScriptType=M9A` 后，入口、schema 和文案保持 M9A 专项体验，运行链路交给 MaaFW 适配器处理，避免复制 runner 或维护一套空壳生命周期。
 
-project pack 让 M9A 只声明差异（默认队列、周月规则、文案），共性（任务构建、选项编辑、说明查看）由共享组件层处理。这是"组合优于继承"的设计原则。
+project pack 让 M9A 只声明差异（默认队列、一次性任务默认值、文案），共性（任务构建、选项编辑、说明查看）由共享组件层处理。这是"组合优于继承"的设计原则。
 
 **但落地时机在 P5+**：P0/P1 只冻结契约、抽 interface 包，不动 M9A runtime。M9A 是否最终走 project pack 路径、是否复用 MaaFWTaskBuilder，由 P4/P5 的兼容验收门结果决定。如果验收门发现 M9A 的双路径加载（interface.json + resource/tasks/*.json 回退）和 MaaFW interface_loader 差异过大，可能保持 M9A 独立实现，不强行统一。
 

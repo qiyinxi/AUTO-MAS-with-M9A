@@ -15,7 +15,7 @@
 | `automas-maafw-controller-adb` | `maafw.controller.adb` | ADB controller provider 与 device spec |
 | `automas-maafw-controller-win32` | `maafw.controller.win32` | Win32 窗口扫描、句柄匹配和 Win32 device spec |
 | `automas-script-maafw` | `ScriptType=MaaFW`、`maafw.registry.v1` | MaaFW 脚本类型注册、运行编排、controller/pack registry |
-| `automas-script-maafw-pack-m9a` | `maafw.pack.m9a.v1`、`ScriptType=M9A` | M9A 独立脚本类型注册、周/月规则、通知翻译、旧配置只创建迁移入口；底层复用 MaaFW runner |
+| `automas-script-maafw-pack-m9a` | `maafw.pack.m9a.v1`、`ScriptType=M9A` | M9A 独立脚本类型注册、新脚本一次性任务初始值、通知翻译、旧配置只创建迁移入口；底层复用 MaaFW runner |
 
 `automas-maafw-project-update` 是单独更新插件。MaaEnd 如果只需要更新能力，可以只接 `automas-maafw-interface` + `automas-maafw-project-update`，不用安装 runner、agent-env 与 M9A pack。
 
@@ -69,7 +69,7 @@ M9A 旧内嵌目录本轮不删除，原因是后续还需要升级迁移和只�
 - 迁移只创建新的 `PluginScriptConfig` / `PluginUserConfig`，并设置 `Meta.PluginTypeKey = "M9A"`；不覆盖旧 M9A 配置。
 - 迁移稳定后删除旧新增入口、旧运行链路和旧复杂编辑页。
 
-它声明 M9A pack 默认值，包括项目来源、默认 controller、默认 resource、默认 preset、默认任务队列和周期规则；这些默认值只作为 MaaFW 通用运行链路的 pack metadata 输入，不代表 M9A 拥有独立 runner。
+它声明 M9A pack 默认值，包括项目来源、默认 controller、默认 resource、默认 preset、默认任务队列和一次性任务初始值；这些默认值用于 M9A 独立入口和新脚本 schema 初始化，不代表 M9A 拥有独立 runner，也不会在运行前覆盖用户后续修改。
 
 ## 5. MaaEnd 可消费边界
 
@@ -120,5 +120,5 @@ rg -n 'app\.task\.MaaFW|task/MaaFW|task\\MaaFW|app\\task\\MaaFW' app plugins tes
 - `plugins/automas_script_maafw/src/automas_script_maafw/runner_task.py` 是否覆盖旧 AutoProxy 的必要运行语义。
 - `app/api/scripts.py` 的 MaaFW 兼容路由是否保持现有前端契约。
 - `automas-maafw-project-update` 是否满足 MaaEnd 的 GitHub/MirrorChyan 更新样例。
-- `automas-script-maafw-pack-m9a` 是否只声明 M9A 默认项目、默认 controller/resource/preset、默认队列和周期规则，而不复制 MaaFW runner 或写死到通用 MaaFW 层。
+- `automas-script-maafw-pack-m9a` 是否只声明 M9A 默认项目、默认 controller/resource/preset、默认队列和新脚本一次性任务初始值，而不复制 MaaFW runner 或写死到通用 MaaFW 层。
 - `app/task/M9A/**` 保留是否足够支撑后续迁移，是否还有需要提前抽到 pack-m9a 的只读能力。

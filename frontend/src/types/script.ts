@@ -494,6 +494,12 @@ export interface Script {
   icon?: string | null
   iconUrl?: string | null
   docsUrl?: string | null
+  editHint?: {
+    text?: string
+    link_text?: string
+    url?: string
+    suffix?: string
+  } | null
   displayName?: string
   isBuiltin?: boolean
   available?: boolean

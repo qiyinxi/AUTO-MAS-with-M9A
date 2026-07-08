@@ -569,8 +569,7 @@ import {
 } from '@ant-design/icons-vue'
 import ExtraScriptSection from '@/components/ExtraScriptSection.vue'
 import { buildMaaFWAssetUrl, useMaaFWApi } from '@/composables/useMaaFWApi'
-import { useScriptApi } from '@/composables/useScriptApi'
-import { useUserApi } from '@/composables/useUserApi'
+import { useScriptRegistryApi } from '@/composables/useScriptRegistryApi'
 import MaaFWDescriptionView from './MaaFWDescriptionView.vue'
 import MaaFWTaskOptionEditor from './MaaFWTaskOptionEditor.vue'
 import type {
@@ -616,8 +615,7 @@ const ADD_TASK_UNGROUPED_KEY = '__ungrouped__'
 
 const router = useRouter()
 const route = useRoute()
-const { addUser, getUsers, updateUser } = useUserApi()
-const { getScript } = useScriptApi()
+const registryApi = useScriptRegistryApi()
 const { loading: interfaceLoading, previewInterface } = useMaaFWApi()
 
 const formRef = ref<FormInstance>()
@@ -1224,7 +1222,7 @@ const handleFieldSave = async (key: string, value: unknown) => {
       userData = { Info: { Name: value } }
     }
 
-    await updateUser(scriptId, userId, userData)
+    await registryApi.updateUser(scriptId, userId, userData)
     logger.info(`用户配置已保存: ${key}`)
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
@@ -1240,7 +1238,7 @@ const savePresetAndSnapshot = async () => {
   isSaving.value = true
   try {
     formData.Task.TaskSnapshot = JSON.stringify(taskSnapshot.value)
-    await updateUser(scriptId, userId, {
+    await registryApi.updateUser(scriptId, userId, {
       Task: {
         SelectedPreset: formData.Task.SelectedPreset || '',
         TaskSnapshot: formData.Task.TaskSnapshot,
@@ -1257,7 +1255,7 @@ const savePresetAndSnapshot = async () => {
 const loadScriptInfo = async () => {
   pageLoading.value = true
   try {
-    const script = await getScript(scriptId)
+    const script = (await registryApi.getScripts(scriptId))[0]
     if (!script) {
       message.error('脚本不存在')
       handleCancel()
@@ -1290,13 +1288,13 @@ const loadScriptInfo = async () => {
 
 const createUserImmediately = async () => {
   try {
-    const result = await addUser(scriptId)
-    if (result?.userId) {
-      userId = result.userId
+    const result = await registryApi.addUser(scriptId)
+    if (result?.id) {
+      userId = result.id
       isEdit.value = true
       router.replace({
         name: 'MaaFWUserEdit',
-        params: { ...route.params, userId: result.userId },
+        params: { ...route.params, userId: result.id },
       })
       await loadUserData()
     } else {
@@ -1313,7 +1311,14 @@ const createUserImmediately = async () => {
 
 const loadUserData = async () => {
   try {
-    const userResponse = await getUsers(scriptId, userId)
+    const userRecord = (await registryApi.getUsers(scriptId, userId))[0]
+    const userResponse = userRecord
+      ? {
+          code: 200,
+          index: [{ uid: userId, type: 'MaaFWUserConfig' }],
+          data: { [userId]: userRecord.config },
+        }
+      : null
 
     if (userResponse?.code === 200) {
       const userIndex = userResponse.index.find(index => index.uid === userId)

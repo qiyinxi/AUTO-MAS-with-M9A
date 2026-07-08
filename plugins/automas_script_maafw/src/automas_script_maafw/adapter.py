@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -64,14 +63,6 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
 
         script_data = await runtime.storage.read_script_data()
         script_config = await _load_legacy_script_config(script_data)
-        default_pack_key = str(
-            runtime.definition.metadata.get("project_pack") or ""
-        ).strip()
-        await _apply_project_pack_period_rules(
-            script_data,
-            script_config,
-            default_pack_key=default_pack_key,
-        )
         user_config = await _load_legacy_user_config(runtime)
 
         runtime.script_config = script_config
@@ -218,156 +209,6 @@ async def _load_legacy_user_config(
 def _format_update_log_lines(message: str) -> list[str]:
     now = datetime.now().strftime("%H:%M:%S")
     return [f"[{now}] {line}\n" for line in str(message).splitlines() or [""]]
-
-
-async def _apply_project_pack_period_rules(
-    script_data: dict[str, Any],
-    script_config: MaaFWConfig,
-    *,
-    default_pack_key: str = "",
-) -> None:
-    pack_key = _extract_project_pack_key(script_data, default_pack_key=default_pack_key)
-    if not pack_key:
-        return
-
-    definition = _load_project_pack_definition(pack_key)
-    if definition is None:
-        return
-
-    await _apply_period_rules_to_script_config(
-        script_config,
-        _extract_period_rules(definition),
-    )
-
-
-def _extract_project_pack_key(
-    script_data: dict[str, Any],
-    *,
-    default_pack_key: str = "",
-) -> str:
-    for raw in (
-        script_data.get("pack"),
-        script_data.get("projectPack"),
-        script_data.get("ProjectPack"),
-        _nested_mapping_get(script_data, "PluginData", "Config", "pack"),
-        _nested_mapping_get(script_data, "PluginData", "Config", "projectPack"),
-        _nested_mapping_get(script_data, "Info", "ProjectPack"),
-    ):
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-    return default_pack_key.strip()
-
-
-def _load_project_pack_definition(pack_key: str) -> Any | None:
-    try:
-        from app.plugins import PluginManager
-
-        registry = PluginManager.service.get("maafw.registry.v1")
-        if registry is not None and hasattr(registry, "get_project_pack"):
-            definition = registry.get_project_pack(pack_key)
-            if definition is not None:
-                return definition
-
-        service = PluginManager.service.get(f"maafw.pack.{pack_key}.v1")
-        if service is not None and hasattr(service, "get_definition"):
-            return service.get_definition()
-    except Exception as exc:
-        logger.warning(f"MaaFW project pack 周期规则读取失败: {pack_key}, {exc}")
-    return None
-
-
-def _extract_period_rules(definition: Any) -> list[tuple[str, str]]:
-    if hasattr(definition, "model_dump"):
-        data = definition.model_dump(mode="json")
-    elif isinstance(definition, dict):
-        data = definition
-    else:
-        data = vars(definition) if hasattr(definition, "__dict__") else {}
-
-    rules = data.get("periodRules") or data.get("period_rules") or []
-    if not isinstance(rules, list):
-        return []
-
-    normalized: list[tuple[str, str]] = []
-    for rule in rules:
-        if hasattr(rule, "model_dump"):
-            rule_data = rule.model_dump(mode="json")
-        elif isinstance(rule, dict):
-            rule_data = rule
-        else:
-            rule_data = vars(rule) if hasattr(rule, "__dict__") else {}
-
-        task = str(rule_data.get("task") or "").strip()
-        period = str(rule_data.get("period") or "").strip()
-        if task and period in {"daily", "weekly", "monthly"}:
-            normalized.append((task, period))
-    return normalized
-
-
-async def _apply_period_rules_to_script_config(
-    script_config: MaaFWConfig,
-    period_rules: list[tuple[str, str]],
-) -> bool:
-    if not period_rules:
-        return False
-
-    weekly_tasks = _load_period_task_names(script_config.get("Run", "WeeklyOnceTasks"))
-    monthly_tasks = _load_period_task_names(script_config.get("Run", "MonthlyOnceTasks"))
-    daily_tasks = _load_period_task_names(script_config.get("Run", "DailyOnceTasks"))
-    changed = False
-
-    for task, period in period_rules:
-        if period == "daily" and task not in daily_tasks:
-            daily_tasks.append(task)
-            changed = True
-        elif period == "weekly" and task not in weekly_tasks:
-            weekly_tasks.append(task)
-            changed = True
-        elif period == "monthly" and task not in monthly_tasks:
-            monthly_tasks.append(task)
-            changed = True
-
-    if not changed:
-        return False
-
-    await script_config.set(
-        "Run",
-        "DailyOnceTasks",
-        json.dumps(daily_tasks, ensure_ascii=False),
-    )
-    await script_config.set(
-        "Run",
-        "WeeklyOnceTasks",
-        json.dumps(weekly_tasks, ensure_ascii=False),
-    )
-    await script_config.set(
-        "Run",
-        "MonthlyOnceTasks",
-        json.dumps(monthly_tasks, ensure_ascii=False),
-    )
-    return True
-
-
-def _load_period_task_names(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()]
-    if isinstance(value, str) and value.strip():
-        try:
-            data = json.loads(value)
-        except json.JSONDecodeError:
-            return []
-        if isinstance(data, list):
-            return [str(item) for item in data if str(item).strip()]
-    return []
-
-
-def _nested_mapping_get(value: dict[str, Any], *keys: str) -> Any:
-    current: Any = value
-    for key in keys:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return current
 
 
 def _prepare_maafw_agent_python_envs(

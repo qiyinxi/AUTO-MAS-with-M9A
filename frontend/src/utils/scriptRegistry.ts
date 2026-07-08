@@ -248,6 +248,7 @@ export const normalizeScriptRecord = (
     icon: record.icon ?? descriptor?.icon ?? null,
     iconUrl: record.icon_url ?? descriptor?.icon_url ?? null,
     docsUrl: record.docs_url ?? descriptor?.docs_url ?? null,
+    editHint: record.edit_hint ?? null,
     displayName: descriptor?.display_name ?? record.type,
     isBuiltin: descriptor?.is_builtin ?? isBuiltinScriptType(record.type),
     available,

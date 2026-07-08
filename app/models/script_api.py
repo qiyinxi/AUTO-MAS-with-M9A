@@ -8,130 +8,136 @@ from .schema import OutBase
 
 
 class ScriptTypeDescriptor(BaseModel):
-    """脚本类型描述。"""
+    """Script type descriptor."""
 
-    type_key: str = Field(..., description="脚本类型键")
-    display_name: str = Field(..., description="脚本类型显示名称")
-    icon: str | None = Field(default=None, description="脚本类型图标标识")
-    icon_url: str | None = Field(default=None, description="图标资源 URL")
-    docs_url: str | None = Field(default=None, description="文档地址")
-    editor_kind: str = Field(..., description="编辑器类型")
-    supported_modes: list[str] = Field(..., description="支持的任务模式")
-    script_schema: dict[str, Any] = Field(..., description="脚本配置表单描述")
-    user_schema: dict[str, Any] = Field(..., description="用户配置表单描述")
+    type_key: str = Field(..., description="Script type key")
+    display_name: str = Field(..., description="Display name")
+    icon: str | None = Field(default=None, description="Icon id")
+    icon_url: str | None = Field(default=None, description="Icon resource URL")
+    docs_url: str | None = Field(default=None, description="Docs URL")
+    editor_kind: str = Field(..., description="Editor kind")
+    supported_modes: list[str] = Field(..., description="Supported task modes")
+    script_schema: dict[str, Any] = Field(..., description="Script form schema")
+    user_schema: dict[str, Any] = Field(..., description="User form schema")
     legacy_config_class_name: str | None = Field(
-        default=None, description="旧脚本配置类名"
+        default=None,
+        description="Legacy script config class name",
     )
     legacy_user_config_class_name: str | None = Field(
-        default=None, description="旧用户配置类名"
+        default=None,
+        description="Legacy user config class name",
     )
-    is_builtin: bool = Field(default=False, description="是否为内建脚本类型")
-    available: bool = Field(default=True, description="脚本类型是否已加载并可操作")
+    is_builtin: bool = Field(default=False, description="Whether this is a built-in script type")
+    available: bool = Field(default=True, description="Whether this type is currently available")
 
 
 class ScriptTypeGetOut(OutBase):
-    data: list[ScriptTypeDescriptor] = Field(..., description="脚本类型列表")
+    data: list[ScriptTypeDescriptor] = Field(..., description="Script type descriptors")
 
 
 class ScriptRecord(BaseModel):
-    """通用脚本记录。"""
+    """Generic script record."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(..., description="脚本 ID")
-    type: str = Field(..., description="脚本类型键")
-    name: str = Field(..., description="脚本名称")
-    config: dict[str, Any] = Field(..., description="脚本配置内容")
+    id: str = Field(..., description="Script ID")
+    type: str = Field(..., description="Script type key")
+    name: str = Field(..., description="Script name")
+    config: dict[str, Any] = Field(..., description="Script config payload")
     schema_definition: dict[str, Any] = Field(
         ...,
         alias="schema",
         serialization_alias="schema",
-        description="脚本配置表单描述",
+        description="Script form schema",
     )
-    editor_kind: str = Field(..., description="编辑器类型")
-    supported_modes: list[str] = Field(..., description="支持的任务模式")
-    icon: str | None = Field(default=None, description="图标标识")
-    icon_url: str | None = Field(default=None, description="图标资源 URL")
-    docs_url: str | None = Field(default=None, description="文档地址")
-    user_count: int = Field(default=0, description="用户数量")
+    editor_kind: str = Field(..., description="Editor kind")
+    supported_modes: list[str] = Field(..., description="Supported task modes")
+    icon: str | None = Field(default=None, description="Icon id")
+    icon_url: str | None = Field(default=None, description="Icon resource URL")
+    docs_url: str | None = Field(default=None, description="Docs URL")
+    edit_hint: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional hint shown at the bottom of the script edit page",
+    )
+    user_count: int = Field(default=0, description="User count")
 
 
 class ScriptRecordGetIn(BaseModel):
-    scriptId: str | None = Field(default=None, description="脚本 ID")
+    scriptId: str | None = Field(default=None, description="Script ID")
 
 
 class ScriptRecordCreateIn(BaseModel):
-    type: str = Field(..., description="脚本类型键")
-    scriptId: str | None = Field(default=None, description="复制来源脚本 ID")
+    type: str = Field(..., description="Script type key")
+    scriptId: str | None = Field(default=None, description="Source script ID for copy")
 
 
 class ScriptRecordUpdateIn(BaseModel):
-    scriptId: str = Field(..., description="脚本 ID")
-    config: dict[str, Any] = Field(..., description="脚本配置更新内容")
+    scriptId: str = Field(..., description="Script ID")
+    config: dict[str, Any] = Field(..., description="Script config patch")
 
 
 class ScriptRecordDeleteIn(BaseModel):
-    scriptId: str = Field(..., description="脚本 ID")
+    scriptId: str = Field(..., description="Script ID")
 
 
 class ScriptRecordReorderIn(BaseModel):
-    indexList: list[str] = Field(..., description="脚本 ID 顺序")
+    indexList: list[str] = Field(..., description="Script ID order")
 
 
 class ScriptRecordCreateOut(OutBase):
-    record: ScriptRecord = Field(..., description="新建后的脚本记录")
+    record: ScriptRecord = Field(..., description="Created script record")
 
 
 class ScriptRecordGetOut(OutBase):
-    records: list[ScriptRecord] = Field(..., description="脚本记录列表")
+    records: list[ScriptRecord] = Field(..., description="Script records")
 
 
 class ScriptUserRecord(BaseModel):
-    """通用脚本用户记录。"""
+    """Generic script user record."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(..., description="用户 ID")
-    script_id: str = Field(..., description="所属脚本 ID")
-    type: str = Field(..., description="脚本类型键")
-    name: str = Field(..., description="用户名称")
-    config: dict[str, Any] = Field(..., description="用户配置内容")
+    id: str = Field(..., description="User ID")
+    script_id: str = Field(..., description="Owner script ID")
+    type: str = Field(..., description="Script type key")
+    name: str = Field(..., description="User name")
+    config: dict[str, Any] = Field(..., description="User config payload")
     schema_definition: dict[str, Any] = Field(
         ...,
         alias="schema",
         serialization_alias="schema",
-        description="用户配置表单描述",
+        description="User form schema",
     )
 
 
 class ScriptUserRecordGetIn(BaseModel):
-    scriptId: str = Field(..., description="所属脚本 ID")
-    userId: str | None = Field(default=None, description="用户 ID")
+    scriptId: str = Field(..., description="Owner script ID")
+    userId: str | None = Field(default=None, description="User ID")
 
 
 class ScriptUserRecordCreateIn(BaseModel):
-    scriptId: str = Field(..., description="所属脚本 ID")
+    scriptId: str = Field(..., description="Owner script ID")
 
 
 class ScriptUserRecordUpdateIn(BaseModel):
-    scriptId: str = Field(..., description="所属脚本 ID")
-    userId: str = Field(..., description="用户 ID")
-    config: dict[str, Any] = Field(..., description="用户配置更新内容")
+    scriptId: str = Field(..., description="Owner script ID")
+    userId: str = Field(..., description="User ID")
+    config: dict[str, Any] = Field(..., description="User config patch")
 
 
 class ScriptUserRecordDeleteIn(BaseModel):
-    scriptId: str = Field(..., description="所属脚本 ID")
-    userId: str = Field(..., description="用户 ID")
+    scriptId: str = Field(..., description="Owner script ID")
+    userId: str = Field(..., description="User ID")
 
 
 class ScriptUserRecordReorderIn(BaseModel):
-    scriptId: str = Field(..., description="所属脚本 ID")
-    indexList: list[str] = Field(..., description="用户 ID 顺序")
+    scriptId: str = Field(..., description="Owner script ID")
+    indexList: list[str] = Field(..., description="User ID order")
 
 
 class ScriptUserRecordCreateOut(OutBase):
-    record: ScriptUserRecord = Field(..., description="新建后的用户记录")
+    record: ScriptUserRecord = Field(..., description="Created user record")
 
 
 class ScriptUserRecordGetOut(OutBase):
-    records: list[ScriptUserRecord] = Field(..., description="用户记录列表")
+    records: list[ScriptUserRecord] = Field(..., description="User records")

@@ -182,8 +182,8 @@ automas_script_maafw/
 
 M9A 工作台页职责：
 - 注入 M9A 模板（default_task_queue）
-- 注入默认队列（dailyPreset / weeklyPreset / monthlyPreset）
-- 注入周月标签（Psychube=周常、Limbo=月常、Lucidscape=月常）
+- 为新脚本提供默认队列和一次性任务初始值（dailyPreset / weeklyPreset / monthlyPreset）
+- 提供周月标签文案（Psychube=周常、Limbo=月常、Lucidscape=月常）
 - 注入游戏文案和通知摘要
 - 监听 `update:snapshot` 保存到用户配置
 
@@ -239,7 +239,7 @@ v1 已知 scope（`task` / `global` / `controller` / `resource`）作为 scoped 
 
 ### P5：M9A pack
 - `automas-script-maafw-pack-m9a`
-- M9A 默认模板、周月规则、专项用户页、通知文案
+- M9A 默认模板、一次性任务初始值、专项用户页、通知文案
 - 旧 M9A 队列和用户配置迁移入口
 
 ### P6：前端通用化与稳定发布

@@ -62,7 +62,7 @@
 
 ## 2026-07-07 修复状态
 
-本报告最初列出的 P0/P1 已完成首轮代码修复，当前结论更新为：架构方向保持为插件化，但 M9A 不降级为普通 MaaFW 配置。安装 `automas-script-maafw-pack-m9a` 后，宿主会新增独立 `ScriptType=M9A`；该类型底层复用通用 MaaFW schema、hooks 与 runner，并通过 `project_pack=m9a` 消费 M9A 周/月规则、通知翻译和迁移入口。
+本报告最初列出的 P0/P1 已完成首轮代码修复，当前结论更新为：架构方向保持为插件化，但 M9A 不降级为普通 MaaFW 配置。安装 `automas-script-maafw-pack-m9a` 后，宿主会新增独立 `ScriptType=M9A`；该类型底层复用通用 MaaFW schema、hooks 与 runner，并通过 `project_pack=m9a` 提供 M9A 新脚本初始值、通知翻译和迁移入口。
 
 本轮已修复：
 
@@ -207,9 +207,9 @@ flowchart TD
 - **细实线** = 实际数据流（`runner` / `interface` 实际查询 controller）
 - **虚线** = 注册/服务发现关系（plugin 与 registry）
 - **加粗箭头** = 进程边界（`runner` 启动 worker 子进程）
-- **M9A 包的位置**：它在 `MaaFW` 适配器旁注册自己，把“周常/月常”任务规则**注入**到 MaaFW 适配器的任务队列，自己不调用任何 service
+- **M9A 包的位置**：它在 `MaaFW` 适配器旁注册自己，为新 M9A 脚本提供一次性任务初始值和专项文案，自己不复制 runner 或另起运行 service
 
-**M9A 与 MaaFW 的关系**：M9A 仍是用户可见的独立脚本类型，但这个类型由 `pack-m9a` 插件注册，不由主程序内建注册。用户新建的是 `PluginTypeKey=M9A` 的插件脚本；运行时复用 MaaFW 适配器和 MaaFW runner，并通过 `project_pack=m9a` 查询 m9a pack 定义，把“周常/月常”规则合并进通用 MaaFW 配置。**M9A 有独立入口，没有自己的 runner**。
+**M9A 与 MaaFW 的关系**：M9A 仍是用户可见的独立脚本类型，但这个类型由 `pack-m9a` 插件注册，不由主程序内建注册。用户新建的是 `PluginTypeKey=M9A` 的插件脚本；运行时复用 MaaFW 适配器和 MaaFW runner。M9A 的脚本名称、路径文案和“日/周/月一次性任务”默认值只在新建脚本时由 pack schema 初始化，后续运行不再把 pack 默认值合并回用户配置。**M9A 有独立入口，没有自己的 runner**。
 
 ---
 
@@ -434,7 +434,7 @@ flowchart TD
 **pack 默认值口径**：
 
 - `maafw-plugin-p0-contract.md §7.1` 的 `MaaFWProjectPackDefinition` 中显式列出 `default_controller`、`default_resource`、`default_preset`、`default_task_queue`。
-- `maafw插件化最终实现方案.md §6.3、§7、§13 P5 验收` 已统一为：M9A pack 可以声明默认项目来源、默认 controller/resource/preset、默认任务队列和周期规则。
+- `maafw插件化最终实现方案.md §6.3、§7、§13 P5 验收` 已统一为：M9A pack 可以声明默认项目来源、默认 controller/resource/preset、默认任务队列和新脚本一次性任务初始值。
 - `maafw-plugin-code-audit.md §3.4` 与 `maafw-plugin-p1-checklist.md §3.4` 中“M9A 默认任务队列和模板应作为 pack-m9a 的预设输入提前填写”的口径与当前实现一致。
 
 结论：这里不再按“pack 不声明默认值”审查。正确边界是默认值属于 `pack-m9a` metadata，不允许写入通用 MaaFW 层，也不允许因此复制 M9A 专属 runner。
