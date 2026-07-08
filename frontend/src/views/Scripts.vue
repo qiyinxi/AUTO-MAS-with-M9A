@@ -196,6 +196,7 @@
                 :src="getScriptIcon(script.type, script.iconUrl)"
                 :alt="script.type"
                 class="type-icon"
+                @error="event => handleScriptIconError(event, script.type)"
               />
             </div>
             <div class="script-info">
@@ -243,6 +244,7 @@
                 :src="getScriptIcon(descriptor.type_key, descriptor.icon_url)"
                 :alt="descriptor.type_key"
                 class="type-logo"
+                @error="event => handleScriptIconError(event, descriptor.type_key)"
               />
             </div>
             <div class="type-info">
@@ -414,6 +416,7 @@ import {
   getScriptIcon,
   getUserCreatePath,
   getUserEditPath,
+  handleScriptIconError,
   normalizeScriptRecord,
 } from '@/utils/scriptRegistry'
 import MarkdownIt from 'markdown-it'

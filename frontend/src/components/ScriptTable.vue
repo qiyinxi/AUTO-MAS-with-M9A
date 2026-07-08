@@ -26,6 +26,7 @@
                     :src="getScriptIcon(script.type, script.iconUrl)"
                     :alt="script.type"
                     class="script-logo"
+                    @error="event => handleScriptIconError(event, script.type)"
                   />
                 </div>
                 <div class="script-details">
@@ -277,7 +278,7 @@ import { useScriptRegistryApi } from '@/composables/useScriptRegistryApi'
 import { parseStatusTagList } from '@/composables/useStatusTag'
 import type { StatusTag } from '@/composables/useStatusTag'
 import { getTodayInTimezone, isDateEqual, getWeekdayInTimezone } from '@/utils/dateUtils'
-import { getScriptIcon, getScriptTypeTagColor } from '@/utils/scriptRegistry'
+import { getScriptIcon, getScriptTypeTagColor, handleScriptIconError } from '@/utils/scriptRegistry'
 
 interface Props {
   scripts: Script[]

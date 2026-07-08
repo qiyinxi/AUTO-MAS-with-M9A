@@ -35,6 +35,7 @@
           :src="getScriptIcon(script.type, script.iconUrl)"
           alt=""
           class="script-icon"
+          @error="event => handleScriptIconError(event, script.type)"
         />
         <span>{{ script?.name || '脚本配置' }}</span>
         <a-tag :color="getScriptTypeTagColor(script?.type || '')">
@@ -104,6 +105,7 @@ import {
   descriptorMapFromList,
   getScriptIcon,
   getScriptTypeTagColor,
+  handleScriptIconError,
   normalizeScriptRecord,
 } from '@/utils/scriptRegistry'
 import { collectHeaderSchemaActions } from '@/utils/schemaActions'

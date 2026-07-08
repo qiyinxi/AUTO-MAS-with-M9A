@@ -72,8 +72,7 @@ export const BUILTIN_SCRIPT_TYPES = new Set(['MAA', 'SRC', 'MaaEnd', 'M9A', 'Maa
 
 export const isBuiltinScriptType = (type: string) => BUILTIN_SCRIPT_TYPES.has(type)
 
-export const getScriptIcon = (type: string, iconUrl?: string | null) => {
-  if (iconUrl) return iconUrl
+export const getFallbackScriptIcon = (type: string) => {
   switch (type) {
     case 'MAA':
       return maaIcon
@@ -90,6 +89,20 @@ export const getScriptIcon = (type: string, iconUrl?: string | null) => {
     default:
       return autoMasIcon
   }
+}
+
+export const getScriptIcon = (type: string, iconUrl?: string | null) => {
+  return iconUrl || getFallbackScriptIcon(type)
+}
+
+export const handleScriptIconError = (event: Event, type: string) => {
+  const image = event.currentTarget as HTMLImageElement | null
+  if (!image || image.dataset.scriptIconFallbackApplied === 'true') {
+    return
+  }
+
+  image.dataset.scriptIconFallbackApplied = 'true'
+  image.src = getFallbackScriptIcon(type)
 }
 
 export const getScriptTypeTagColor = (type: string) => {

@@ -7,7 +7,12 @@
         </a-breadcrumb-item>
         <a-breadcrumb-item>
           <div class="breadcrumb-current">
-            <img :src="getScriptIcon(formData.type)" :alt="formData.type" class="breadcrumb-logo" />
+            <img
+              :src="getScriptIcon(formData.type)"
+              :alt="formData.type"
+              class="breadcrumb-logo"
+              @error="event => handleScriptIconError(event, formData.type)"
+            />
             编辑 {{ formData.type === 'M9A' ? 'M9A' : 'MaaFramework' }} 项目
           </div>
         </a-breadcrumb-item>
@@ -793,7 +798,7 @@ import { Service, type ComboBoxItem } from '@/api'
 import { useMaaFWApi } from '@/composables/useMaaFWApi'
 import { useScriptApi } from '@/composables/useScriptApi'
 import { useSettingsApi } from '@/composables/useSettingsApi'
-import { getScriptIcon } from '@/utils/scriptRegistry'
+import { getScriptIcon, handleScriptIconError } from '@/utils/scriptRegistry'
 import type {
   MaaFWAgentEnvPrepareData,
   MaaFWDesktopWindowInfo,
