@@ -173,6 +173,24 @@ def _plugin_provider(type_key: str):
         return None
 
 
+def _is_maafw_framework_script(script_config: Any) -> bool:
+    """判定脚本配置是否属于 MaaFW 框架运行链路（含 M9A 等 pack 形态）。"""
+
+    config_class_name = type(script_config).__name__
+    if config_class_name == "MaaFWConfig":
+        return True
+    try:
+        from app.core.script_types import script_type_registry
+
+        provider = script_type_registry.get_by_script_config(config_class_name)
+    except Exception:
+        return False
+    return (
+        provider.metadata.get("framework") == "maafw"
+        and provider.script_config_class.__name__ == config_class_name
+    )
+
+
 def _plugin_type_key_from_payload(payload: dict[str, Any]) -> str:
     meta = payload.get("Meta")
     if isinstance(meta, dict):
@@ -885,7 +903,7 @@ async def update_maafw_project(
 
     try:
         script_config = Config.ScriptConfig[script_uuid]
-        if type(script_config).__name__ != "MaaFWConfig":
+        if not _is_maafw_framework_script(script_config):
             append_log("指定脚本不是 MaaFW 项目")
             return MaaFWProjectUpdateOut(
                 code=400,
@@ -923,6 +941,13 @@ async def update_maafw_project(
             or Config.get("Update", "MirrorChyanCDK")
         )
         channel = script_config.get("Update", "Channel") or Config.get("Update", "Channel")
+        source_config = None
+        try:
+            from automas_script_maafw.schema import build_source_config
+
+            source_config = build_source_config(await script_config.toDict())
+        except Exception as e:
+            append_log(f"读取脚本更新源配置失败，回退默认更新源: {type(e).__name__}: {e}")
         update_result = await MaaFWProjectUpdateService().update_if_needed(
             project_path,
             interface_model,
@@ -930,6 +955,7 @@ async def update_maafw_project(
             channel=channel,
             proxy=Config.proxy,
             send_log=append_log,
+            source_config=source_config,
         )
 
         if update_result.updated:
