@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="script-edit-header">
     <div class="header-nav">
       <a-breadcrumb class="breadcrumb">
@@ -10,10 +10,12 @@
             <img
               :src="getScriptIcon(formData.type, scriptIconUrl)"
               :alt="formData.type"
+              width="20"
+              height="20"
               class="breadcrumb-logo"
               @error="event => handleScriptIconError(event, formData.type)"
             />
-            编辑 {{ formData.type === 'M9A' ? 'M9A' : 'MaaFramework' }} 项目
+            项目配置
           </div>
         </a-breadcrumb-item>
       </a-breadcrumb>
@@ -29,6 +31,28 @@
     </a-space>
   </div>
 
+  <div v-if="saveStatus !== 'idle'" class="save-status-bar">
+    <a-alert v-if="saveStatus === 'saving'" type="info" banner show-icon message="保存中…" />
+    <a-alert
+      v-else-if="saveStatus === 'saved'"
+      type="success"
+      banner
+      closable
+      show-icon
+      message="已自动保存"
+      @close="saveStatus = 'idle'"
+    />
+    <a-alert
+      v-else
+      type="error"
+      banner
+      closable
+      show-icon
+      :message="saveErrorMessage || '保存失败，请重试'"
+      @close="saveStatus = 'idle'"
+    />
+  </div>
+
   <div class="script-edit-content">
     <a-card
       :title="formData.type === 'M9A' ? 'M9A 项目配置' : 'MaaFramework 项目配置'"
@@ -40,741 +64,815 @@
       </template>
 
       <a-form ref="formRef" :model="formData" :rules="rules" layout="vertical" class="config-form">
-        <div class="form-section">
-          <div class="section-header">
-            <h3>基本信息</h3>
-          </div>
-          <a-row :gutter="24">
-            <a-col :span="8">
-              <a-form-item name="name">
-                <template #label>
-                  <a-tooltip title="为项目设置一个易于识别的名称">
-                    <span class="form-label">
-                      脚本名称
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-input
-                  v-model:value="formData.name"
-                  placeholder="请输入脚本名称"
-                  size="large"
-                  class="modern-input"
-                  @blur="handleChange('Info', 'Name', formData.name)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="16">
-              <a-form-item name="path" :rules="rules.path">
-                <template #label>
-                  <a-tooltip title="选择包含 interface.json 的 MaaFramework 项目目录">
-                    <span class="form-label">
-                      项目目录
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-input-group compact class="path-input-group">
-                  <a-input
-                    v-model:value="formData.path"
-                    placeholder="请选择 MaaFramework 项目目录"
-                    size="large"
-                    class="path-input"
-                    readonly
-                  />
-                  <a-button size="large" class="path-button" @click="selectMaaFWPath">
-                    <template #icon>
-                      <FolderOpenOutlined />
-                    </template>
-                    选择文件夹
-                  </a-button>
-                  <a-button
-                    size="large"
-                    class="path-button"
-                    :loading="interfaceLoading"
-                    :disabled="!maafwConfig.Info.Path"
-                    @click="handlePreviewInterface"
-                  >
-                    <template #icon>
-                      <FileSearchOutlined />
-                    </template>
-                    读取 interface
-                  </a-button>
-                  <a-button
-                    size="large"
-                    class="path-button"
-                    :loading="agentEnvLoading"
-                    :disabled="!maafwConfig.Info.Path"
-                    @click="handlePrepareAgentEnv"
-                  >
-                    <template #icon>
-                      <ToolOutlined />
-                    </template>
-                    准备运行环境
-                  </a-button>
-                </a-input-group>
-              </a-form-item>
-            </a-col>
-          </a-row>
+        <a-steps size="small" :current="currentStep" :items="stepItems" class="config-steps" />
 
-          <div v-if="previewData" class="interface-summary">
-            <a-descriptions :column="4" size="small" bordered>
-              <a-descriptions-item label="项目">
-                {{ previewProjectTitle }}
-              </a-descriptions-item>
-              <a-descriptions-item label="版本">
-                {{ previewData.project.version || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="控制器">
-                {{ previewData.controllers.length }}
-              </a-descriptions-item>
-              <a-descriptions-item label="资源">
-                {{ previewData.resources.length }}
-              </a-descriptions-item>
-              <a-descriptions-item label="任务">
-                {{ previewData.tasks.length }}
-              </a-descriptions-item>
-              <a-descriptions-item label="预设">
-                {{ previewData.presets.length }}
-              </a-descriptions-item>
-              <a-descriptions-item label="导入">
-                {{ previewData.importCount }}
-              </a-descriptions-item>
-              <a-descriptions-item label="Agent">
-                {{ previewData.agentCount }}
-              </a-descriptions-item>
-            </a-descriptions>
-          </div>
-          <div v-else-if="interfaceLoading" class="interface-loading">
-            <a-spin tip="正在读取 interface.json...">
-              <a-alert
-                type="info"
-                show-icon
-                message="正在加载 MaaFW 项目接口"
-                description="请稍候，正在解析 interface.json 中的控制器、资源、任务和选项定义"
-              />
-            </a-spin>
-          </div>
-          <a-empty v-else class="interface-empty" description="尚未读取 interface.json" />
-
-          <div v-if="agentEnvLoading || agentEnvResult" class="agent-env-panel">
-            <a-spin :spinning="agentEnvLoading" tip="正在准备 MaaFW 运行环境...">
-              <a-alert
-                v-if="agentEnvLoading"
-                type="info"
-                show-icon
-                message="正在准备 MaaFW 运行环境"
-                description="将预热 AUTO-MAS Runner 隔离 venv，并检查或准备项目 Agent Python 环境。"
-              />
-              <template v-else-if="agentEnvResult">
-                <a-alert
-                  :type="agentEnvAlertType"
-                  show-icon
-                  :message="agentEnvSummary"
-                  :description="agentEnvDescription"
-                />
-                <div v-if="agentEnvResult.agents.length" class="agent-env-agent-list">
-                  <div
-                    v-for="(agent, index) in agentEnvResult.agents"
-                    :key="`${agent.childExec}-${index}`"
-                    class="agent-env-agent-item"
-                  >
-                    <div class="agent-env-agent-header">
-                      <span class="agent-env-agent-title">{{ agent.childExec }}</span>
-                      <a-tag :color="getAgentRuntimeColor(agent.runtimeKind)">
-                        {{ getAgentRuntimeLabel(agent.runtimeKind) }}
-                      </a-tag>
-                    </div>
-                    <div class="agent-env-agent-line">
-                      <span>解释器</span>
-                      <code>{{ agent.executable }}</code>
-                    </div>
-                    <div v-if="agent.isolatedVenvPath" class="agent-env-agent-line">
-                      <span>隔离 venv</span>
-                      <code>{{ agent.isolatedVenvPath }}</code>
-                    </div>
-                    <div v-if="agent.fallbackReason" class="agent-env-agent-line">
-                      <span>准备说明</span>
-                      <code>{{ agent.fallbackReason }}</code>
-                    </div>
-                  </div>
-                </div>
-                <div v-if="agentEnvResult.logs.length" class="agent-env-log-box">
-                  <div
-                    v-for="(log, index) in agentEnvResult.logs"
-                    :key="`${index}-${log}`"
-                    class="agent-env-log-line"
-                  >
-                    {{ log }}
-                  </div>
-                </div>
-              </template>
-            </a-spin>
-          </div>
-        </div>
-
-        <div class="form-section">
-          <div class="section-header">
-            <h3>控制方式与游戏资源</h3>
-          </div>
-
-          <a-row :gutter="24" class="controller-resource-row">
-            <a-col :span="12">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip title="选择 MaaFW Controller，决定使用 ADB、Win32 等控制方式">
-                    <span class="form-label">
-                      控制方式
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-select
-                  v-model:value="maafwConfig.Info.Controller"
-                  size="large"
-                  placeholder="自动选择"
-                  allow-clear
-                  :disabled="interfaceDependentDisabled"
-                  @change="handleControllerChange"
-                >
-                  <a-select-option
-                    v-for="item in controllerOptions"
-                    :key="item.name"
-                    :value="item.name"
-                    :disabled="!isDirectControllerType(item.type)"
-                  >
-                    {{ item.label || item.name }} · {{ item.type }}
-                    <span v-if="!isDirectControllerType(item.type)"> · 建议使用原 UI</span>
-                  </a-select-option>
-                </a-select>
-              </a-form-item>
-            </a-col>
-            <a-col :span="12">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip
-                    title="选择 MaaFW Resource，留空时自动选择匹配当前控制方式的第一个 Resource"
-                  >
-                    <span class="form-label">
-                      游戏资源
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-select
-                  v-model:value="maafwConfig.Info.Resource"
-                  size="large"
-                  placeholder="自动选择"
-                  allow-clear
-                  :disabled="interfaceDependentDisabled"
-                  @change="handleResourceChange"
-                >
-                  <a-select-option
-                    v-for="item in resourceOptions"
-                    :key="item.name"
-                    :value="item.name"
-                  >
-                    {{ item.label || item.name }}
-                  </a-select-option>
-                </a-select>
-              </a-form-item>
-            </a-col>
-          </a-row>
-          <a-alert
-            v-if="unsupportedControllerOptions.length"
-            class="control-strategy-alert"
-            type="info"
-            show-icon
-            :message="unsupportedControllerMessage"
-          />
-
-          <template v-if="isAdbController">
-            <a-row :gutter="24" class="control-detail-row">
-              <a-col :span="12">
-                <a-form-item>
+        <Transition name="step-fade" mode="out-in">
+          <div v-if="currentStep === 0" key="basic" class="form-section">
+            <div class="section-header">
+              <h3>基本信息</h3>
+            </div>
+            <a-row :gutter="24">
+              <a-col :span="8">
+                <a-form-item name="name">
                   <template #label>
-                    <a-tooltip title="MaaFW ADB controller 运行时使用该模拟器配置">
+                    <a-tooltip title="为项目设置一个易于识别的名称">
                       <span class="form-label">
-                        模拟器
-                        <QuestionCircleOutlined class="help-icon" />
-                      </span>
-                    </a-tooltip>
-                  </template>
-                  <a-select
-                    v-model:value="maafwConfig.Emulator.Id"
-                    size="large"
-                    placeholder="请选择模拟器"
-                    :loading="emulatorLoading"
-                    @change="handleEmulatorSelectChange"
-                  >
-                    <a-select-option value="-">不指定</a-select-option>
-                    <a-select-option
-                      v-for="item in emulatorOptions"
-                      :key="item.value"
-                      :value="item.value"
-                    >
-                      {{ item.label }}
-                    </a-select-option>
-                  </a-select>
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item>
-                  <template #label>
-                    <a-tooltip title="选择模拟器的具体实例，运行时会传递给 MaaFW ADB controller">
-                      <span class="form-label">
-                        模拟器实例
-                        <QuestionCircleOutlined class="help-icon" />
+                        脚本名称
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
                       </span>
                     </a-tooltip>
                   </template>
                   <a-input
-                    v-if="
-                      emulatorDeviceOptions.length === 0 &&
-                      !emulatorDeviceLoading &&
-                      maafwConfig.Emulator.Id &&
-                      maafwConfig.Emulator.Id !== '-'
-                    "
-                    v-model:value="maafwConfig.Emulator.Index"
+                    v-model:value="formData.name"
+                    placeholder="请输入脚本名称"
                     size="large"
-                    placeholder="请输入模拟器实例索引"
                     class="modern-input"
-                    @blur="handleChange('Emulator', 'Index', maafwConfig.Emulator.Index)"
+                    @blur="handleChange('Info', 'Name', formData.name)"
                   />
-                  <a-select
-                    v-else
-                    v-model:value="maafwConfig.Emulator.Index"
-                    size="large"
-                    placeholder="请先选择模拟器"
-                    :loading="emulatorDeviceLoading"
-                    :disabled="!maafwConfig.Emulator.Id || maafwConfig.Emulator.Id === '-'"
-                    @change="handleChange('Emulator', 'Index', $event)"
-                  >
-                    <a-select-option value="-">不指定</a-select-option>
-                    <a-select-option
-                      v-for="item in emulatorDeviceOptions"
-                      :key="item.value"
-                      :value="item.value"
-                    >
-                      {{ item.label }}
-                    </a-select-option>
-                  </a-select>
                 </a-form-item>
               </a-col>
-            </a-row>
-
-            <a-alert
-              class="control-strategy-alert"
-              type="info"
-              show-icon
-              :message="adbControlStrategyMessage"
-            />
-            <a-descriptions :column="3" size="small" bordered class="control-strategy-summary">
-              <a-descriptions-item
-                v-for="item in adbControlStrategyItems"
-                :key="item.label"
-                :label="item.label"
-              >
-                {{ item.value }}
-              </a-descriptions-item>
-            </a-descriptions>
-          </template>
-
-          <template v-else-if="isDesktopController">
-            <a-row :gutter="24" class="control-detail-row">
-              <a-col :span="12">
-                <a-form-item>
+              <a-col :span="16">
+                <a-form-item name="path" :rules="rules.path">
                   <template #label>
-                    <a-tooltip title="选择由 MAS 启动并管理生命周期的实际游戏 exe 文件">
+                    <a-tooltip title="选择包含 interface.json 的 MaaFramework 项目目录">
                       <span class="form-label">
-                        游戏可执行文件
-                        <QuestionCircleOutlined class="help-icon" />
+                        项目目录
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
                       </span>
                     </a-tooltip>
                   </template>
                   <a-input-group compact class="path-input-group">
                     <a-input
-                      v-model:value="maafwConfig.Game.Path"
-                      placeholder="请选择实际启动的游戏 exe"
+                      v-model:value="formData.path"
+                      placeholder="请选择 MaaFramework 项目目录"
                       size="large"
                       class="path-input"
                       readonly
+                      aria-readonly="true"
                     />
-                    <a-button size="large" class="path-button" @click="selectGamePath">
+                    <a-button size="large" class="path-button" @click="selectMaaFWPath">
                       <template #icon>
                         <FolderOpenOutlined />
                       </template>
-                      选择文件
+                      选择文件夹
                     </a-button>
                   </a-input-group>
-                </a-form-item>
-              </a-col>
-              <a-col :span="6">
-                <a-form-item>
-                  <template #label>
-                    <a-tooltip title="启动游戏时传入的命令行参数">
-                      <span class="form-label">
-                        启动参数
-                        <QuestionCircleOutlined class="help-icon" />
-                      </span>
-                    </a-tooltip>
-                  </template>
-                  <a-input
-                    v-model:value="maafwConfig.Game.Arguments"
-                    placeholder="可选"
-                    size="large"
-                    class="modern-input"
-                    @blur="handleChange('Game', 'Arguments', maafwConfig.Game.Arguments)"
-                  />
-                </a-form-item>
-              </a-col>
-              <a-col :span="6">
-                <a-form-item>
-                  <template #label>
-                    <a-tooltip title="启动游戏后等待窗口就绪的时间，单位秒">
-                      <span class="form-label">
-                        等待时间
-                        <QuestionCircleOutlined class="help-icon" />
-                      </span>
-                    </a-tooltip>
-                  </template>
-                  <a-input-number
-                    v-model:value="maafwConfig.Game.WaitTime"
-                    :min="0"
-                    :max="9999"
-                    size="large"
-                    style="width: 100%"
-                    @blur="handleChange('Game', 'WaitTime', maafwConfig.Game.WaitTime)"
-                  />
+                  <div class="path-secondary-actions">
+                    <a-button
+                      size="middle"
+                      class="path-button"
+                      :loading="interfaceLoading"
+                      :disabled="!maafwConfig.Info.Path"
+                      @click="handlePreviewInterface"
+                    >
+                      <template #icon>
+                        <FileSearchOutlined />
+                      </template>
+                      读取 interface
+                    </a-button>
+                    <a-button
+                      size="middle"
+                      class="path-button"
+                      :loading="agentEnvLoading"
+                      :disabled="!maafwConfig.Info.Path"
+                      @click="handlePrepareAgentEnv"
+                    >
+                      <template #icon>
+                        <ToolOutlined />
+                      </template>
+                      准备运行环境
+                    </a-button>
+                  </div>
                 </a-form-item>
               </a-col>
             </a-row>
-            <a-row :gutter="24" class="control-detail-row">
-              <a-col :span="8">
-                <a-form-item>
-                  <template #label>
-                    <a-tooltip title="任务结束后关闭由 MAS 启动的游戏进程">
-                      <span class="form-label">
-                        结束后关闭游戏
-                        <QuestionCircleOutlined class="help-icon" />
-                      </span>
-                    </a-tooltip>
-                  </template>
-                  <a-switch
-                    v-model:checked="maafwConfig.Game.CloseOnFinish"
-                    checked-children="开启"
-                    un-checked-children="关闭"
-                    @change="handleChange('Game', 'CloseOnFinish', maafwConfig.Game.CloseOnFinish)"
+
+            <div v-if="previewData" class="interface-summary">
+              <div class="interface-stat-grid">
+                <div v-for="item in interfaceStats" :key="item.label" class="interface-stat-card">
+                  <div class="interface-stat-value">{{ item.value }}</div>
+                  <div class="interface-stat-label">{{ item.label }}</div>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="interfaceLoading" class="interface-loading">
+              <a-spin tip="正在读取 interface.json…">
+                <a-alert
+                  type="info"
+                  show-icon
+                  message="正在加载 MaaFW 项目接口"
+                  description="请稍候，正在解析 interface.json 中的控制器、资源、任务和选项定义"
+                />
+              </a-spin>
+            </div>
+            <div v-else class="interface-guide-card">
+              <InboxOutlined class="interface-guide-icon" aria-hidden="true" />
+              <h3>开始配置 MaaFW 项目</h3>
+              <p>
+                选择一个包含 interface.json
+                的项目目录，系统将自动解析可用的控制器、资源、任务和选项。
+              </p>
+              <a-button type="primary" size="large" @click="selectMaaFWPath">
+                <template #icon>
+                  <FolderOpenOutlined />
+                </template>
+                选择项目目录
+              </a-button>
+              <a href="#" class="interface-guide-link" @click.prevent>如何获取 interface.json</a>
+            </div>
+
+            <div v-if="agentEnvLoading || agentEnvResult" class="agent-env-panel">
+              <a-spin :spinning="agentEnvLoading" tip="正在准备 MaaFW 运行环境…">
+                <a-alert
+                  v-if="agentEnvLoading"
+                  type="info"
+                  show-icon
+                  message="正在准备 MaaFW 运行环境"
+                  description="将预热 AUTO-MAS Runner 隔离 venv，并检查或准备项目 Agent Python 环境。"
+                />
+                <template v-else-if="agentEnvResult">
+                  <a-alert
+                    :type="agentEnvAlertType"
+                    show-icon
+                    :message="agentEnvSummary"
+                    :description="agentEnvDescription"
                   />
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-row :gutter="24" class="control-detail-row">
-              <a-col :span="18">
+                  <a-collapse
+                    v-if="agentEnvResult.agents.length"
+                    class="agent-env-collapse"
+                    :default-active-key="agentEnvResult.agents.map((_, index) => String(index))"
+                  >
+                    <a-collapse-panel
+                      v-for="(agent, index) in agentEnvResult.agents"
+                      :key="String(index)"
+                    >
+                      <template #header>
+                        <div class="agent-env-agent-header">
+                          <span class="agent-env-agent-title">{{ agent.childExec }}</span>
+                          <a-tag :color="getAgentRuntimeColor(agent.runtimeKind)">
+                            {{ getAgentRuntimeLabel(agent.runtimeKind) }}
+                          </a-tag>
+                        </div>
+                      </template>
+                      <a-descriptions size="small" :column="1">
+                        <a-descriptions-item label="解释器">
+                          <span class="copyable-code">
+                            <code>{{ agent.executable }}</code>
+                            <a-button
+                              type="text"
+                              size="small"
+                              aria-label="复制解释器路径"
+                              @click="copyToClipboard(agent.executable)"
+                            >
+                              <template #icon><CopyOutlined /></template>
+                            </a-button>
+                          </span>
+                        </a-descriptions-item>
+                        <a-descriptions-item v-if="agent.isolatedVenvPath" label="隔离 venv">
+                          <span class="copyable-code">
+                            <code>{{ agent.isolatedVenvPath }}</code>
+                            <a-button
+                              type="text"
+                              size="small"
+                              aria-label="复制隔离 venv 路径"
+                              @click="copyToClipboard(agent.isolatedVenvPath || '')"
+                            >
+                              <template #icon><CopyOutlined /></template>
+                            </a-button>
+                          </span>
+                        </a-descriptions-item>
+                        <a-descriptions-item v-if="agent.fallbackReason" label="准备说明">
+                          {{ agent.fallbackReason }}
+                        </a-descriptions-item>
+                      </a-descriptions>
+                    </a-collapse-panel>
+                  </a-collapse>
+                  <a-empty v-else description="当前项目没有声明 Agent" />
+                  <div v-if="agentEnvResult.logs.length" class="agent-env-log-box">
+                    <div class="agent-env-log-header">
+                      <span>准备日志</span>
+                      <a-button
+                        size="small"
+                        @click="copyToClipboard(agentEnvResult.logs.join('\n'))"
+                      >
+                        <template #icon><CopyOutlined /></template>
+                        复制日志
+                      </a-button>
+                    </div>
+                    <pre>{{ agentEnvResult.logs.join('\n') }}</pre>
+                  </div>
+                </template>
+              </a-spin>
+            </div>
+          </div>
+        </Transition>
+
+        <Transition name="step-fade" mode="out-in">
+          <div v-if="currentStep === 1" key="control" class="form-section form-section-alt">
+            <div class="section-header">
+              <h3>控制方式与游戏资源</h3>
+            </div>
+
+            <a-row :gutter="24" class="controller-resource-row">
+              <a-col :span="12">
                 <a-form-item>
                   <template #label>
-                    <a-tooltip title="扫描并选择 MaaFW Win32 controller 要连接的游戏客户端窗口">
+                    <a-tooltip title="选择 MaaFW Controller，决定使用 ADB、Win32 等控制方式">
                       <span class="form-label">
-                        游戏客户端
-                        <QuestionCircleOutlined class="help-icon" />
+                        控制方式
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
                       </span>
                     </a-tooltip>
                   </template>
                   <a-select
-                    v-model:value="maafwConfig.Device.HWnd"
+                    v-model:value="maafwConfig.Info.Controller"
                     size="large"
-                    placeholder="请选择游戏客户端窗口"
-                    :loading="windowLoading"
+                    placeholder="自动选择"
+                    allow-clear
                     :disabled="interfaceDependentDisabled"
-                    @change="handleDesktopWindowChange"
+                    @change="handleControllerChange"
                   >
-                    <a-select-option :value="0">自动匹配</a-select-option>
                     <a-select-option
-                      v-for="item in desktopWindowOptions"
-                      :key="item.value"
-                      :value="item.value"
+                      v-for="item in controllerOptions"
+                      :key="item.name"
+                      :value="item.name"
+                      :disabled="!isDirectControllerType(item.type)"
                     >
-                      {{ item.label }}
+                      {{ item.label || item.name }} · {{ item.type }}
+                      <span v-if="!isDirectControllerType(item.type)"> · 建议使用原 UI</span>
                     </a-select-option>
                   </a-select>
                 </a-form-item>
               </a-col>
-              <a-col :span="6">
-                <a-form-item label="窗口扫描">
-                  <a-button
+              <a-col :span="12">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip
+                      title="选择 MaaFW Resource，留空时自动选择匹配当前控制方式的第一个 Resource"
+                    >
+                      <span class="form-label">
+                        游戏资源
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-select
+                    v-model:value="maafwConfig.Info.Resource"
                     size="large"
-                    block
-                    :loading="windowLoading"
+                    placeholder="自动选择"
+                    allow-clear
                     :disabled="interfaceDependentDisabled"
-                    @click="() => handlePreviewWindows()"
+                    @change="handleResourceChange"
+                  >
+                    <a-select-option
+                      v-for="item in resourceOptions"
+                      :key="item.name"
+                      :value="item.name"
+                    >
+                      {{ item.label || item.name }}
+                    </a-select-option>
+                  </a-select>
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-alert
+              v-if="unsupportedControllerOptions.length"
+              class="control-strategy-alert"
+              type="info"
+              show-icon
+              :message="unsupportedControllerMessage"
+            />
+
+            <Transition name="control-fade" mode="out-in">
+              <div v-if="isAdbController" key="adb">
+                <a-row :gutter="24" class="control-detail-row">
+                  <a-col :span="12">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="MaaFW ADB controller 运行时使用该模拟器配置">
+                          <span class="form-label">
+                            模拟器
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-select
+                        v-model:value="maafwConfig.Emulator.Id"
+                        size="large"
+                        placeholder="请选择模拟器"
+                        :loading="emulatorLoading"
+                        @change="handleEmulatorSelectChange"
+                      >
+                        <a-select-option value="-">不指定</a-select-option>
+                        <a-select-option
+                          v-for="item in emulatorOptions"
+                          :key="item.value"
+                          :value="item.value"
+                        >
+                          {{ item.label }}
+                        </a-select-option>
+                      </a-select>
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="12">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip
+                          title="选择模拟器的具体实例，运行时会传递给 MaaFW ADB controller"
+                        >
+                          <span class="form-label">
+                            模拟器实例
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-input
+                        v-if="
+                          emulatorDeviceOptions.length === 0 &&
+                          !emulatorDeviceLoading &&
+                          maafwConfig.Emulator.Id &&
+                          maafwConfig.Emulator.Id !== '-'
+                        "
+                        v-model:value="maafwConfig.Emulator.Index"
+                        size="large"
+                        placeholder="请输入模拟器实例索引"
+                        class="modern-input"
+                        @blur="handleChange('Emulator', 'Index', maafwConfig.Emulator.Index)"
+                      />
+                      <a-select
+                        v-else
+                        v-model:value="maafwConfig.Emulator.Index"
+                        size="large"
+                        placeholder="请先选择模拟器"
+                        :loading="emulatorDeviceLoading"
+                        :disabled="!maafwConfig.Emulator.Id || maafwConfig.Emulator.Id === '-'"
+                        @change="handleChange('Emulator', 'Index', $event)"
+                      >
+                        <a-select-option value="-">不指定</a-select-option>
+                        <a-select-option
+                          v-for="item in emulatorDeviceOptions"
+                          :key="item.value"
+                          :value="item.value"
+                        >
+                          {{ item.label }}
+                        </a-select-option>
+                      </a-select>
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+
+                <a-alert
+                  class="control-strategy-alert"
+                  type="info"
+                  show-icon
+                  :message="adbControlStrategyMessage"
+                />
+                <a-descriptions :column="3" size="small" bordered class="control-strategy-summary">
+                  <a-descriptions-item
+                    v-for="item in adbControlStrategyItems"
+                    :key="item.label"
+                    :label="item.label"
+                  >
+                    {{ item.value }}
+                  </a-descriptions-item>
+                </a-descriptions>
+              </div>
+
+              <div v-else-if="isDesktopController" key="win32">
+                <a-row :gutter="24" class="control-detail-row">
+                  <a-col :span="12">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="选择由 MAS 启动并管理生命周期的实际游戏 exe 文件">
+                          <span class="form-label">
+                            游戏可执行文件
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-input-group compact class="path-input-group">
+                        <a-input
+                          v-model:value="maafwConfig.Game.Path"
+                          placeholder="请选择实际启动的游戏 exe"
+                          size="large"
+                          class="path-input"
+                          readonly
+                        />
+                        <a-button size="large" class="path-button" @click="selectGamePath">
+                          <template #icon>
+                            <FolderOpenOutlined />
+                          </template>
+                          选择文件
+                        </a-button>
+                      </a-input-group>
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="6">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="启动游戏时传入的命令行参数">
+                          <span class="form-label">
+                            启动参数
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-input
+                        v-model:value="maafwConfig.Game.Arguments"
+                        placeholder="可选"
+                        size="large"
+                        class="modern-input"
+                        @blur="handleChange('Game', 'Arguments', maafwConfig.Game.Arguments)"
+                      />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="6">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="启动游戏后等待窗口就绪的时间，单位秒">
+                          <span class="form-label">
+                            等待时间
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-input-number
+                        v-model:value="maafwConfig.Game.WaitTime"
+                        :min="0"
+                        :max="9999"
+                        size="large"
+                        style="width: 100%"
+                        @blur="handleChange('Game', 'WaitTime', maafwConfig.Game.WaitTime)"
+                      />
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+                <a-row :gutter="24" class="control-detail-row">
+                  <a-col :span="8">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="任务结束后关闭由 MAS 启动的游戏进程">
+                          <span class="form-label">
+                            结束后关闭游戏
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-switch
+                        v-model:checked="maafwConfig.Game.CloseOnFinish"
+                        checked-children="开启"
+                        un-checked-children="关闭"
+                        @change="
+                          handleChange('Game', 'CloseOnFinish', maafwConfig.Game.CloseOnFinish)
+                        "
+                      />
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+                <a-row :gutter="24" class="control-detail-row">
+                  <a-col :span="18">
+                    <a-form-item>
+                      <template #label>
+                        <a-tooltip title="扫描并选择 MaaFW Win32 controller 要连接的游戏客户端窗口">
+                          <span class="form-label">
+                            游戏客户端
+                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                          </span>
+                        </a-tooltip>
+                      </template>
+                      <a-select
+                        v-model:value="maafwConfig.Device.HWnd"
+                        size="large"
+                        placeholder="请选择游戏客户端窗口"
+                        :loading="windowLoading"
+                        :disabled="interfaceDependentDisabled"
+                        @change="handleDesktopWindowChange"
+                      >
+                        <a-select-option :value="0">自动匹配</a-select-option>
+                        <a-select-option
+                          v-for="item in desktopWindowOptions"
+                          :key="item.value"
+                          :value="item.value"
+                        >
+                          {{ item.label }}
+                        </a-select-option>
+                      </a-select>
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="6">
+                    <a-form-item label="窗口扫描">
+                      <a-button
+                        size="large"
+                        block
+                        :loading="windowLoading"
+                        :disabled="interfaceDependentDisabled"
+                        @click="() => handlePreviewWindows()"
+                      >
+                        <template #icon>
+                          <FileSearchOutlined />
+                        </template>
+                        扫描客户端
+                      </a-button>
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+
+                <a-alert
+                  class="control-strategy-alert"
+                  type="info"
+                  show-icon
+                  message="Win32 控制方式会连接已打开的游戏客户端；未选择时按 interface 规则自动匹配。"
+                />
+              </div>
+            </Transition>
+          </div>
+        </Transition>
+
+        <Transition name="step-fade" mode="out-in">
+          <div v-if="currentStep === 2" key="update" class="form-section">
+            <div class="section-header">
+              <h3>项目更新</h3>
+            </div>
+            <a-alert
+              v-if="isAutoUpdateDisabled"
+              class="update-alert"
+              type="warning"
+              show-icon
+              message="当前脚本未声明版本，无法判断更新"
+            />
+            <a-row :gutter="24" class="update-config-row">
+              <a-col :span="8">
+                <a-form-item label="更新源">
+                  <a-select
+                    v-model:value="maafwConfig.Update.Source"
+                    size="large"
+                    :options="updateSourceOptions"
+                    @change="handleChange('Update', 'Source', $event)"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item label="渠道">
+                  <a-select
+                    v-model:value="maafwConfig.Update.Channel"
+                    size="large"
+                    :options="updateChannelOptions"
+                    @change="handleChange('Update', 'Channel', $event)"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip
+                      title="填写后优先使用脚本自己的 Mirror 酱 CDK；留空时使用 MAS 全局更新配置中的 CDK"
+                    >
+                      <span class="form-label">
+                        Mirror 酱 CDK
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-input-password
+                    v-model:value="maafwConfig.Update.MirrorChyanCDK"
+                    placeholder="留空时使用全局 Mirror 酱 CDK"
+                    size="large"
+                    class="modern-input"
+                    @blur="
+                      handleChange('Update', 'MirrorChyanCDK', maafwConfig.Update.MirrorChyanCDK)
+                    "
+                  />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-row :gutter="24" class="update-action-row">
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip
+                      title="运行 MaaFW 任务前先检查项目更新，更新完成后再读取 interface 与加载资源"
+                    >
+                      <span class="form-label">
+                        运行前自动更新
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-switch
+                    v-model:checked="maafwConfig.Update.IfAutoUpdate"
+                    :disabled="isAutoUpdateDisabled"
+                    checked-children="开启"
+                    un-checked-children="关闭"
+                    @change="
+                      handleChange('Update', 'IfAutoUpdate', maafwConfig.Update.IfAutoUpdate)
+                    "
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item label="手动更新">
+                  <a-button
+                    type="primary"
+                    size="large"
+                    class="manual-update-button"
+                    :loading="projectUpdateLoading"
+                    :disabled="projectUpdateDisabled"
+                    @click="handleManualProjectUpdate"
                   >
                     <template #icon>
-                      <FileSearchOutlined />
+                      <SyncOutlined />
                     </template>
-                    扫描客户端
+                    立即更新资源
                   </a-button>
                 </a-form-item>
               </a-col>
             </a-row>
-
-            <a-alert
-              class="control-strategy-alert"
-              type="info"
-              show-icon
-              message="Win32 控制方式会连接已打开的游戏客户端；未选择时按 interface 规则自动匹配。"
-            />
-          </template>
-        </div>
-
-        <div class="form-section">
-          <div class="section-header">
-            <h3>项目更新</h3>
+            <div v-if="projectUpdateLogs.length" class="agent-env-log-box project-update-log-box">
+              <div
+                v-for="(log, index) in projectUpdateLogs"
+                :key="`${index}-${log}`"
+                class="agent-env-log-line"
+              >
+                {{ log }}
+              </div>
+            </div>
+            <div v-if="previewData" class="update-info-grid">
+              <div class="update-info-item">
+                <div class="update-info-label">当前版本</div>
+                <div class="update-info-value">{{ previewData.project.version || '未声明' }}</div>
+              </div>
+              <div class="update-info-item">
+                <div class="update-info-label">GitHub</div>
+                <div class="update-info-value">{{ previewData.project.github || '未声明' }}</div>
+              </div>
+              <div class="update-info-item">
+                <div class="update-info-label">MirrorChyan RID</div>
+                <div class="update-info-value">
+                  {{ previewData.project.mirrorchyanRid || '未声明' }}
+                </div>
+              </div>
+              <div class="update-info-item">
+                <div class="update-info-label">多平台</div>
+                <div class="update-info-value">
+                  {{ previewData.project.mirrorchyanMultiplatform ? '是' : '否' }}
+                </div>
+              </div>
+            </div>
           </div>
-          <a-alert
-            v-if="isAutoUpdateDisabled"
-            class="update-alert"
-            type="warning"
-            show-icon
-            message="当前脚本未声明版本，无法判断更新"
-          />
-          <a-row :gutter="24" class="update-config-row">
-            <a-col :span="8">
-              <a-form-item label="更新源">
-                <a-select
-                  v-model:value="maafwConfig.Update.Source"
-                  size="large"
-                  :options="updateSourceOptions"
-                  @change="handleChange('Update', 'Source', $event)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item label="渠道">
-                <a-select
-                  v-model:value="maafwConfig.Update.Channel"
-                  size="large"
-                  :options="updateChannelOptions"
-                  @change="handleChange('Update', 'Channel', $event)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip
-                    title="填写后优先使用脚本自己的 Mirror 酱 CDK；留空时使用 MAS 全局更新配置中的 CDK"
-                  >
-                    <span class="form-label">
-                      Mirror 酱 CDK
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-input-password
-                  v-model:value="maafwConfig.Update.MirrorChyanCDK"
-                  placeholder="留空时使用全局 Mirror 酱 CDK"
-                  size="large"
-                  class="modern-input"
-                  @blur="
-                    handleChange('Update', 'MirrorChyanCDK', maafwConfig.Update.MirrorChyanCDK)
-                  "
-                />
-              </a-form-item>
-            </a-col>
-          </a-row>
-          <a-row :gutter="24" class="update-action-row">
-            <a-col :span="8">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip
-                    title="运行 MaaFW 任务前先检查项目更新，更新完成后再读取 interface 与加载资源"
-                  >
-                    <span class="form-label">
-                      运行前自动更新
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-switch
-                  v-model:checked="maafwConfig.Update.IfAutoUpdate"
-                  :disabled="isAutoUpdateDisabled"
-                  checked-children="开启"
-                  un-checked-children="关闭"
-                  @change="handleChange('Update', 'IfAutoUpdate', maafwConfig.Update.IfAutoUpdate)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item label="手动更新">
-                <a-button
-                  type="primary"
-                  size="large"
-                  class="manual-update-button"
-                  :loading="projectUpdateLoading"
-                  :disabled="projectUpdateDisabled"
-                  @click="handleManualProjectUpdate"
-                >
-                  <template #icon>
-                    <SyncOutlined />
+        </Transition>
+
+        <Transition name="step-fade" mode="out-in">
+          <div v-if="currentStep === 3" key="run" class="form-section form-section-alt">
+            <div class="section-header">
+              <h3>运行配置</h3>
+            </div>
+            <a-row :gutter="24">
+              <a-col :span="8">
+                <a-form-item label="用户单日代理次数上限">
+                  <a-input-number
+                    v-model:value="maafwConfig.Run.ProxyTimesLimit"
+                    :min="0"
+                    :max="9999"
+                    size="large"
+                    class="modern-number-input"
+                    style="width: 100%"
+                    @blur="handleChange('Run', 'ProxyTimesLimit', maafwConfig.Run.ProxyTimesLimit)"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item label="代理重试次数限制">
+                  <a-input-number
+                    v-model:value="maafwConfig.Run.RunTimesLimit"
+                    :min="1"
+                    :max="9999"
+                    size="large"
+                    class="modern-number-input"
+                    style="width: 100%"
+                    @blur="handleChange('Run', 'RunTimesLimit', maafwConfig.Run.RunTimesLimit)"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item label="单次运行时间限制（分钟）">
+                  <a-input-number
+                    v-model:value="maafwConfig.Run.RunTimeLimit"
+                    :min="1"
+                    :max="9999"
+                    size="large"
+                    class="modern-number-input"
+                    style="width: 100%"
+                    @blur="handleChange('Run', 'RunTimeLimit', maafwConfig.Run.RunTimeLimit)"
+                  />
+                </a-form-item>
+              </a-col>
+            </a-row>
+
+            <a-row :gutter="24" class="period-task-row">
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="任务在今日正常完成一次后，今日后续运行会自动跳过">
+                      <span class="form-label">
+                        每日完成后跳过
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
                   </template>
-                  立即更新资源
-                </a-button>
-              </a-form-item>
-            </a-col>
-          </a-row>
-          <div v-if="projectUpdateLogs.length" class="agent-env-log-box project-update-log-box">
-            <div
-              v-for="(log, index) in projectUpdateLogs"
-              :key="`${index}-${log}`"
-              class="agent-env-log-line"
-            >
-              {{ log }}
-            </div>
+                  <a-select
+                    v-model:value="dailyOnceTasks"
+                    mode="multiple"
+                    size="large"
+                    :options="periodTaskOptions"
+                    :disabled="interfaceDependentDisabled"
+                    option-filter-prop="label"
+                    show-search
+                    :max-tag-count="'responsive'"
+                    placeholder="先读取 interface 后选择任务"
+                    @change="handlePeriodTaskChange('DailyOnceTasks', $event as string[])"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="任务在本周正常完成一次后，本周后续运行会自动跳过">
+                      <span class="form-label">
+                        每周完成后跳过
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-select
+                    v-model:value="weeklyOnceTasks"
+                    mode="multiple"
+                    size="large"
+                    :options="periodTaskOptions"
+                    :disabled="interfaceDependentDisabled"
+                    option-filter-prop="label"
+                    show-search
+                    :max-tag-count="'responsive'"
+                    placeholder="先读取 interface 后选择任务"
+                    @change="handlePeriodTaskChange('WeeklyOnceTasks', $event as string[])"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="任务在本月正常完成一次后，本月后续运行会自动跳过">
+                      <span class="form-label">
+                        每月完成后跳过
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-select
+                    v-model:value="monthlyOnceTasks"
+                    mode="multiple"
+                    size="large"
+                    :options="periodTaskOptions"
+                    :disabled="interfaceDependentDisabled"
+                    option-filter-prop="label"
+                    show-search
+                    :max-tag-count="'responsive'"
+                    placeholder="先读取 interface 后选择任务"
+                    @change="handlePeriodTaskChange('MonthlyOnceTasks', $event as string[])"
+                  />
+                </a-form-item>
+              </a-col>
+            </a-row>
           </div>
-          <div v-if="previewData" class="update-info-grid">
-            <div class="update-info-item">
-              <div class="update-info-label">当前版本</div>
-              <div class="update-info-value">{{ previewData.project.version || '未声明' }}</div>
-            </div>
-            <div class="update-info-item">
-              <div class="update-info-label">GitHub</div>
-              <div class="update-info-value">{{ previewData.project.github || '未声明' }}</div>
-            </div>
-            <div class="update-info-item">
-              <div class="update-info-label">MirrorChyan RID</div>
-              <div class="update-info-value">
-                {{ previewData.project.mirrorchyanRid || '未声明' }}
-              </div>
-            </div>
-            <div class="update-info-item">
-              <div class="update-info-label">多平台</div>
-              <div class="update-info-value">
-                {{ previewData.project.mirrorchyanMultiplatform ? '是' : '否' }}
-              </div>
-            </div>
-          </div>
-        </div>
+        </Transition>
 
-        <div class="form-section">
-          <div class="section-header">
-            <h3>运行配置</h3>
-          </div>
-          <a-row :gutter="24">
-            <a-col :span="8">
-              <a-form-item label="用户单日代理次数上限">
-                <a-input-number
-                  v-model:value="maafwConfig.Run.ProxyTimesLimit"
-                  :min="0"
-                  :max="9999"
-                  size="large"
-                  class="modern-number-input"
-                  style="width: 100%"
-                  @blur="handleChange('Run', 'ProxyTimesLimit', maafwConfig.Run.ProxyTimesLimit)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item label="代理重试次数限制">
-                <a-input-number
-                  v-model:value="maafwConfig.Run.RunTimesLimit"
-                  :min="1"
-                  :max="9999"
-                  size="large"
-                  class="modern-number-input"
-                  style="width: 100%"
-                  @blur="handleChange('Run', 'RunTimesLimit', maafwConfig.Run.RunTimesLimit)"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item label="单次运行时间限制（分钟）">
-                <a-input-number
-                  v-model:value="maafwConfig.Run.RunTimeLimit"
-                  :min="1"
-                  :max="9999"
-                  size="large"
-                  class="modern-number-input"
-                  style="width: 100%"
-                  @blur="handleChange('Run', 'RunTimeLimit', maafwConfig.Run.RunTimeLimit)"
-                />
-              </a-form-item>
-            </a-col>
-          </a-row>
-
-          <a-row :gutter="24" class="period-task-row">
-            <a-col :span="8">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip title="任务在今日正常完成一次后，今日后续运行会自动跳过">
-                    <span class="form-label">
-                      每日完成后跳过
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-select
-                  v-model:value="dailyOnceTasks"
-                  mode="multiple"
-                  size="large"
-                  :options="periodTaskOptions"
-                  :disabled="interfaceDependentDisabled"
-                  option-filter-prop="label"
-                  show-search
-                  :max-tag-count="'responsive'"
-                  placeholder="先读取 interface 后选择任务"
-                  @change="handlePeriodTaskChange('DailyOnceTasks', $event as string[])"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip title="任务在本周正常完成一次后，本周后续运行会自动跳过">
-                    <span class="form-label">
-                      每周完成后跳过
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-select
-                  v-model:value="weeklyOnceTasks"
-                  mode="multiple"
-                  size="large"
-                  :options="periodTaskOptions"
-                  :disabled="interfaceDependentDisabled"
-                  option-filter-prop="label"
-                  show-search
-                  :max-tag-count="'responsive'"
-                  placeholder="先读取 interface 后选择任务"
-                  @change="handlePeriodTaskChange('WeeklyOnceTasks', $event as string[])"
-                />
-              </a-form-item>
-            </a-col>
-            <a-col :span="8">
-              <a-form-item>
-                <template #label>
-                  <a-tooltip title="任务在本月正常完成一次后，本月后续运行会自动跳过">
-                    <span class="form-label">
-                      每月完成后跳过
-                      <QuestionCircleOutlined class="help-icon" />
-                    </span>
-                  </a-tooltip>
-                </template>
-                <a-select
-                  v-model:value="monthlyOnceTasks"
-                  mode="multiple"
-                  size="large"
-                  :options="periodTaskOptions"
-                  :disabled="interfaceDependentDisabled"
-                  option-filter-prop="label"
-                  show-search
-                  :max-tag-count="'responsive'"
-                  placeholder="先读取 interface 后选择任务"
-                  @change="handlePeriodTaskChange('MonthlyOnceTasks', $event as string[])"
-                />
-              </a-form-item>
-            </a-col>
-          </a-row>
+        <div class="step-nav">
+          <a-button
+            v-if="currentStep > 0"
+            size="large"
+            class="step-nav-button"
+            @click="goToStep(currentStep - 1)"
+          >
+            上一步
+          </a-button>
+          <a-button
+            v-if="currentStep < 3"
+            type="primary"
+            size="large"
+            class="step-nav-button step-nav-primary"
+            :disabled="!canAdvanceNext"
+            @click="goToStep(currentStep + 1)"
+          >
+            下一步
+          </a-button>
+          <a-button
+            v-else
+            type="primary"
+            size="large"
+            class="step-nav-button step-nav-primary"
+            @click="handleCancel"
+          >
+            完成
+          </a-button>
         </div>
       </a-form>
     </a-card>
@@ -783,6 +881,8 @@
       <img
         :src="getScriptIcon(formData.type, scriptIconUrl)"
         :alt="formData.type"
+        width="28"
+        height="28"
         class="script-edit-hint-logo"
         @error="event => handleScriptIconError(event, formData.type)"
       />
@@ -804,14 +904,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { FormInstance } from 'ant-design-vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   ArrowLeftOutlined,
+  CopyOutlined,
   FileSearchOutlined,
   FolderOpenOutlined,
+  InboxOutlined,
   QuestionCircleOutlined,
   SyncOutlined,
   ToolOutlined,
@@ -846,6 +948,9 @@ const pageLoading = ref(false)
 const scriptId = route.params.id as string
 const isInitializing = ref(true)
 const isSaving = ref(false)
+const saveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const saveErrorMessage = ref('')
+const hasUnsavedChanges = ref(false)
 const previewData = ref<MaaFWInterfacePreviewData | null>(null)
 const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const projectUpdateLogs = ref<string[]>([])
@@ -860,6 +965,36 @@ const globalUpdateChannel = ref<string>('')
 const isAutoUpdateDisabled = computed(() =>
   Boolean(previewData.value && !previewData.value.project.version)
 )
+const currentStep = ref(0)
+let saveStatusTimer: ReturnType<typeof setTimeout> | null = null
+
+const isStepOneComplete = computed(() => Boolean(previewData.value))
+const isStepTwoComplete = computed(() =>
+  Boolean(maafwConfig.Info.Controller && maafwConfig.Info.Resource)
+)
+const maxReachableStep = computed(() => {
+  if (!isStepOneComplete.value) return 0
+  if (!isStepTwoComplete.value) return 1
+  return 3
+})
+const stepItems = computed(() => [
+  {
+    title: '选择项目',
+    status: currentStep.value === 0 ? 'process' : isStepOneComplete.value ? 'finish' : 'wait',
+  },
+  {
+    title: '控制配置',
+    status: currentStep.value === 1 ? 'process' : isStepTwoComplete.value ? 'finish' : 'wait',
+  },
+  {
+    title: '更新设置',
+    status: currentStep.value === 2 ? 'process' : isStepTwoComplete.value ? 'finish' : 'wait',
+  },
+  {
+    title: '运行参数',
+    status: currentStep.value === 3 ? 'process' : isStepTwoComplete.value ? 'finish' : 'wait',
+  },
+])
 const projectUpdateDisabled = computed(
   () =>
     !maafwConfig.Info.Path ||
@@ -992,6 +1127,57 @@ const previewProjectTitle = computed(() => {
   const project = previewData.value.project
   return project.title || project.label || project.name
 })
+
+const interfaceStats = computed(() => [
+  { label: '任务', value: previewData.value?.tasks.length ?? 0 },
+  { label: '预设', value: previewData.value?.presets.length ?? 0 },
+  { label: '控制器', value: previewData.value?.controllers.length ?? 0 },
+  { label: '资源', value: previewData.value?.resources.length ?? 0 },
+  { label: '导入', value: previewData.value?.importCount ?? 0 },
+  { label: 'Agent', value: previewData.value?.agentCount ?? 0 },
+  { label: '版本', value: previewData.value?.project.version || '-' },
+  { label: '项目', value: previewProjectTitle.value },
+])
+
+const setSaveStatus = (status: 'idle' | 'saving' | 'saved' | 'error', errorMessage = '') => {
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer)
+    saveStatusTimer = null
+  }
+  saveStatus.value = status
+  saveErrorMessage.value = errorMessage
+  if (status === 'saved') {
+    saveStatusTimer = setTimeout(() => {
+      saveStatus.value = 'idle'
+      saveStatusTimer = null
+    }, 2000)
+  }
+}
+
+const canAdvanceNext = computed(() => {
+  if (currentStep.value === 0) return isStepOneComplete.value
+  if (currentStep.value === 1) return isStepTwoComplete.value
+  return true
+})
+
+const goToStep = (step: number) => {
+  if (step < 0 || step > 3) return
+  if (step > currentStep.value && step > maxReachableStep.value) return
+  currentStep.value = step
+}
+
+const copyToClipboard = async (text: string) => {
+  const value = String(text || '')
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    message.success('已复制')
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`复制失败: ${errorMsg}`)
+    message.error('复制失败')
+  }
+}
 
 const normalizeProjectScriptName = (rawName?: string | null) => {
   if (!rawName) return ''
@@ -1329,15 +1515,22 @@ const handleChange = async (
 ) => {
   if ((!force && isInitializing.value) || isSaving.value) return
 
+  hasUnsavedChanges.value = true
+  setSaveStatus('saving')
   isSaving.value = true
   try {
     const success = await updateScriptConfig({ [category]: { [key]: value } })
     if (success) {
       logger.info(`配置已保存: ${category}.${key}`)
+      hasUnsavedChanges.value = false
+      setSaveStatus('saved')
+    } else {
+      setSaveStatus('error')
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
     logger.error(`保存失败: ${errorMsg}`)
+    setSaveStatus('error', `保存失败：${errorMsg}`)
   } finally {
     isSaving.value = false
   }
@@ -1642,13 +1835,37 @@ const selectGamePath = async () => {
 }
 
 const handleCancel = () => {
+  if (hasUnsavedChanges.value || isSaving.value) {
+    Modal.confirm({
+      title: '有未保存的更改',
+      content: '确定要离开吗？未保存的更改可能会丢失。',
+      okText: '离开',
+      cancelText: '继续编辑',
+      onOk: () => router.push('/scripts'),
+    })
+    return
+  }
   router.push('/scripts')
 }
 
+const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+  if (!hasUnsavedChanges.value && !isSaving.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
 onMounted(async () => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
   await loadScript()
   await loadEmulatorOptions()
   isInitializing.value = false
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer)
+  }
 })
 </script>
 
@@ -1659,6 +1876,10 @@ onMounted(async () => {
   align-items: center;
   margin-bottom: 32px;
   padding: 0 8px;
+}
+
+.save-status-bar {
+  margin: -16px 8px 16px;
 }
 
 .header-nav {
@@ -1722,6 +1943,27 @@ onMounted(async () => {
   padding: 24px;
 }
 
+.config-steps {
+  margin-bottom: 24px;
+}
+
+.step-nav {
+  display: flex;
+  align-items: center;
+  padding: 16px 0 0;
+  margin-top: 24px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.step-nav-button {
+  height: 40px;
+}
+
+.step-nav-primary {
+  min-width: 120px;
+  margin-left: auto;
+}
+
 .type-tag {
   font-size: 14px;
   font-weight: 600;
@@ -1730,11 +1972,17 @@ onMounted(async () => {
 }
 
 .form-section {
-  margin-bottom: 24px;
+  margin-bottom: 40px;
 }
 
 .form-section:last-child {
   margin-bottom: 0;
+}
+
+.form-section-alt {
+  padding: 24px;
+  border-radius: 8px;
+  background: var(--ant-color-fill-quaternary);
 }
 
 .update-alert {
@@ -1806,7 +2054,7 @@ onMounted(async () => {
   content: '';
   width: 4px;
   height: 20px;
-  background: var(--ant-color-primary);
+  background: var(--ant-color-text-quaternary);
   border-radius: 2px;
 }
 
@@ -1854,15 +2102,88 @@ onMounted(async () => {
   font-weight: 600;
 }
 
+.path-secondary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.path-secondary-actions .path-button {
+  border: 1px solid var(--ant-color-border);
+  border-radius: 6px;
+  background: var(--ant-color-bg-container);
+  color: var(--ant-color-text);
+  font-weight: 500;
+}
+
 .interface-summary {
   margin-top: 8px;
 }
 
-.interface-empty {
-  margin-top: 8px;
+.interface-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.interface-stat-card {
+  min-width: 0;
   padding: 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-container);
+}
+
+.interface-stat-value {
+  color: var(--ant-color-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.interface-stat-label {
+  margin-top: 6px;
+  color: var(--ant-color-text-secondary);
+  font-size: 13px;
+}
+
+.interface-guide-card {
+  display: flex;
+  max-width: 480px;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 8px auto 0;
+  padding: 28px 24px;
   border: 1px dashed var(--ant-color-border);
   border-radius: 8px;
+  background: var(--ant-color-fill-quaternary);
+  text-align: center;
+}
+
+.interface-guide-card h3 {
+  margin: 0;
+  color: var(--ant-color-text);
+  font-size: 18px;
+}
+
+.interface-guide-card p {
+  max-width: 380px;
+  margin: 0;
+  color: var(--ant-color-text-secondary);
+  line-height: 1.6;
+}
+
+.interface-guide-icon {
+  color: var(--ant-color-primary);
+  font-size: 64px;
+}
+
+.interface-guide-link {
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
 }
 
 .interface-loading {
@@ -1878,17 +2199,8 @@ onMounted(async () => {
   margin-top: 16px;
 }
 
-.agent-env-agent-list {
-  display: grid;
-  gap: 8px;
+.agent-env-collapse {
   margin-top: 12px;
-}
-
-.agent-env-agent-item {
-  padding: 12px;
-  border: 1px solid var(--ant-color-border-secondary);
-  border-radius: 8px;
-  background: var(--ant-color-fill-quaternary);
 }
 
 .agent-env-agent-header {
@@ -1906,16 +2218,15 @@ onMounted(async () => {
   overflow-wrap: anywhere;
 }
 
-.agent-env-agent-line {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+.copyable-code {
+  display: inline-flex;
+  max-width: 100%;
   gap: 8px;
-  color: var(--ant-color-text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
+  align-items: center;
 }
 
-.agent-env-agent-line code {
+.copyable-code code {
+  min-width: 0;
   color: var(--ant-color-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1934,7 +2245,20 @@ onMounted(async () => {
   line-height: 1.6;
 }
 
-.agent-env-log-line {
+.agent-env-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--ant-color-text);
+  font-family: var(--font-family, inherit);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-env-log-box pre {
+  margin: 0;
   color: var(--ant-color-text-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1976,6 +2300,27 @@ onMounted(async () => {
   margin-top: 16px;
 }
 
+.step-fade-enter-active,
+.step-fade-leave-active,
+.control-fade-enter-active,
+.control-fade-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.step-fade-enter-from,
+.control-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.step-fade-leave-to,
+.control-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
 .config-form :deep(.ant-form-item) {
   margin-bottom: 20px;
 }
@@ -1989,6 +2334,18 @@ onMounted(async () => {
 
   .config-card :deep(.ant-card-body) {
     padding: 16px;
+  }
+
+  .path-secondary-actions {
+    flex-direction: column;
+  }
+
+  .path-secondary-actions .ant-btn {
+    width: 100%;
+  }
+
+  .interface-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .update-info-grid {
