@@ -398,7 +398,7 @@ project pack 让 M9A 只声明差异（默认队列、周月规则、文案）�
 
 ### Q3: facade 什么时候启用？
 
-facade 默认不启用。只有 old/new 对照通过并经人工确认后，才允许通过**非旧配置项**的方式启用（环境变量 / feature flag / 测试入口），**不引入 `MaaFWConfig.UsePluginInterface` 之类的字段**，不切换默认运行路径。启用后旧路径仍保留作为 fallback。
+facade 默认不启用。只有 old/new 对照通过并经人工确认后，才允许通过**非旧配置项**的方式启用（环境变量 / feature flag / 测试入口），**不引入 `MaaFWConfig.UsePluginInterface` 之类的字段**，不切换默认运行路径。启用后 M9A 旧路径仍保留作为 fallback（MaaFW 旧运行链路已删除，不适用）。
 
 ### Q4: M9A 的 interface.json 和 MaaFW 的 interface.json 格式一样吗？
 

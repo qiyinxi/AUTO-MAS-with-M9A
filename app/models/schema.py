@@ -1477,6 +1477,9 @@ class MaaFWConfig_Run(BaseModel):
     ProxyTimesLimit: Optional[int] = Field(default=None, description="代理次数限制")
     RunTimesLimit: Optional[int] = Field(default=None, description="运行次数限制")
     RunTimeLimit: Optional[int] = Field(default=None, description="运行时间限制（分钟）")
+    DailyOnceTasks: Optional[str] = Field(
+        default=None, description="每日正常完成一次后今日跳过的 MaaFW 任务名列表"
+    )
     WeeklyOnceTasks: Optional[str] = Field(
         default=None, description="每周正常完成一次后本周跳过的 MaaFW 任务名列表"
     )

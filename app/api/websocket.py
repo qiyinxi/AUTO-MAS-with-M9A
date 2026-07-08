@@ -178,8 +178,24 @@ async def _handle_plugin_channel_message(data: Dict[str, Any]) -> None:
                 request_id=request_id,
                 payload={"package": package_name, "progress": 30, "stage": "installing"},
             )
+
+            def _on_install_progress(line: str) -> None:
+                asyncio.create_task(_send_plugin_message(
+                    "plugin.install.progress",
+                    request_id=request_id,
+                    payload={
+                        "package": package_name,
+                        "progress": -1,
+                        "stage": "installing",
+                        "detail": line,
+                    },
+                ))
+
             try:
-                await PluginManager.install_plugin_package(package_name)
+                await PluginManager.install_plugin_package(
+                    package_name,
+                    progress_callback=_on_install_progress,
+                )
                 await _send_plugin_message(
                     "plugin.install.progress",
                     request_id=request_id,

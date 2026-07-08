@@ -4,6 +4,7 @@ export interface ScriptTypeDescriptor {
   type_key: string
   display_name: string
   icon?: string | null
+  icon_url?: string | null
   docs_url?: string | null
   editor_kind: string
   supported_modes: string[]
@@ -30,6 +31,7 @@ export interface ScriptRecord {
   editor_kind: string
   supported_modes: string[]
   icon?: string | null
+  icon_url?: string | null
   docs_url?: string | null
   user_count: number
 }

@@ -100,7 +100,7 @@ class MaaFWControllerPluginTest(unittest.TestCase):
             [item["key"] for item in registry.list_controller_providers()],
             ["adb", "win32"],
         )
-        self.assertEqual(registry.get_project_pack("m9a")["displayName"], "M9A")
+        self.assertEqual(registry.get_project_pack("m9a")["display_name"], "M9A")
 
         registry.unregister_controller_provider("adb")
         registry.unregister_project_pack("m9a")

@@ -20,4 +20,4 @@ automas_script_maafw_pack_m9a = "automas_script_maafw_pack_m9a.plugin:Plugin"
 where = ["src"]
 
 [tool.setuptools.package-data]
-automas_script_maafw_pack_m9a = ["py.typed"]
+automas_script_maafw_pack_m9a = ["py.typed", "assets/*.png"]

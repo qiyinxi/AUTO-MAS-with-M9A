@@ -299,7 +299,7 @@ def _extract_period_rules(definition: Any) -> list[tuple[str, str]]:
 
         task = str(rule_data.get("task") or "").strip()
         period = str(rule_data.get("period") or "").strip()
-        if task and period in {"weekly", "monthly"}:
+        if task and period in {"daily", "weekly", "monthly"}:
             normalized.append((task, period))
     return normalized
 
@@ -313,10 +313,14 @@ async def _apply_period_rules_to_script_config(
 
     weekly_tasks = _load_period_task_names(script_config.get("Run", "WeeklyOnceTasks"))
     monthly_tasks = _load_period_task_names(script_config.get("Run", "MonthlyOnceTasks"))
+    daily_tasks = _load_period_task_names(script_config.get("Run", "DailyOnceTasks"))
     changed = False
 
     for task, period in period_rules:
-        if period == "weekly" and task not in weekly_tasks:
+        if period == "daily" and task not in daily_tasks:
+            daily_tasks.append(task)
+            changed = True
+        elif period == "weekly" and task not in weekly_tasks:
             weekly_tasks.append(task)
             changed = True
         elif period == "monthly" and task not in monthly_tasks:
@@ -326,6 +330,11 @@ async def _apply_period_rules_to_script_config(
     if not changed:
         return False
 
+    await script_config.set(
+        "Run",
+        "DailyOnceTasks",
+        json.dumps(daily_tasks, ensure_ascii=False),
+    )
     await script_config.set(
         "Run",
         "WeeklyOnceTasks",

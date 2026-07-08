@@ -72,7 +72,8 @@ export const BUILTIN_SCRIPT_TYPES = new Set(['MAA', 'SRC', 'MaaEnd', 'M9A', 'Maa
 
 export const isBuiltinScriptType = (type: string) => BUILTIN_SCRIPT_TYPES.has(type)
 
-export const getScriptIcon = (type: string) => {
+export const getScriptIcon = (type: string, iconUrl?: string | null) => {
+  if (iconUrl) return iconUrl
   switch (type) {
     case 'MAA':
       return maaIcon
@@ -123,8 +124,14 @@ const BUILTIN_EDITOR_SEGMENTS: Record<string, string> = {
   'builtin:hsr': 'hsr',
 }
 
+const TYPE_KEY_EDITOR_SEGMENTS: Record<string, string> = {
+  MaaFW: 'maafw',
+  M9A: 'maafw',
+}
+
 export const getScriptEditPath = (script: Pick<Script, 'id' | 'type' | 'editorKind'>) => {
-  const segment = BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? '']
+  const segment =
+    BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? ''] ?? TYPE_KEY_EDITOR_SEGMENTS[script.type]
   if (segment) {
     return `/scripts/${script.id}/edit/${segment}`
   }
@@ -134,8 +141,9 @@ export const getScriptEditPath = (script: Pick<Script, 'id' | 'type' | 'editorKi
   return `/scripts/${script.id}/edit/schema`
 }
 
-export const getUserCreatePath = (script: Pick<Script, 'id' | 'editorKind'>) => {
-  const segment = BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? '']
+export const getUserCreatePath = (script: Pick<Script, 'id' | 'type' | 'editorKind'>) => {
+  const segment =
+    BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? ''] ?? TYPE_KEY_EDITOR_SEGMENTS[script.type]
   if (segment) {
     return `/scripts/${script.id}/users/add/${segment}`
   }
@@ -146,10 +154,11 @@ export const getUserCreatePath = (script: Pick<Script, 'id' | 'editorKind'>) => 
 }
 
 export const getUserEditPath = (
-  script: Pick<Script, 'id' | 'editorKind'>,
+  script: Pick<Script, 'id' | 'type' | 'editorKind'>,
   user: Pick<User, 'id'>
 ) => {
-  const segment = BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? '']
+  const segment =
+    BUILTIN_EDITOR_SEGMENTS[script.editorKind ?? ''] ?? TYPE_KEY_EDITOR_SEGMENTS[script.type]
   if (segment) {
     return `/scripts/${script.id}/users/${user.id}/edit/${segment}`
   }
@@ -224,6 +233,7 @@ export const normalizeScriptRecord = (
     editorKind: record.editor_kind,
     supportedModes: record.supported_modes,
     icon: record.icon ?? descriptor?.icon ?? null,
+    iconUrl: record.icon_url ?? descriptor?.icon_url ?? null,
     docsUrl: record.docs_url ?? descriptor?.docs_url ?? null,
     displayName: descriptor?.display_name ?? record.type,
     isBuiltin: descriptor?.is_builtin ?? isBuiltinScriptType(record.type),

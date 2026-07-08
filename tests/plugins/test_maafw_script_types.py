@@ -11,7 +11,7 @@ from app.core.script_types import (
 
 class MaaFWScriptTypeRegistryTest(unittest.TestCase):
     def test_maafw_fallback_types_are_unavailable_plugins(self) -> None:
-        for type_key in ("M9A", "MaaFW"):
+        for type_key in ("M9A",):
             provider = build_legacy_fallback_provider_by_type_key(type_key)
             self.assertIsNotNone(provider)
             descriptor = build_descriptor(provider)

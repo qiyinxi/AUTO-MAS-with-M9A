@@ -30,7 +30,12 @@
   <a-card class="config-card" :loading="loading">
     <template #title>
       <a-space>
-        <img v-if="script?.icon" :src="getScriptIcon(script.type)" alt="" class="script-icon" />
+        <img
+          v-if="script?.icon || script?.iconUrl"
+          :src="getScriptIcon(script.type, script.iconUrl)"
+          alt=""
+          class="script-icon"
+        />
         <span>{{ script?.name || '脚本配置' }}</span>
         <a-tag :color="getScriptTypeTagColor(script?.type || '')">
           {{ script?.displayName || script?.type || '未知类型' }}

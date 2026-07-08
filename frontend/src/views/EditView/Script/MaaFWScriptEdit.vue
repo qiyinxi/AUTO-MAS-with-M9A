@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="script-edit-header">
     <div class="header-nav">
       <a-breadcrumb class="breadcrumb">
@@ -7,8 +7,8 @@
         </a-breadcrumb-item>
         <a-breadcrumb-item>
           <div class="breadcrumb-current">
-            <img src="@/assets/AUTO-MAS.ico" alt="MaaFramework" class="breadcrumb-logo" />
-            编辑 MaaFramework 项目
+            <img :src="getScriptIcon(formData.type)" :alt="formData.type" class="breadcrumb-logo" />
+            编辑 {{ formData.type === 'M9A' ? 'M9A' : 'MaaFramework' }} 项目
           </div>
         </a-breadcrumb-item>
       </a-breadcrumb>
@@ -25,9 +25,13 @@
   </div>
 
   <div class="script-edit-content">
-    <a-card title="MaaFramework 项目配置" :loading="pageLoading" class="config-card">
+    <a-card
+      :title="formData.type === 'M9A' ? 'M9A 项目配置' : 'MaaFramework 项目配置'"
+      :loading="pageLoading"
+      class="config-card"
+    >
       <template #extra>
-        <a-tag color="geekblue" class="type-tag">MaaFW</a-tag>
+        <a-tag color="geekblue" class="type-tag">{{ formData.type }}</a-tag>
       </template>
 
       <a-form ref="formRef" :model="formData" :rules="rules" layout="vertical" class="config-form">
@@ -693,7 +697,31 @@
           </a-row>
 
           <a-row :gutter="24" class="period-task-row">
-            <a-col :span="12">
+            <a-col :span="8">
+              <a-form-item>
+                <template #label>
+                  <a-tooltip title="任务在今日正常完成一次后，今日后续运行会自动跳过">
+                    <span class="form-label">
+                      每日完成后跳过
+                      <QuestionCircleOutlined class="help-icon" />
+                    </span>
+                  </a-tooltip>
+                </template>
+                <a-select
+                  v-model:value="dailyOnceTasks"
+                  mode="multiple"
+                  size="large"
+                  :options="periodTaskOptions"
+                  :disabled="interfaceDependentDisabled"
+                  option-filter-prop="label"
+                  show-search
+                  :max-tag-count="'responsive'"
+                  placeholder="先读取 interface 后选择任务"
+                  @change="handlePeriodTaskChange('DailyOnceTasks', $event as string[])"
+                />
+              </a-form-item>
+            </a-col>
+            <a-col :span="8">
               <a-form-item>
                 <template #label>
                   <a-tooltip title="任务在本周正常完成一次后，本周后续运行会自动跳过">
@@ -717,7 +745,7 @@
                 />
               </a-form-item>
             </a-col>
-            <a-col :span="12">
+            <a-col :span="8">
               <a-form-item>
                 <template #label>
                   <a-tooltip title="任务在本月正常完成一次后，本月后续运行会自动跳过">
@@ -765,6 +793,7 @@ import { Service, type ComboBoxItem } from '@/api'
 import { useMaaFWApi } from '@/composables/useMaaFWApi'
 import { useScriptApi } from '@/composables/useScriptApi'
 import { useSettingsApi } from '@/composables/useSettingsApi'
+import { getScriptIcon } from '@/utils/scriptRegistry'
 import type {
   MaaFWAgentEnvPrepareData,
   MaaFWDesktopWindowInfo,
@@ -793,6 +822,7 @@ const previewData = ref<MaaFWInterfacePreviewData | null>(null)
 const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const projectUpdateLogs = ref<string[]>([])
 const desktopWindows = ref<MaaFWDesktopWindowInfo[]>([])
+const dailyOnceTasks = ref<string[]>([])
 const weeklyOnceTasks = ref<string[]>([])
 const monthlyOnceTasks = ref<string[]>([])
 const globalUpdateSource = ref<string>('')
@@ -892,6 +922,7 @@ const getDefaultMaaFWScriptConfig = (): MaaFWScriptConfig => ({
     ProxyTimesLimit: 0,
     RunTimesLimit: 1,
     RunTimeLimit: 30,
+    DailyOnceTasks: '[ ]',
     WeeklyOnceTasks: '[ ]',
     MonthlyOnceTasks: '[ ]',
   },
@@ -1241,8 +1272,10 @@ const applyScriptConfig = (config: Partial<MaaFWScriptConfig> | null | undefined
   Object.assign(maafwConfig.Game, normalized.Game)
   Object.assign(maafwConfig.Update, normalized.Update)
   Object.assign(maafwConfig.Run, normalized.Run)
+  dailyOnceTasks.value = parseTaskNameList(normalized.Run.DailyOnceTasks)
   weeklyOnceTasks.value = parseTaskNameList(normalized.Run.WeeklyOnceTasks)
   monthlyOnceTasks.value = parseTaskNameList(normalized.Run.MonthlyOnceTasks)
+  maafwConfig.Run.DailyOnceTasks = stringifyTaskNameList(dailyOnceTasks.value)
   maafwConfig.Run.WeeklyOnceTasks = stringifyTaskNameList(weeklyOnceTasks.value)
   maafwConfig.Run.MonthlyOnceTasks = stringifyTaskNameList(monthlyOnceTasks.value)
 }
@@ -1270,11 +1303,13 @@ const handleChange = async (
 }
 
 const handlePeriodTaskChange = async (
-  key: 'WeeklyOnceTasks' | 'MonthlyOnceTasks',
+  key: 'DailyOnceTasks' | 'WeeklyOnceTasks' | 'MonthlyOnceTasks',
   values: string[]
 ) => {
   const normalized = Array.from(new Set(values.filter(Boolean)))
-  if (key === 'WeeklyOnceTasks') {
+  if (key === 'DailyOnceTasks') {
+    dailyOnceTasks.value = normalized
+  } else if (key === 'WeeklyOnceTasks') {
     weeklyOnceTasks.value = normalized
   } else {
     monthlyOnceTasks.value = normalized
@@ -1288,11 +1323,16 @@ const prunePeriodTaskSelections = async () => {
   if (!previewData.value) return
 
   const availableTasks = new Set(previewData.value.tasks.map(task => task.name))
+  const nextDailyTasks = dailyOnceTasks.value.filter(taskName => availableTasks.has(taskName))
   const nextWeeklyTasks = weeklyOnceTasks.value.filter(taskName => availableTasks.has(taskName))
   const nextMonthlyTasks = monthlyOnceTasks.value.filter(taskName => availableTasks.has(taskName))
+  const dailyChanged = nextDailyTasks.length !== dailyOnceTasks.value.length
   const weeklyChanged = nextWeeklyTasks.length !== weeklyOnceTasks.value.length
   const monthlyChanged = nextMonthlyTasks.length !== monthlyOnceTasks.value.length
 
+  if (dailyChanged) {
+    await handlePeriodTaskChange('DailyOnceTasks', nextDailyTasks)
+  }
   if (weeklyChanged) {
     await handlePeriodTaskChange('WeeklyOnceTasks', nextWeeklyTasks)
   }
@@ -1323,7 +1363,7 @@ const handlePreviewInterface = async () => {
 
 const handlePrepareAgentEnv = async () => {
   if (!maafwConfig.Info.Path) {
-    message.warning('璇峰厛閫夋嫨 MaaFramework 椤圭洰鐩綍')
+    message.warning('请先选择 MaaFramework 项目目录')
     return
   }
 

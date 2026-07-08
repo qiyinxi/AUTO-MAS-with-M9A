@@ -2326,6 +2326,10 @@ class MaaFWConfig(ConfigBase):
         self.Run_RunTimeLimit = ConfigItem(
             "Run", "RunTimeLimit", 30, RangeValidator(1, 9999)
         )
+        ## 每日正常完成一次后，今日剩余时间跳过的 MaaFW 任务名列表
+        self.Run_DailyOnceTasks = ConfigItem(
+            "Run", "DailyOnceTasks", "[ ]", JSONValidator(list)
+        )
         ## 每周正常完成一次后，本周剩余时间跳过的 MaaFW 任务名列表
         self.Run_WeeklyOnceTasks = ConfigItem(
             "Run", "WeeklyOnceTasks", "[ ]", JSONValidator(list)

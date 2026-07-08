@@ -77,16 +77,6 @@ LEGACY_SCRIPT_TYPE_METADATA = (
         "is_builtin": False,
     },
     {
-        "type_key": "MaaFW",
-        "display_name": "MaaFramework 项目",
-        "script_class_name": "MaaFWConfig",
-        "user_class_name": "MaaFWUserConfig",
-        "supported_modes": ("AutoProxy", "ScriptConfig"),
-        "icon": "MaaFW",
-        "editor_kind": "builtin:maafw",
-        "is_builtin": False,
-    },
-    {
         "type_key": "General",
         "display_name": "通用脚本",
         "script_class_name": "GeneralConfig",
@@ -121,6 +111,7 @@ class ScriptTypeProvider:
     script_schema: dict[str, Any] | None = None
     user_schema: dict[str, Any] | None = None
     icon: str | None = None
+    icon_path: str | None = None
     docs_url: str | None = None
     editor_kind: str = "schema"
     legacy_config_class_name: str | None = None
@@ -197,6 +188,16 @@ class ScriptTypeRegistry:
         self._providers[type_key] = provider
         self._providers_by_script_class[script_class_name] = provider
         self._providers_by_user_class[user_class_name] = provider
+        if (
+            provider.legacy_config_class_name
+            and provider.legacy_config_class_name != script_class_name
+        ):
+            self._providers_by_script_class[provider.legacy_config_class_name] = provider
+        if (
+            provider.legacy_user_config_class_name
+            and provider.legacy_user_config_class_name != user_class_name
+        ):
+            self._providers_by_user_class[provider.legacy_user_config_class_name] = provider
         self._provider_owners[type_key] = owner
 
     def unregister(self, type_key: str, owner: str | None = None) -> bool:
@@ -213,6 +214,16 @@ class ScriptTypeRegistry:
         self._providers.pop(type_key, None)
         self._providers_by_script_class.pop(provider.script_config_class.__name__, None)
         self._providers_by_user_class.pop(provider.user_config_class.__name__, None)
+        if (
+            provider.legacy_config_class_name
+            and provider.legacy_config_class_name != provider.script_config_class.__name__
+        ):
+            self._providers_by_script_class.pop(provider.legacy_config_class_name, None)
+        if (
+            provider.legacy_user_config_class_name
+            and provider.legacy_user_config_class_name != provider.user_config_class.__name__
+        ):
+            self._providers_by_user_class.pop(provider.legacy_user_config_class_name, None)
         self._provider_owners.pop(type_key, None)
         return True
 
@@ -444,6 +455,7 @@ def build_descriptor(provider: ScriptTypeProvider) -> dict[str, Any]:
         "type_key": provider.type_key,
         "display_name": provider.display_name,
         "icon": provider.icon,
+        "icon_url": f"/api/script-types/{provider.type_key}/icon" if provider.icon_path else None,
         "docs_url": provider.docs_url,
         "editor_kind": provider.editor_kind,
         "supported_modes": list(provider.supported_modes),

@@ -235,7 +235,7 @@ v1 已知 scope（`task` / `global` / `controller` / `resource`）作为 scoped 
 - `automas-maafw-controller-win32`
 - `ScriptType=MaaFW`
 - 共享前端组件层
-- 旧内置 MaaFW 进入兼容期
+- M9A 旧运行链路进入兼容期（MaaFW 旧运行链路已删除）
 
 ### P5：M9A pack
 - `automas-script-maafw-pack-m9a`

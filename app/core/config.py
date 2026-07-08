@@ -1800,6 +1800,7 @@ class AppConfig(GlobalConfig):
                     editor_kind=provider.editor_kind,
                     supported_modes=list(provider.supported_modes),
                     icon=provider.icon,
+                    icon_url=f"/api/script-types/{provider.type_key}/icon" if provider.icon_path else None,
                     docs_url=provider.docs_url,
                     user_count=len(config.UserData) if hasattr(config, "UserData") else 0,
                 )

@@ -5,7 +5,7 @@
 > 依据：docs/maafw插件化最终实现方案.md 第 2.2 节、docs/maafw-plugin-code-audit.md、docs/maafw-plugin-p0-contract.md
 > 约束：任何旧路径切换前，都必须完成 old/new 对照，并把结果写入审核材料
 
-本文档定义 MaaFW 插件化过程中 old（现有 app/task/MaaFW/** + app/task/M9A/** 实现）与 new（automas-maafw-* 插件包实现）的兼容验收门。每个对照对象都有明确的验收标准和测试方法。只有全部对照通过并经人工确认后，才允许把旧 MaaFW/M9A 路径切到新服务。
+本文档定义 MaaFW 插件化过程中 old（M9A 仍有 app/task/M9A/** 旧运行链路；MaaFW 旧运行链路 app/task/MaaFW/** 已删除，仅保留 MaaFWConfig/MaaFWUserConfig 配置类用于迁移）与 new（automas-maafw-* 插件包实现）的兼容验收门。每个对照对象都有明确的验收标准和测试方法。只有全部对照通过并经人工确认后，才允许把旧 M9A 路径切到新服务。
 
 M9A 的目标状态是作为 MaaFW project pack 迁入插件体系，并直接复用 MaaFW runner 运行；本验收门用于证明旧 `M9A.exe` 进程驱动行为能被新 runner 等价承载，而不是重新决定 M9A 是否插件化。
 
@@ -294,8 +294,8 @@ MaaEnd：后续由 MaaEnd + MXU 样例验证，不绑定 P1/P2。
 
 1. 迁移工具只创建新配置，不覆盖旧值。
 2. 旧值保留只读，迁移后仍可查看。
-3. 插件缺失时旧配置仍可只读查看（通过 legacy fallback provider）。
-4. M9A 和 MaaFW 不在 LEGACY_SCRIPT_TYPE_METADATA 中——需新增或通过 pack 的迁移入口处理。
+3. 插件缺失时旧配置仍可只读查看（M9A 通过 LEGACY_SCRIPT_TYPE_METADATA 中的 legacy fallback provider；MaaFW 已从该表中移除，旧运行链路已删除）。
+4. M9A 保留在 LEGACY_SCRIPT_TYPE_METADATA 中；MaaFW 已从中移除——旧运行链路已删除，仅保留插件侧 `legacy_config_class_name` 做配置迁移。
 
 ### 8.4 测试方法
 
@@ -310,7 +310,7 @@ MaaEnd：后续由 MaaEnd + MXU 样例验证，不绑定 P1/P2。
 ### 8.5 落地时机
 
 P5：M9A pack 迁移入口。
-P6：旧内置 MaaFW/M9A 配置只读兼容入口。
+P6：旧 M9A 配置只读兼容入口（MaaFW 旧运行链路已删除，MaaFWConfig/MaaFWUserConfig 仅保留用于插件侧配置迁移）。
 
 ## 9. 验收流程
 
@@ -330,16 +330,16 @@ P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 1. 对照报告完整且可复现。
 2. 已知差异均为"只增不删"。
 3. 没有破坏性变更未记录。
-4. 旧路径仍可正常运行（P1 facade 默认不启用，且不新增旧配置项）。
+4. M9A 旧路径仍可正常运行（MaaFW 旧运行链路已删除，无旧路径需要保持）；P1 facade 默认不启用，且不新增旧配置项。
 5. 新路径可独立运行（不依赖旧路径）。
 
 ### 9.3 切换条件
 
-只有以下条件全部满足，才允许把旧 MaaFW/M9A 路径切到新服务：
+只有以下条件全部满足，才允许把旧 M9A 路径切到新服务（MaaFW 已无旧运行路径，不适用切换条件）：
 1. 当前阶段验收门全部通过。
 2. 人工确认完成。
-3. 旧路径仍保留作为 fallback。
-4. 切换可通过新增的独立机制控制（默认不切换），**不通过修改 `MaaFWConfig` / `M9AConfig` 旧配置项实现**。
+3. M9A 旧路径仍保留作为 fallback（MaaFW 已无旧运行路径）。
+4. 切换可通过新增的独立机制控制（默认不切换），**不通过修改 `M9AConfig` 旧配置项实现**。
 5. 切换后有回退机制。
 
 ## 10. 已知风险与处理
@@ -360,7 +360,7 @@ P6：旧内置 MaaFW/M9A 配置只读兼容入口。
 
 2. **M9A task_loader 是否统一**：M9A 有独立的 import 合并逻辑（task_loader.py），与 MaaFW interface_loader 存在逻辑重叠但数据结构不同。需确认：P5 是否统一到 interface 包，还是保持 M9A 独立实现。本文档建议保持独立，因为 M9A 有回退到 resource/tasks/*.json 的双路径加载。
 
-3. **MaaFW/M9A legacy fallback**：M9A 和 MaaFW 不在 LEGACY_SCRIPT_TYPE_METADATA 中。需确认：是否新增 legacy 映射，还是通过 pack 的迁移入口处理。本文档建议通过 pack 迁移入口处理，因为 legacy 映射是给完全移除的脚本类型用的。
+3. **M9A legacy fallback**：M9A 保留在 LEGACY_SCRIPT_TYPE_METADATA 中作为 legacy fallback provider。MaaFW 已从中移除——旧运行链路（app/task/MaaFW/）已删除，不需要 legacy fallback；插件侧 `legacy_config_class_name="MaaFWConfig"` 仅用于旧配置迁移，不提供运行期 fallback。
 
 4. **MaaEnd 是否消费 project update / runner**：MaaEnd P1 只确认 `maafw.interface.v1`。是否还要消费 `maafw.project.v1` 更新能力和 `maafw.runner.v1` 运行能力，需要 MaaEnd + MXU 样例验证后再决定。
 

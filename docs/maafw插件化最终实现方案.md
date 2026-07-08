@@ -36,7 +36,7 @@ AUTO-MAS 插件宿主
 3. agent 环境准备属于 project 服务；agent 子进程的启动、连接和回收属于 runner 会话。
 4. ADB 路径、模拟器实例和模拟器扩展能力来自 emulator 插件；MaaFW runner 不复刻 MuMuManager 逻辑。
 5. 控制器按插件族拆分。第一批实现 adb 和 win32，gamepad / playcover 只预留。
-6. M9A 的目标形态是 MaaFW project pack，不在最终形态里注册独立脚本类型。只有 pack SDK 尚未落地时，允许临时用 ScriptAdapterPlugin 做过渡 PoC，但不能复制 runner。
+6. M9A 的目标形态是 MaaFW project pack，同时 pack 加载后注册用户可见的独立 `ScriptType=M9A`。这个脚本类型只是 M9A 专项入口和 schema/页面外壳，运行时必须复用 MaaFW hooks、runner、controller provider 和 project pack metadata，不能复制 runner 或另起 M9A 专属运行链路。
 7. 周/月任务机制通用，规则由 project pack 声明。通用 MaaFW 层不内置任何 M9A 默认周月任务。
 8. 通知通道走 `automas-notification`，MaaFW / M9A 只产出结构化结果和专项文案。
 9. 后端 schema 变更后，前端 API 代码只能通过 OpenAPI 生成器更新，不手改 `frontend/src/api/**`。
@@ -88,7 +88,7 @@ P0 / P1 明确禁止：
 | `automas-maafw-controller-adb` | 控制器包 | `maafw.controller.adb` | registry；wants emulator | ADB device spec、模拟器能力消费、ADB precheck |
 | `automas-maafw-controller-win32` | 控制器包 | `maafw.controller.win32` | registry | Win32 窗口扫描、句柄匹配、Win32 device spec |
 | `automas-script-maafw` | 编排插件 | `maafw.registry.v1`、`ScriptType=MaaFW` | interface、project、runner | MaaFW 脚本生命周期、provider registry、共享 UI 组件层 |
-| `automas-script-maafw-pack-m9a` | project pack | M9A pack definition | script-maafw、notification | M9A 默认队列、周月规则、专项页面、文案和迁移入口 |
+| `automas-script-maafw-pack-m9a` | project pack + 脚本类型入口 | M9A pack definition、`ScriptType=M9A` | script-maafw、notification | M9A 默认队列、周月规则、专项页面、文案、独立入口和迁移入口 |
 
 安装组合：
 
@@ -350,7 +350,7 @@ on_crash
 
 ### 6.3 Project Pack SDK
 
-M9A 这种专项不复制 runner，而是声明一个 project pack。
+M9A 这种专项不复制 runner，而是声明一个 project pack。为了保留用户体验，`pack-m9a` 加载后同时注册正式的 `ScriptType=M9A`；该类型的 hooks_factory 复用 `automas-script-maafw` 的 MaaFW hooks，metadata 中声明 `project_pack="m9a"`，由通用 MaaFW 层读取 pack definition 注入默认值和周期规则。
 
 ```python
 class MaaFWProjectPackDefinition(BaseModel):
@@ -381,6 +381,7 @@ class MaaFWProjectPackPlugin:
 它负责：
 
 - 声明 `key="m9a"` 的 project pack。
+- 注册用户可见的独立 `ScriptType=M9A`，并把该类型绑定到 MaaFW 通用 hooks/runner。
 - 提供默认项目来源、默认 controller、默认 resource、默认 preset。
 - 提供默认任务队列、日常/周常/月常模板。
 - 声明 M9A 周/月周期规则，例如 `Psychube` 每周一次、`SleepDream` 每月一次。
@@ -395,6 +396,7 @@ class MaaFWProjectPackPlugin:
 - emulator / ADB 解析。
 - 通知通道实现。
 - MaaEnd 或其他 MaaFW 项目的任务语义。
+- M9A 专属 runner、worker 或直接启动旧 `app/task/M9A` 运行链路。
 
 M9A 项目资产不进 AUTO-MAS 安装器。`resource/**`、`agent/main.py`、`bootstrap.py`、`agent_runtime.py`、`deps/*.whl` 等仍属于 M9A 项目目录，由 `maafw.project.v1` 拉取和管理。
 
@@ -454,7 +456,7 @@ M9A 项目资产不进 AUTO-MAS 安装器。`resource/**`、`agent/main.py`、`b
 | 任务队列、拖拽排序、任务 option、任务说明 | `MaaFWTaskQueueEditor`、`MaaFWTaskOptionEditor`、`MaaFWDescriptionView` |
 | M9A 专项工作台 | pack-m9a 提供专项页，直接复用 `MaaFWTaskBuilder` 和队列/option/说明组件，只覆盖模板、周月提示、文案 |
 | controller 缺失 | 显示能力缺失、安装动作或配置指引，不渲染无效字段 |
-| 旧内置 MaaFW / M9A | 兼容期只读入口 + 迁移入口 |
+| 旧 M9A | 兼容期只读入口 + 迁移入口（MaaFW 旧运行链路已删除，仅保留 MaaFWConfig 配置类用于插件侧迁移） |
 
 ### 9.2 组件分包
 
@@ -699,7 +701,7 @@ maafw-smoke
 - `automas-maafw-controller-win32`。
 - `ScriptType=MaaFW`。
 - 共享前端组件层。
-- 旧内置 MaaFW 进入兼容期。
+- M9A 旧运行链路进入兼容期（MaaFW 旧运行链路已删除，无兼容期）。
 
 验收：
 
@@ -715,6 +717,7 @@ maafw-smoke
 交付：
 
 - `automas-script-maafw-pack-m9a`。
+- `ScriptType=M9A` 独立入口，底层复用 MaaFW hooks/runner。
 - M9A 默认模板、周月规则、专项用户页、通知文案。
 - 旧 M9A 队列和用户配置迁移入口。
 
@@ -732,6 +735,7 @@ maafw-smoke
 交付：
 
 - `builtin:maafw` / `builtin:m9a` 编辑器降级为只读兼容入口。
+- 插件版 `ScriptType=M9A` 成为正式新建与运行入口；旧内置 `builtin:m9a` 只保留只读兼容和迁移引导。
 - 任务队列、option、说明收敛到共享组件。
 - 插件组 1.0 候选。
 - maafw-stable 风味包候选。

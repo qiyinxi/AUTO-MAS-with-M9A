@@ -466,11 +466,17 @@ class _PluginManager:
 
         return True
 
-    async def install_plugin_package(self, package_name: str) -> None:
+    async def install_plugin_package(
+        self,
+        package_name: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
         """从 PyPI 安装插件包到插件专用 site-packages。
 
         Args:
             package_name (str): PyPI 包名，例如 auto-mas-test。
+            progress_callback: 可选的实时进度回调，每行 uv 输出调用一次。
 
         Returns:
             None: 无返回值。
@@ -488,10 +494,16 @@ class _PluginManager:
         target_dir = get_pypi_site_packages_dir(self.plugins_dir)
 
         try:
-            await uv_pip_install_with_mirror_fallback([normalized], target=target_dir)
+            await uv_pip_install_with_mirror_fallback(
+                [normalized],
+                target=target_dir,
+                progress_callback=progress_callback,
+            )
         except RuntimeError as e:
             raise RuntimeError(f"安装插件包失败: package={normalized}, detail={e}") from e
 
+        if progress_callback:
+            progress_callback("正在注册插件入口点...")
         self.invalidate_discover_cache()
         discovered = await self.discover_plugins(force=True)
         if not discovered:

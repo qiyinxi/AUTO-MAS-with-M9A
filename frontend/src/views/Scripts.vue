@@ -192,7 +192,11 @@
         >
           <div class="script-item-content">
             <div class="script-icon">
-              <img :src="getScriptIcon(script.type)" :alt="script.type" class="type-icon" />
+              <img
+                :src="getScriptIcon(script.type, script.iconUrl)"
+                :alt="script.type"
+                class="type-icon"
+              />
             </div>
             <div class="script-info">
               <div class="script-name">{{ script.name }}</div>
@@ -236,7 +240,7 @@
           <div class="type-content">
             <div class="type-logo-container">
               <img
-                :src="getScriptIcon(descriptor.type_key)"
+                :src="getScriptIcon(descriptor.type_key, descriptor.icon_url)"
                 :alt="descriptor.type_key"
                 class="type-logo"
               />

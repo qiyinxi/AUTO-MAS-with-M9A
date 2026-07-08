@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 from app.plugins import ScriptAdapterDefinition, ScriptAdapterPlugin
 from automas_script_maafw.adapter import MaaFWAdapterHooks
-from automas_script_maafw.schema import SCRIPT_GROUPS, USER_GROUPS
 
+from .schema import M9A_SCRIPT_GROUPS, M9A_USER_GROUPS
 from .service import M9APackService
 
 if TYPE_CHECKING:
@@ -39,14 +39,15 @@ class Plugin(ScriptAdapterPlugin):
                 type_key="M9A",
                 display_name="M9A",
                 hooks_factory=MaaFWAdapterHooks,
-                script_groups=SCRIPT_GROUPS,
-                user_groups=USER_GROUPS,
+                script_groups=M9A_SCRIPT_GROUPS,
+                user_groups=M9A_USER_GROUPS,
                 script_class_name="M9APluginConfig",
                 user_class_name="M9APluginUserConfig",
                 module="automas_script_maafw.schema",
                 related_bindings={"EmulatorConfig": "EmulatorConfig"},
                 supported_modes=("AutoProxy",),
                 icon="M9A",
+                icon_path="automas_script_maafw_pack_m9a:assets/m9a.png",
                 editor_kind="plugin:automas_script_maafw_pack_m9a",
                 legacy_config_class_name="M9AConfig",
                 legacy_user_config_class_name="M9AUserConfig",

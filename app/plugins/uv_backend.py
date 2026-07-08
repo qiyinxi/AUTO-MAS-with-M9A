@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from app.utils import get_logger
 
@@ -189,6 +189,76 @@ async def uv_pip_install(
     return completed
 
 
+async def uv_pip_install_streaming(
+    packages: list[str],
+    *,
+    target: Path,
+    editable: bool = False,
+    upgrade: bool = True,
+    index_url: Optional[str] = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """使用 uv pip install 安装包，支持实时进度回调。
+
+    通过 asyncio.create_subprocess_exec 流式读取 uv 输出，每行调用
+    progress_callback，让调用方（如 WebSocket）能向前端推送实时安装日志。
+    """
+    uv = get_uv_executable()
+    target.mkdir(parents=True, exist_ok=True)
+
+    command = [uv, "pip", "install"]
+    if editable:
+        for pkg in packages:
+            command.extend(["-e", pkg])
+    else:
+        command.extend(packages)
+    command.extend(["--target", str(target)])
+    if upgrade:
+        command.append("--upgrade")
+    _append_index_args(command, index_url)
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    async def _read_stream(stream, lines: list[str]) -> None:
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                break
+            text = raw.decode("utf-8", errors="replace").rstrip()
+            lines.append(text)
+            if progress_callback and text.strip():
+                progress_callback(text)
+
+    await asyncio.gather(
+        _read_stream(process.stdout, stdout_lines),
+        _read_stream(process.stderr, stderr_lines),
+    )
+    await process.wait()
+
+    stdout = "\n".join(stdout_lines)
+    stderr = "\n".join(stderr_lines)
+
+    completed = subprocess.CompletedProcess(
+        args=command,
+        returncode=process.returncode if process.returncode is not None else 1,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    if completed.returncode != 0:
+        detail = _error_detail(completed)
+        raise RuntimeError(f"uv pip install 失败: packages={packages}, detail={detail}")
+
+    return completed
+
+
 async def uv_pip_install_with_mirror_fallback(
     packages: list[str],
     *,
@@ -196,31 +266,40 @@ async def uv_pip_install_with_mirror_fallback(
     editable: bool = False,
     upgrade: bool = True,
     index_urls: list[str] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """使用 uv pip install 安装包，自动轮替镜像源。"""
+    """使用 uv pip install 安装包，自动轮替镜像源。
+
+    当提供 progress_callback 时使用流式安装，实时输出 uv 日志行；
+    否则使用原始 capture_output 方式。
+    """
     urls = index_urls if index_urls is not None else DEFAULT_INDEX_URLS
     last_error = ""
 
+    install_fn = uv_pip_install_streaming if progress_callback else uv_pip_install
+
     for url in urls:
         try:
-            return await uv_pip_install(
+            return await install_fn(
                 packages,
                 target=target,
                 editable=editable,
                 upgrade=upgrade,
                 index_url=url,
+                progress_callback=progress_callback,
             )
         except RuntimeError as e:
             last_error = str(e)
             logger.warning(f"镜像源 {url} 安装失败，尝试下一个: {e}")
 
     try:
-        return await uv_pip_install(
+        return await install_fn(
             packages,
             target=target,
             editable=editable,
             upgrade=upgrade,
             index_url=None,
+            progress_callback=progress_callback,
         )
     except RuntimeError as e:
         raise RuntimeError(f"所有镜像源均失败 (packages={packages}): {last_error}") from e

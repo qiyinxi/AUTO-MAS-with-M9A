@@ -132,6 +132,7 @@ SCRIPT_GROUPS = (
             PluginField.number("ProxyTimesLimit", "每日代理次数限制", 0, min=0, max=9999, step=1),
             PluginField.number("RunTimesLimit", "失败重试次数", 1, min=1, max=9999, step=1),
             PluginField.number("RunTimeLimit", "单次运行超时（分钟）", 30, min=1, max=9999, step=1),
+            PluginField.json("DailyOnceTasks", "每日一次任务", "[]", json_type="array"),
             PluginField.json("WeeklyOnceTasks", "每周一次任务", "[]", json_type="array"),
             PluginField.json("MonthlyOnceTasks", "每月一次任务", "[]", json_type="array"),
         ],

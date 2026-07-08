@@ -380,8 +380,13 @@ const onPluginMessage = (envelope: PluginMessageEnvelope) => {
   if (event === 'plugin.install.progress') {
     const pkg = String(payload.package || '')
     const progress = Number(payload.progress || 0)
+    const detail = String(payload.detail || '')
     if (pkg) {
-      setInfo(`安装中: ${pkg} (${progress}%)`, 'info')
+      if (detail) {
+        setInfo(`安装中: ${pkg} — ${detail}`, 'info')
+      } else {
+        setInfo(`安装中: ${pkg} (${progress}%)`, 'info')
+      }
     }
     return
   }

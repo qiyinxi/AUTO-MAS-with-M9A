@@ -229,6 +229,7 @@ export interface MaaFWScriptConfig {
     ProxyTimesLimit: number
     RunTimesLimit: number
     RunTimeLimit: number
+    DailyOnceTasks: string | string[]
     WeeklyOnceTasks: string | string[]
     MonthlyOnceTasks: string | string[]
   }
@@ -491,6 +492,7 @@ export interface Script {
   editorKind?: string
   supportedModes?: string[]
   icon?: string | null
+  iconUrl?: string | null
   docsUrl?: string | null
   displayName?: string
   isBuiltin?: boolean

@@ -13,6 +13,7 @@ class ScriptTypeDescriptor(BaseModel):
     type_key: str = Field(..., description="脚本类型键")
     display_name: str = Field(..., description="脚本类型显示名称")
     icon: str | None = Field(default=None, description="脚本类型图标标识")
+    icon_url: str | None = Field(default=None, description="图标资源 URL")
     docs_url: str | None = Field(default=None, description="文档地址")
     editor_kind: str = Field(..., description="编辑器类型")
     supported_modes: list[str] = Field(..., description="支持的任务模式")
@@ -50,6 +51,7 @@ class ScriptRecord(BaseModel):
     editor_kind: str = Field(..., description="编辑器类型")
     supported_modes: list[str] = Field(..., description="支持的任务模式")
     icon: str | None = Field(default=None, description="图标标识")
+    icon_url: str | None = Field(default=None, description="图标资源 URL")
     docs_url: str | None = Field(default=None, description="文档地址")
     user_count: int = Field(default=0, description="用户数量")
 

@@ -22,7 +22,11 @@
                   <span class="script-drag-dots" aria-hidden="true"></span>
                 </span>
                 <div class="script-logo-container">
-                  <img :src="getScriptIcon(script.type)" :alt="script.type" class="script-logo" />
+                  <img
+                    :src="getScriptIcon(script.type, script.iconUrl)"
+                    :alt="script.type"
+                    class="script-logo"
+                  />
                 </div>
                 <div class="script-details">
                   <h3 class="script-name">{{ script.name }}</h3>

@@ -1,4 +1,5 @@
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -12,7 +13,18 @@ for source_path in (str(PACK_SRC), str(SCRIPT_MAAFW_SRC), str(INTERFACE_SRC), st
     if source_path not in sys.path:
         sys.path.insert(0, source_path)
 
+for module_name in ("win32api", "win32gui", "win32con", "win32process", "win32crypt"):
+    sys.modules.setdefault(module_name, types.ModuleType(module_name))
+win32com = types.ModuleType("win32com")
+win32com_client = types.ModuleType("win32com.client")
+win32com.client = win32com_client
+sys.modules.setdefault("win32com", win32com)
+sys.modules.setdefault("win32com.client", win32com_client)
+sys.modules.setdefault("pythoncom", types.ModuleType("pythoncom"))
+sys.modules.setdefault("pywintypes", types.ModuleType("pywintypes"))
+
 from automas_script_maafw_pack_m9a.plugin import Plugin
+from automas_script_maafw_pack_m9a.schema import M9A_USER_GROUPS
 from automas_script_maafw_pack_m9a.service import M9APackService
 
 
@@ -27,28 +39,28 @@ class M9APackPluginTest(unittest.TestCase):
         self.assertEqual(definition.metadata["framework"], "maafw")
         self.assertEqual(definition.metadata["project_pack"], "m9a")
         self.assertTrue(definition.metadata["m9a_standalone"])
+        self.assertIs(definition.user_groups, M9A_USER_GROUPS)
 
-    def test_definition_declares_only_pack_rules_without_defaults(self) -> None:
+    def test_definition_declares_m9a_pack_defaults(self) -> None:
         definition = M9APackService().get_definition()
-        payload = definition.model_dump(mode="json")
 
         self.assertEqual(definition.key, "m9a")
         self.assertEqual(
-            [(rule.task, rule.period) for rule in definition.periodRules],
-            [("Psychube", "weekly"), ("SleepDream", "monthly")],
+            [(rule.task, rule.period) for rule in definition.period_rules],
+            [("Psychube", "daily"), ("SleepDream", "monthly")],
         )
-        for forbidden_key in (
-            "projectSource",
-            "defaultProject",
-            "defaultController",
-            "defaultResource",
-            "defaultPreset",
-            "defaultTaskQueue",
-            "dailyTemplate",
-            "weeklyTemplate",
-            "monthlyTemplate",
-        ):
-            self.assertNotIn(forbidden_key, payload)
+        self.assertEqual(definition.project_repo, "MaaAssistantArknights/M9A")
+        self.assertEqual(definition.default_controller, "adb")
+        self.assertEqual(definition.default_resource, "resource")
+        self.assertEqual(definition.default_preset, "日常任务")
+        self.assertEqual(
+            definition.default_task_queue,
+            ["StartUp", "Psychube", "SleepDream", "Award", "CloseDown"],
+        )
+        self.assertEqual(
+            definition.reserved_task_semantics["Psychube"],
+            {"period": "daily", "label": "每日心相"},
+        )
 
     def test_translates_runner_result_for_m9a_notification(self) -> None:
         content = M9APackService().translate_notification(

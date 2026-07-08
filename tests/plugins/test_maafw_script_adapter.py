@@ -28,6 +28,7 @@ from automas_script_maafw import adapter
 class FakeScriptConfig:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], Any] = {
+            ("Run", "DailyOnceTasks"): '["ExistingDaily"]',
             ("Run", "WeeklyOnceTasks"): '["ExistingWeekly"]',
             ("Run", "MonthlyOnceTasks"): '["ExistingMonthly"]',
         }
@@ -68,7 +69,10 @@ class MaaFWScriptAdapterTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(rules, [("Psychube", "weekly"), ("SleepDream", "monthly")])
+        self.assertEqual(
+            rules,
+            [("Psychube", "weekly"), ("SleepDream", "monthly"), ("Daily", "daily")],
+        )
 
     async def test_applies_pack_period_rules_without_replacing_user_lists(self) -> None:
         script_config = FakeScriptConfig()
@@ -76,7 +80,7 @@ class MaaFWScriptAdapterTest(unittest.IsolatedAsyncioTestCase):
         changed = await adapter._apply_period_rules_to_script_config(
             script_config,  # type: ignore[arg-type]
             [
-                ("Psychube", "weekly"),
+                ("Psychube", "daily"),
                 ("SleepDream", "monthly"),
                 ("ExistingWeekly", "weekly"),
             ],
@@ -84,8 +88,12 @@ class MaaFWScriptAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(changed)
         self.assertEqual(
+            json.loads(script_config.get("Run", "DailyOnceTasks")),
+            ["ExistingDaily", "Psychube"],
+        )
+        self.assertEqual(
             json.loads(script_config.get("Run", "WeeklyOnceTasks")),
-            ["ExistingWeekly", "Psychube"],
+            ["ExistingWeekly"],
         )
         self.assertEqual(
             json.loads(script_config.get("Run", "MonthlyOnceTasks")),

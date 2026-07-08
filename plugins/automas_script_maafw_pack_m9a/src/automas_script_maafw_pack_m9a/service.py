@@ -12,9 +12,22 @@ from .models import (
 
 
 PERIOD_RULES = [
-    M9APeriodRule(task="Psychube", period="weekly"),
+    M9APeriodRule(task="Psychube", period="daily"),
     M9APeriodRule(task="SleepDream", period="monthly"),
 ]
+
+DEFAULT_TASK_QUEUE = [
+    "StartUp",
+    "Psychube",
+    "SleepDream",
+    "Award",
+    "CloseDown",
+]
+
+RESERVED_TASK_SEMANTICS = {
+    "Psychube": {"period": "daily", "label": "每日心相"},
+    "SleepDream": {"period": "monthly", "label": "深眠浅梦"},
+}
 
 
 class M9APackService:
@@ -22,7 +35,20 @@ class M9APackService:
 
     def get_definition(self) -> M9APackDefinition:
         return M9APackDefinition(
-            periodRules=PERIOD_RULES,
+            key="m9a",
+            display_name="M9A",
+            project_repo="MaaAssistantArknights/M9A",
+            interface_path="interface.json",
+            supported_controllers=["adb", "win32"],
+            default_controller="adb",
+            default_resource="resource",
+            default_preset="日常任务",
+            default_task_queue=DEFAULT_TASK_QUEUE,
+            period_rules=PERIOD_RULES,
+            reserved_task_semantics=RESERVED_TASK_SEMANTICS,
+            icon="automas_script_maafw_pack_m9a:assets/m9a.png",
+            notes="M9A 专项插件包 — 明日方舟自动化",
+            framework="maafw",
             capabilities=[
                 "period_rules",
                 "notification_translation",

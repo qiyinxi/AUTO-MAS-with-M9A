@@ -512,27 +512,37 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             logger.warning(f"MaaFW runner worker 清理失败: {exc}")
 
     def _filter_period_once_tasks(self, plan: MaaFWRunPlan) -> MaaFWRunPlan:
+        daily_tasks = set(_load_json_list(self.script_config.get("Run", "DailyOnceTasks")))
         weekly_tasks = set(_load_json_list(self.script_config.get("Run", "WeeklyOnceTasks")))
         monthly_tasks = set(_load_json_list(self.script_config.get("Run", "MonthlyOnceTasks")))
-        if not weekly_tasks and not monthly_tasks:
+        if not daily_tasks and not weekly_tasks and not monthly_tasks:
             return plan
 
-        weekly_key, monthly_key = _current_period_keys()
+        daily_key, weekly_key, monthly_key = _current_period_keys()
         records = self._load_period_task_records()
         runnable_tasks = []
         skipped_tasks = []
         for task in plan.tasks:
+            daily_done = (
+                task.name in daily_tasks and records["daily"].get(task.name) == daily_key
+            )
             weekly_done = task.name in weekly_tasks and records["weekly"].get(task.name) == weekly_key
             monthly_done = (
                 task.name in monthly_tasks and records["monthly"].get(task.name) == monthly_key
             )
-            if weekly_done or monthly_done:
+            if daily_done or weekly_done or monthly_done:
+                if daily_done:
+                    reason = "今日已正常完成"
+                elif monthly_done:
+                    reason = "本月已正常完成"
+                else:
+                    reason = "本周已正常完成"
                 skipped_tasks.append(
                     MaaFWSkippedTaskPlan(
                         name=task.name,
                         label=task.label,
                         entry=task.entry,
-                        reason="本月已正常完成" if monthly_done else "本周已正常完成",
+                        reason=reason,
                     )
                 )
                 continue
@@ -550,7 +560,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
 
     def _load_period_task_records(self) -> dict[str, dict[str, str]]:
         raw_records = _load_json_dict(self.cur_user_config.get("Data", "PeriodTaskRecords"))
-        records: dict[str, dict[str, str]] = {"weekly": {}, "monthly": {}}
+        records: dict[str, dict[str, str]] = {"daily": {}, "weekly": {}, "monthly": {}}
         for period in records:
             raw_period_records = raw_records.get(period, {})
             if isinstance(raw_period_records, dict):
@@ -563,14 +573,19 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
     async def _mark_period_tasks_completed(self, completed_tasks: list[str]) -> None:
         if not completed_tasks:
             return
+        daily_tasks = set(_load_json_list(self.script_config.get("Run", "DailyOnceTasks")))
         weekly_tasks = set(_load_json_list(self.script_config.get("Run", "WeeklyOnceTasks")))
         monthly_tasks = set(_load_json_list(self.script_config.get("Run", "MonthlyOnceTasks")))
-        if not weekly_tasks and not monthly_tasks:
+        if not daily_tasks and not weekly_tasks and not monthly_tasks:
             return
 
-        weekly_key, monthly_key = _current_period_keys()
+        daily_key, weekly_key, monthly_key = _current_period_keys()
         records = self._load_period_task_records()
         changed = False
+        for task_name in set(completed_tasks).intersection(daily_tasks):
+            if records["daily"].get(task_name) != daily_key:
+                records["daily"][task_name] = daily_key
+                changed = True
         for task_name in set(completed_tasks).intersection(weekly_tasks):
             if records["weekly"].get(task_name) != weekly_key:
                 records["weekly"][task_name] = weekly_key
@@ -706,10 +721,14 @@ def _load_json_list(value: Any) -> list[str]:
     return []
 
 
-def _current_period_keys(now: datetime | None = None) -> tuple[str, str]:
+def _current_period_keys(now: datetime | None = None) -> tuple[str, str, str]:
     current = now or datetime.now(tz=UTC4)
     iso_year, iso_week, _ = current.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}", current.strftime("%Y-%m")
+    return (
+        current.strftime("%Y-%m-%d"),
+        f"{iso_year}-W{iso_week:02d}",
+        current.strftime("%Y-%m"),
+    )
 
 
 def _normalize_project_path(path: Path) -> str:
