@@ -6,6 +6,7 @@ import hsrIcon from '@/assets/hsr.png'
 import autoMasIcon from '@/assets/AUTO-MAS.ico'
 import type { Script, User } from '@/types/script'
 import type { ScriptRecord, ScriptTypeDescriptor, ScriptUserRecord } from '@/types/scriptRegistry'
+import { OpenAPI } from '@/api/core/OpenAPI'
 
 const DEFAULT_USER_SHAPE = {
   Data: {
@@ -89,7 +90,14 @@ export const getFallbackScriptIcon = (type: string) => {
 }
 
 export const getScriptIcon = (type: string, iconUrl?: string | null) => {
-  return iconUrl || getFallbackScriptIcon(type)
+  if (iconUrl) {
+    if (iconUrl.startsWith('/')) {
+      const base = (OpenAPI.BASE || 'http://localhost:36163').replace(/\/+$/, '')
+      return `${base}${iconUrl}`
+    }
+    return iconUrl
+  }
+  return getFallbackScriptIcon(type)
 }
 
 export const handleScriptIconError = (event: Event, type: string) => {
