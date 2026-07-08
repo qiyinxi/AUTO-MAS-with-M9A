@@ -505,7 +505,9 @@ const filteredTemplates = computed(() => {
   )
 })
 
-const availableScriptTypes = computed(() => scriptTypeDescriptors.value)
+const availableScriptTypes = computed(() =>
+  scriptTypeDescriptors.value.filter(descriptor => descriptor.available !== false)
+)
 
 const isScriptAvailable = (script: Script) => script.available !== false
 

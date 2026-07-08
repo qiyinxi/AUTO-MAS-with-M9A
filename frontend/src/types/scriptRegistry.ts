@@ -14,6 +14,7 @@ export interface ScriptTypeDescriptor {
   legacy_config_class_name?: string | null
   legacy_user_config_class_name?: string | null
   is_builtin: boolean
+  available?: boolean
 }
 
 export interface ScriptTypeGetOut {

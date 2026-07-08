@@ -50,7 +50,7 @@ class M9APackPluginTest(unittest.TestCase):
             [(rule.task, rule.period) for rule in definition.period_rules],
             [("Psychube", "daily"), ("SleepDream", "monthly")],
         )
-        self.assertEqual(definition.project_repo, "MaaAssistantArknights/M9A")
+        self.assertEqual(definition.project_repo, "MAA1999/M9A")
         self.assertEqual(definition.default_controller, "adb")
         self.assertEqual(definition.default_resource, "resource")
         self.assertEqual(definition.default_preset, "日常任务")

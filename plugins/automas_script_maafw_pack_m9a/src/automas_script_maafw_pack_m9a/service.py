@@ -37,7 +37,7 @@ class M9APackService:
         return M9APackDefinition(
             key="m9a",
             display_name="M9A",
-            project_repo="MaaAssistantArknights/M9A",
+            project_repo="MAA1999/M9A",
             interface_path="interface.json",
             supported_controllers=["adb", "win32"],
             default_controller="adb",
@@ -47,7 +47,7 @@ class M9APackService:
             period_rules=PERIOD_RULES,
             reserved_task_semantics=RESERVED_TASK_SEMANTICS,
             icon="automas_script_maafw_pack_m9a:assets/m9a.png",
-            notes="M9A 专项插件包 — 明日方舟自动化",
+            notes="M9A 专项插件包 — 重返未来：1999 自动化",
             framework="maafw",
             capabilities=[
                 "period_rules",
