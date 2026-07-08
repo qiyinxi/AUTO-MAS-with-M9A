@@ -63,7 +63,7 @@
             <template #overlay>
               <a-menu
                 :selected-keys="formData.Task.SelectedPreset ? [formData.Task.SelectedPreset] : []"
-                @click="event => emit('presetMenuClick', event)"
+                @click="(event: MenuInfo) => emit('presetMenuClick', event)"
               >
                 <a-menu-item v-for="item in presetOptions" :key="item.name">
                   {{ getDisplayName(item) }}

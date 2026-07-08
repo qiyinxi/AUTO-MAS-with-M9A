@@ -31,11 +31,11 @@
     <template #title>
       <a-space>
         <img
-          v-if="script?.icon || script?.iconUrl"
+          v-if="script && (script.icon || script.iconUrl)"
           :src="getScriptIcon(script.type, script.iconUrl)"
           alt=""
           class="script-icon"
-          @error="event => handleScriptIconError(event, script.type)"
+          @error="event => handleScriptIconError(event, script?.type ?? '')"
         />
         <span>{{ script?.name || '脚本配置' }}</span>
         <a-tag :color="getScriptTypeTagColor(script?.type || '', script?.themeColor)">

@@ -48,7 +48,7 @@
               expand-trigger="hover"
               class="add-task-cascader"
               :disabled="interfaceDependentDisabled || availableTasks.length === 0"
-              @change="value => emit('addTaskCascaderChange', value)"
+              @change="(value: unknown) => emit('addTaskCascaderChange', value)"
             >
               <template #suffixIcon>
                 <PlusOutlined />
@@ -214,7 +214,7 @@
             :resource-name="effectiveResourceName"
             :base-path="previewData.path"
             :disabled="interfaceDependentDisabled"
-            @update="payload => emit('taskOptionUpdate', selectedTask.name, payload)"
+            @update="payload => emit('taskOptionUpdate', selectedTask!.name, payload)"
           />
           <MaaFWDescriptionView
             v-if="selectedTask.description"
