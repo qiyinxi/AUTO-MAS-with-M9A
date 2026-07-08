@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MaaFW 用户页 - Before / After 对比</title>
+<style>
+/* ===== Reset & Base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== Tab Switcher ===== */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #d2d2d7;
+  background: #fff;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.tab-btn {
+  padding: 12px 24px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: #86868b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: #1d1d1f; }
+.tab-btn.active { color: #0071e3; border-bottom-color: #0071e3; }
+.mockup-panel { display: none; }
+.mockup-panel.active { display: block; }
+
+/* ===== Common Layout ===== */
+.page-wrap {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px 40px;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+.breadcrumb { font-size: 13px; color: #86868b; }
+.breadcrumb a { color: #0071e3; text-decoration: none; }
+.breadcrumb span { margin: 0 8px; }
+.breadcrumb strong { color: #1d1d1f; }
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+}
+.btn-back:hover { background: #f5f5f7; }
+
+/* Card */
+.card {
+  background: #fff;
+  border: 1px solid #d2d2d7;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.card-head {
+  padding: 16px 24px;
+  border-bottom: 1px solid #d2d2d7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.card-body { padding: 24px; }
+
+/* Form Elements */
+.form-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d1d1f;
+  margin-bottom: 6px;
+}
+.form-label .help { color: #86868b; font-size: 14px; cursor: help; }
+.input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.input-password {
+  width: 100%;
+  height: 40px;
+  padding: 0 40px 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M8 3a5 5 0 00-5 5v3l-1 2h12l-1-2V8a5 5 0 00-5-5zm-1 10h2a1 1 0 01-2 0z' fill='%2386868b'/%3E%3C/svg%3E") no-repeat right 12px center;
+  outline: none;
+}
+.input-password:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff;
+  outline: none;
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.btn:hover { background: #f5f5f7; }
+.btn-primary { background: #0071e3; border-color: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.btn-link {
+  border: none;
+  background: none;
+  color: #0071e3;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  height: auto;
+}
+.btn-link:hover { color: #0077ed; text-decoration: underline; }
+.btn-danger { color: #dc2626; border-color: #dc2626; }
+.btn-danger:hover { background: #fef2f2; }
+.switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: #d2d2d7;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.switch.on { background: #34c759; }
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: transform 0.2s;
+}
+.switch.on::after { transform: translateX(20px); }
+.select {
+  width: 100%;
+  height: 40px;
+  padding: 0 32px 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  appearance: none;
+  outline: none;
+}
+.number-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff;
+  outline: none;
+}
+.number-input:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+
+/* Grid */
+.row { display: flex; gap: 24px; margin-bottom: 24px; }
+.col-4 { flex: 0 0 calc(100% / 6 * 2); max-width: calc(100% / 6 * 2); }
+.col-6 { flex: 0 0 50%; max-width: 50%; }
+.col-8 { flex: 0 0 calc(100% / 12 * 4); max-width: calc(100% / 12 * 4); }
+.col-12 { flex: 0 0 100%; max-width: 100%; }
+.col-24 { flex: 0 0 100%; max-width: 100%; }
+
+/* Section */
+.section { margin-bottom: 24px; }
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #d2d2d7;
+}
+.section-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-header h3::before {
+  content: '';
+  width: 4px;
+  height: 18px;
+  background: #0071e3;
+  border-radius: 2px;
+}
+
+/* Alert */
+.alert {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.5;
+}
+.alert-info { background: #e8f4fd; color: #0071e3; border: 1px solid #b3d9f2; }
+
+/* Tag */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tag-primary { background: rgba(0,113,227,0.1); color: #0071e3; }
+.tag-blue { background: rgba(0,113,227,0.08); color: #0071e3; border: 1px solid rgba(0,113,227,0.2); }
+.tag-green { background: rgba(52,199,89,0.08); color: #1a7a1a; border: 1px solid rgba(52,199,89,0.2); }
+
+/* ===== Task Queue Specific ===== */
+.task-editor-row {
+  display: flex;
+  gap: 24px;
+}
+
+/* Task list column */
+.task-list-col {
+  flex: 0 0 50%;
+  max-width: 50%;
+}
+.task-option-col {
+  flex: 0 0 50%;
+  max-width: 50%;
+}
+
+.column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* Task row */
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e5e7;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.task-row:hover { background: #f9f9fb; }
+.task-row-selected {
+  background: rgba(0,113,227,0.06);
+  border-left: 3px solid #0071e3;
+  padding-left: 13px;
+}
+.task-drag-handle {
+  color: #c7c7cc;
+  font-size: 16px;
+  cursor: grab;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+  user-select: none;
+}
+.task-drag-handle:hover { color: #86868b; }
+.task-icon-placeholder {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  flex-shrink: 0;
+}
+.task-info { flex: 1; min-width: 0; }
+.task-name { font-size: 14px; font-weight: 600; }
+.task-meta { display: flex; gap: 6px; margin-top: 4px; }
+.task-move-btns { display: flex; flex-direction: column; gap: 2px; }
+.task-move-btn {
+  width: 24px;
+  height: 20px;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #86868b;
+}
+
+/* Cascader dropdown mock */
+.cascader-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+  display: flex;
+  overflow: hidden;
+  width: 480px;
+}
+.cascader-col {
+  flex: 1;
+  border-right: 1px solid #e5e5e7;
+  min-height: 200px;
+}
+.cascader-col:last-child { border-right: none; }
+.cascader-col-title {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #86868b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #e5e5e7;
+  background: #fafafa;
+}
+.cascader-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid #f0f0f2;
+}
+.cascader-item:hover { background: #f5f5f7; }
+.cascader-item.active { background: rgba(0,113,227,0.06); color: #0071e3; font-weight: 600; }
+.cascader-item.has-children::after { content: '›'; float: right; color: #c7c7cc; }
+.cascader-leaf { font-size: 12px; color: #86868b; }
+.cascader-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: #86868b;
+  font-size: 13px;
+}
+
+/* Preset template card */
+.preset-card {
+  border: 1px solid #e5e5e7;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: #fafafa;
+}
+.preset-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.preset-card-name { font-size: 15px; font-weight: 700; }
+.preset-card-desc { font-size: 13px; color: #86868b; margin-bottom: 12px; }
+.preset-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 7px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #e5e5e7;
+  font-size: 12px;
+}
+.preset-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: #34c759; }
+
+/* Task option panel */
+.option-panel {
+  border: 1px solid #e5e5e7;
+  border-radius: 10px;
+  padding: 20px;
+  min-height: 300px;
+  background: #fff;
+}
+.option-panel-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e5e5e7;
+  margin-bottom: 16px;
+}
+.option-panel-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  flex-shrink: 0;
+}
+.option-panel-title { font-size: 17px; font-weight: 700; }
+.option-panel-meta { font-size: 12px; color: #86868b; margin-top: 2px; }
+
+/* Option search */
+.option-search {
+  margin-bottom: 16px;
+}
+.option-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 32px;
+  border: 1px solid #e5e5e7;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fafafa url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Ccircle cx='6' cy='6' r='4' fill='none' stroke='%2386868b' stroke-width='1.5'/%3E%3Cline x1='9' y1='9' x2='13' y2='13' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat 10px center;
+  outline: none;
+}
+.option-search input:focus { border-color: #0071e3; background-color: #fff; }
+
+/* Option group (collapsible) */
+.option-group {
+  border: 1px solid #e5e5e7;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.option-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #fafafa;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 1px solid #e5e5e7;
+}
+.option-group-header .chevron { font-size: 11px; color: #86868b; transition: transform 0.2s; }
+.option-group-header.open .chevron { transform: rotate(90deg); }
+.option-group-body { padding: 14px; }
+.option-group-body.collapsed { display: none; }
+
+/* Option item */
+.option-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f2;
+}
+.option-item:last-child { border-bottom: none; }
+.option-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.option-label .help { color: #86868b; font-size: 12px; cursor: help; }
+.option-control { flex-shrink: 0; }
+
+/* Radio group inline */
+.radio-group { display: flex; gap: 4px; }
+.radio-btn {
+  padding: 4px 14px;
+  border: 1px solid #d2d2d7;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #fff;
+  transition: all 0.15s;
+}
+.radio-btn.active { border-color: #0071e3; background: rgba(0,113,227,0.06); color: #0071e3; font-weight: 600; }
+
+/* Select inline */
+.select-inline {
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid #d2d2d7;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center;
+  appearance: none;
+  outline: none;
+}
+
+/* Notify channel */
+.notify-list { }
+.notify-channel {
+  padding: 14px 0;
+  border-bottom: 1px solid #e5e5e7;
+}
+.notify-channel:last-child { border-bottom: none; }
+.notify-channel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.notify-channel-info { display: flex; flex-direction: column; gap: 2px; }
+.notify-channel-name { font-size: 14px; font-weight: 600; }
+.notify-channel-desc { font-size: 12px; color: #86868b; }
+.notify-channel-config {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px dashed #e5e5e7;
+}
+
+/* Save status bar */
+.save-bar {
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.save-bar-success { background: #e8f8e8; color: #1a7a1a; border-bottom: 1px solid #a5d6a7; }
+
+/* Custom popup menu (BEFORE only) */
+.popup-menu-wrapper { position: relative; display: inline-block; }
+.popup-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  padding: 4px;
+  min-width: 200px;
+  display: flex;
+}
+.popup-menu-col {
+  border-right: 1px solid #e5e5e7;
+  padding: 4px;
+  min-width: 160px;
+}
+.popup-menu-col:last-child { border-right: none; }
+.popup-menu-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.popup-menu-item:hover { background: #f5f5f7; }
+.popup-menu-item-title {
+  font-size: 11px;
+  color: #86868b;
+  padding: 4px 12px 2px;
+  font-weight: 600;
+}
+
+/* Empty panel */
+.empty-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 280px;
+  border: 1px dashed #d2d2d7;
+  border-radius: 10px;
+  color: #86868b;
+  font-size: 14px;
+}
+
+/* ===== After-specific ===== */
+.section-alt {
+  padding: 24px;
+  border-radius: 10px;
+  background: #f9f9fb;
+  margin-bottom: 40px;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 991px) {
+  .task-editor-row { flex-direction: column; }
+  .task-list-col, .task-option-col { flex: 0 0 100%; max-width: 100%; }
+  .task-option-col { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e5e7; }
+}
+@media (max-width: 768px) {
+  .col-4, .col-6, .col-8, .col-12 { flex: 0 0 100%; max-width: 100%; }
+  .page-wrap { padding: 16px; }
+}
+</style>
+</head>
+<body>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('before')">Before — 当前状态</button>
+  <button class="tab-btn" onclick="switchTab('after')">After — 优化后</button>
+</div>
+
+<!-- ============================================
+     BEFORE
+     ============================================ -->
+<div id="panel-before" class="mockup-panel active">
+<div class="page-wrap">
+  <div class="page-header">
+    <div class="breadcrumb">
+      <a href="#">脚本管理</a><span>/</span><strong>编辑 MaaFramework 用户</strong>
+    </div>
+    <button class="btn-back">← 返回</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="tag tag-primary">MaaFramework</span>
+      我的MaaFW脚本
+    </div>
+    <div class="card-body">
+
+      <!-- 基本信息 -->
+      <div class="section">
+        <div class="section-header"><h3>基本信息</h3></div>
+        <div class="row">
+          <div class="col-8">
+            <div class="form-label">用户名称 <span class="help">ⓘ</span></div>
+            <input class="input" value="用户1" />
+          </div>
+          <div style="flex:0 0 calc(100%/12);max-width:calc(100%/12);display:flex;align-items:flex-end;padding-bottom:6px">
+            <div class="form-label" style="margin-bottom:0">启用</div>
+            <div class="switch on" style="margin-left:8px"></div>
+          </div>
+          <div style="flex:0 0 calc(100%/6);max-width:calc(100%/6)">
+            <div class="form-label">剩余天数 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="30" />
+          </div>
+          <div style="flex:0 0 calc(100%/6);max-width:calc(100%/6)">
+            <div class="form-label">一键切换预设 <span class="help">ⓘ</span></div>
+            <select class="select"><option>默认预设</option></select>
+          </div>
+        </div>
+        <!-- 账号密码 占满整行 -->
+        <div class="row">
+          <div class="col-12" style="flex:0 0 50%;max-width:50%">
+            <div class="form-label">账号 <span class="help">ⓘ</span></div>
+            <input class="input" placeholder="仅用于本地记录" />
+          </div>
+          <div class="col-12" style="flex:0 0 50%;max-width:50%">
+            <div class="form-label">密码 <span class="help">ⓘ</span></div>
+            <input class="input-password" placeholder="仅用于本地记录" />
+          </div>
+        </div>
+        <div class="alert alert-info" style="margin-bottom:16px">
+          ⓘ 账号密码仅用于本地记录，不会上传至服务器
+        </div>
+        <div class="row" style="margin-bottom:0">
+          <div class="col-12">
+            <div class="form-label">备注</div>
+            <textarea class="textarea" placeholder="输入备注信息"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- 任务队列 -->
+      <div class="section">
+        <div class="section-header"><h3>任务队列配置</h3></div>
+        <div class="task-editor-row">
+          <!-- 左列: 预设模板 -->
+          <div class="task-list-col">
+            <div class="column-header">
+              <span>任务队列</span>
+              <!-- 自定义弹出菜单 (问题点) -->
+              <div class="popup-menu-wrapper">
+                <button class="btn btn-primary btn-sm" style="position:relative;z-index:40">+ 添加任务</button>
+                <div class="popup-menu" style="display:flex;top:calc(100% + 4px)">
+                  <div class="popup-menu-col">
+                    <div class="popup-menu-item-title">分组</div>
+                    <div class="popup-menu-item" style="background:rgba(0,113,227,0.06);font-weight:600">基础任务</div>
+                    <div class="popup-menu-item">日常任务</div>
+                    <div class="popup-menu-item">战斗任务</div>
+                  </div>
+                  <div class="popup-menu-col">
+                    <div class="popup-menu-item-title">子分组</div>
+                    <div class="popup-menu-item">登录</div>
+                    <div class="popup-menu-item" style="background:rgba(0,113,227,0.06);font-weight:600">基建</div>
+                    <div class="popup-menu-item">招募</div>
+                  </div>
+                  <div class="popup-menu-col">
+                    <div class="popup-menu-item-title">选择任务</div>
+                    <div class="popup-menu-item">收取信用</div>
+                    <div class="popup-menu-item" style="background:rgba(0,113,227,0.06);font-weight:600">读取基建</div>
+                    <div class="popup-menu-item">交换干员</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- 预设卡片 (队列为空时) -->
+            <div class="preset-card">
+              <div class="preset-card-header">
+                <div class="preset-card-name">日常预设</div>
+                <button class="btn btn-sm">一键切换预设</button>
+              </div>
+              <div class="preset-card-desc">包含日常基建、招募、公招等基础任务</div>
+              <div class="preset-chips">
+                <span class="preset-chip"><span class="preset-chip-dot"></span>登录</span>
+                <span class="preset-chip"><span class="preset-chip-dot"></span>基建</span>
+                <span class="preset-chip"><span class="preset-chip-dot"></span>招募</span>
+                <span class="preset-chip"><span class="preset-chip-dot"></span>公招</span>
+                <span class="preset-chip"><span class="preset-chip-dot"></span>信用</span>
+              </div>
+            </div>
+          </div>
+          <!-- 右列: 空状态 -->
+          <div class="task-option-col">
+            <div class="column-header"><span>任务配置</span></div>
+            <div class="empty-panel">请从左侧选择一个任务进行配置</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 通知 -->
+      <div class="section" style="margin-bottom:0">
+        <div class="section-header"><h3>通知</h3></div>
+        <div class="row">
+          <div class="col-4">
+            <div class="form-label">启用通知</div>
+            <div class="switch on"></div>
+          </div>
+          <div class="col-4">
+            <div class="form-label">发送统计</div>
+            <div class="switch"></div>
+          </div>
+          <div class="col-4">
+            <div class="form-label">邮件通知</div>
+            <div class="switch on"></div>
+          </div>
+          <div class="col-4">
+            <div class="form-label">Server酱</div>
+            <div class="switch"></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-12" style="flex:0 0 50%;max-width:50%">
+            <div class="form-label">收件地址</div>
+            <input class="input" placeholder="邮件收件地址" />
+          </div>
+          <div class="col-12" style="flex:0 0 50%;max-width:50%">
+            <div class="form-label">Server 酱密钥</div>
+            <input class="input-password" placeholder="SendKey" />
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============================================
+     AFTER
+     ============================================ -->
+<div id="panel-after" class="mockup-panel">
+<div class="page-wrap">
+  <div class="page-header">
+    <div class="breadcrumb">
+      <a href="#">脚本管理</a><span>/</span><strong>用户配置</strong>
+    </div>
+    <button class="btn-back">← 返回</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="tag tag-primary">MaaFramework</span>
+      我的MaaFW脚本
+    </div>
+
+    <!-- Save status bar -->
+    <div class="save-bar save-bar-success">
+      <span>✓</span> 已自动保存
+    </div>
+
+    <div class="card-body">
+
+      <!-- 基本信息 (紧凑化) -->
+      <div class="section" style="margin-bottom:40px">
+        <div class="section-header"><h3>基本信息</h3></div>
+        <div class="row">
+          <div class="col-8">
+            <div class="form-label">用户名称 <span class="help">ⓘ</span></div>
+            <input class="input" value="用户1" />
+          </div>
+          <div style="flex:0 0 calc(100%/12);max-width:calc(100%/12);display:flex;align-items:flex-end;padding-bottom:6px">
+            <div class="form-label" style="margin-bottom:0">启用</div>
+            <div class="switch on" style="margin-left:8px"></div>
+          </div>
+          <div style="flex:0 0 calc(100%/6);max-width:calc(100%/6)">
+            <div class="form-label">剩余天数 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="30" />
+          </div>
+          <div style="flex:0 0 calc(100%/6);max-width:calc(100%/6)">
+            <div class="form-label">一键切换预设 <span class="help">ⓘ</span></div>
+            <select class="select"><option>默认预设</option></select>
+          </div>
+        </div>
+        <!-- 账号+密码+备注 三等分同行 -->
+        <div class="row">
+          <div class="col-8">
+            <div class="form-label">账号 <span class="help">ⓘ</span></div>
+            <input class="input" placeholder="仅用于本地记录…" autocomplete="off" />
+          </div>
+          <div class="col-8">
+            <div class="form-label">密码 <span class="help">ⓘ</span></div>
+            <input class="input-password" placeholder="仅用于本地记录…" autocomplete="off" />
+          </div>
+          <div class="col-8">
+            <div class="form-label">备注</div>
+            <input class="input" placeholder="备注信息…" />
+          </div>
+        </div>
+        <div class="alert alert-info">
+          ⓘ 账号密码仅用于本地记录，不会上传至服务器
+        </div>
+      </div>
+
+      <!-- 任务队列 -->
+      <div class="section" style="margin-bottom:40px">
+        <div class="section-header"><h3>任务队列配置</h3></div>
+        <div class="task-editor-row">
+          <!-- 左列: 任务列表 -->
+          <div class="task-list-col">
+            <div class="column-header">
+              <span>任务队列</span>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn-link">预设模板</button>
+                <button class="btn btn-primary btn-sm">+ 添加任务</button>
+              </div>
+            </div>
+            <!-- 任务列表 (有拖拽handle) -->
+            <div style="border:1px solid #e5e5e7;border-radius:10px;overflow:hidden">
+              <button class="task-row" style="display:flex;width:100%;border:none;background:rgba(0,113,227,0.06);text-align:left;cursor:pointer;font:inherit;color:inherit;padding:12px 16px;border-left:3px solid #0071e3">
+                <span class="task-drag-handle" style="pointer-events:none">⠿</span>
+                <span class="task-icon-placeholder"></span>
+                <span class="task-info">
+                  <span class="task-name">登录</span>
+                  <span class="task-meta">
+                    <span class="tag tag-blue">entry</span>
+                    <span class="tag tag-green">基础</span>
+                  </span>
+                </span>
+                <span class="task-move-btns">
+                  <span class="task-move-btn">▲</span>
+                  <span class="task-move-btn">▼</span>
+                </span>
+              </button>
+
+              <button class="task-row" style="display:flex;width:100%;border:none;background:#fff;text-align:left;cursor:pointer;font:inherit;color:inherit;padding:12px 16px">
+                <span class="task-drag-handle" style="pointer-events:none">⠿</span>
+                <span class="task-icon-placeholder" style="background:linear-gradient(135deg, #f093fb, #f5576c)"></span>
+                <span class="task-info">
+                  <span class="task-name">基建</span>
+                  <span class="task-meta">
+                    <span class="tag tag-blue">entry</span>
+                    <span class="tag tag-green">日常</span>
+                  </span>
+                </span>
+                <span class="task-move-btns">
+                  <span class="task-move-btn">▲</span>
+                  <span class="task-move-btn">▼</span>
+                </span>
+              </button>
+
+              <button class="task-row" style="display:flex;width:100%;border:none;background:#fff;text-align:left;cursor:pointer;font:inherit;color:inherit;padding:12px 16px">
+                <span class="task-drag-handle" style="pointer-events:none">⠿</span>
+                <span class="task-icon-placeholder" style="background:linear-gradient(135deg, #4facfe, #00f2fe)"></span>
+                <span class="task-info">
+                  <span class="task-name">招募</span>
+                  <span class="task-meta">
+                    <span class="tag tag-blue">entry</span>
+                    <span class="tag tag-green">日常</span>
+                  </span>
+                </span>
+                <span class="task-move-btns">
+                  <span class="task-move-btn">▲</span>
+                  <span class="task-move-btn">▼</span>
+                </span>
+              </button>
+
+              <button class="task-row" style="display:flex;width:100%;border:none;background:#fff;text-align:left;cursor:pointer;font:inherit;color:inherit;padding:12px 16px;border-bottom:none">
+                <span class="task-drag-handle" style="pointer-events:none">⠿</span>
+                <span class="task-icon-placeholder" style="background:linear-gradient(135deg, #a18cd1, #fbc2eb)"></span>
+                <span class="task-info">
+                  <span class="task-name">信用商店</span>
+                  <span class="task-meta">
+                    <span class="tag tag-blue">entry</span>
+                    <span class="tag tag-green">日常</span>
+                  </span>
+                </span>
+                <span class="task-move-btns">
+                  <span class="task-move-btn">▲</span>
+                  <span class="task-move-btn">▼</span>
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 右列: 任务选项面板 -->
+          <div class="task-option-col">
+            <div class="column-header"><span>任务配置</span></div>
+            <div class="option-panel">
+              <div class="option-panel-header">
+                <span class="option-panel-icon"></span>
+                <div>
+                  <div class="option-panel-title">登录</div>
+                  <div class="option-panel-meta">entry / 基础任务</div>
+                </div>
+              </div>
+
+              <!-- 搜索框 -->
+              <div class="option-search">
+                <input placeholder="搜索选项…" />
+              </div>
+
+              <!-- 分组折叠: 基本设置 -->
+              <div class="option-group">
+                <div class="option-group-header open">
+                  基本设置 <span class="chevron">▼</span>
+                </div>
+                <div class="option-group-body">
+                  <div class="option-item">
+                    <span class="option-label">启用登录 <span class="help">ⓘ</span></span>
+                    <span class="option-control">
+                      <span class="radio-group">
+                        <span class="radio-btn active">Yes</span>
+                        <span class="radio-btn">No</span>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="option-item">
+                    <span class="option-label">登录方式 <span class="help">ⓘ</span></span>
+                    <span class="option-control">
+                      <select class="select-inline"><option>密码登录</option></select>
+                    </span>
+                  </div>
+                  <div class="option-item">
+                    <span class="option-label">重试次数 <span class="help">ⓘ</span></span>
+                    <span class="option-control">
+                      <input class="number-input" type="number" value="3" style="width:80px;height:32px" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 分组折叠: 高级选项 (折叠状态) -->
+              <div class="option-group">
+                <div class="option-group-header">
+                  高级选项 <span class="chevron">▶</span>
+                </div>
+                <div class="option-group-body collapsed">
+                  <!-- 折叠中 -->
+                </div>
+              </div>
+
+              <!-- 分组折叠: 超时设置 (折叠状态) -->
+              <div class="option-group">
+                <div class="option-group-header">
+                  超时设置 <span class="chevron">▶</span>
+                </div>
+                <div class="option-group-body collapsed">
+                  <!-- 折叠中 -->
+                </div>
+              </div>
+
+              <button class="btn btn-danger btn-sm" style="margin-top:20px;width:100%">删除任务</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 通知 (紧凑化 toggle list) -->
+      <div class="section" style="margin-bottom:0">
+        <div class="section-header"><h3>通知</h3></div>
+        <div class="notify-list">
+          <div class="notify-channel">
+            <div class="notify-channel-header">
+              <div class="notify-channel-info">
+                <span class="notify-channel-name">启用通知</span>
+              </div>
+              <div class="switch on"></div>
+            </div>
+          </div>
+          <div class="notify-channel">
+            <div class="notify-channel-header">
+              <div class="notify-channel-info">
+                <span class="notify-channel-name">邮件通知</span>
+                <span class="notify-channel-desc">发送运行结果到邮箱</span>
+              </div>
+              <div class="switch on"></div>
+            </div>
+            <div class="notify-channel-config">
+              <div class="form-label">收件地址</div>
+              <input class="input" type="email" placeholder="邮件收件地址…" style="max-width:400px" />
+            </div>
+          </div>
+          <div class="notify-channel">
+            <div class="notify-channel-header">
+              <div class="notify-channel-info">
+                <span class="notify-channel-name">Server 酱</span>
+                <span class="notify-channel-desc">通过 Server 酱推送消息</span>
+              </div>
+              <div class="switch"></div>
+            </div>
+          </div>
+          <div class="notify-channel">
+            <div class="notify-channel-header">
+              <div class="notify-channel-info">
+                <span class="notify-channel-name">发送统计</span>
+                <span class="notify-channel-desc">推送运行统计数据</span>
+              </div>
+              <div class="switch"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mockup-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>

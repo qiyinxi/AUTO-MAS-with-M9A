@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MaaFW 项目配置页 - Before / After 对比</title>
+<style>
+/* ===== Reset & Base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== Tab Switcher ===== */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #d2d2d7;
+  background: #fff;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.tab-btn {
+  padding: 12px 24px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: #86868b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: #1d1d1f; }
+.tab-btn.active { color: #0071e3; border-bottom-color: #0071e3; }
+
+.mockup-panel { display: none; }
+.mockup-panel.active { display: block; }
+
+/* ===== Common Layout ===== */
+.page-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 40px;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+.breadcrumb {
+  font-size: 13px;
+  color: #86868b;
+}
+.breadcrumb a { color: #0071e3; text-decoration: none; }
+.breadcrumb span { margin: 0 8px; }
+.breadcrumb strong { color: #1d1d1f; }
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+}
+.btn-back:hover { background: #f5f5f7; }
+
+/* Card */
+.card {
+  background: #fff;
+  border: 1px solid #d2d2d7;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.card-head {
+  padding: 16px 24px;
+  border-bottom: 1px solid #d2d2d7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.card-body { padding: 24px; }
+
+/* Form Elements */
+.form-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d1d1f;
+  margin-bottom: 6px;
+}
+.form-label .help {
+  color: #86868b;
+  font-size: 14px;
+  cursor: help;
+}
+.input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.input-readonly { background: #f5f5f7; color: #86868b; }
+.select {
+  width: 100%;
+  height: 40px;
+  padding: 0 32px 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  appearance: none;
+  outline: none;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.btn:hover { background: #f5f5f7; }
+.btn-primary {
+  background: #0071e3;
+  border-color: #0071e3;
+  color: #fff;
+}
+.btn-primary:hover { background: #0077ed; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: #d2d2d7;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.switch.on { background: #34c759; }
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: transform 0.2s;
+}
+.switch.on::after { transform: translateX(20px); }
+.number-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1d1d1f;
+  background: #fff;
+  outline: none;
+}
+.number-input:focus { border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+
+/* Grid */
+.row { display: flex; gap: 24px; margin-bottom: 24px; }
+.col-4 { flex: 0 0 calc(100% / 6 * 2); max-width: calc(100% / 6 * 2); }
+.col-6 { flex: 0 0 50%; max-width: 50%; }
+.col-8 { flex: 0 0 calc(100% / 12 * 4); max-width: calc(100% / 12 * 4); }
+.col-12 { flex: 0 0 100%; max-width: 100%; }
+
+/* Section */
+.section {
+  margin-bottom: 24px;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #d2d2d7;
+}
+.section-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-header h3::before {
+  content: '';
+  width: 4px;
+  height: 18px;
+  background: #0071e3;
+  border-radius: 2px;
+}
+
+/* Alert */
+.alert {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-info { background: #e8f4fd; color: #0071e3; border: 1px solid #b3d9f2; }
+.alert-warning { background: #fff8e1; color: #c48300; border: 1px solid #ffe082; }
+.alert-success { background: #e8f8e8; color: #1a7a1a; border: 1px solid #a5d6a7; }
+
+/* Empty state */
+.empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: #86868b;
+  border: 1px dashed #d2d2d7;
+  border-radius: 8px;
+}
+.empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+
+/* Input group compact */
+.input-group-compact {
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #d2d2d7;
+}
+.input-group-compact .input {
+  border: none;
+  border-radius: 0;
+}
+.input-group-compact .input:focus { box-shadow: none; }
+.input-group-compact .btn {
+  border: none;
+  border-left: 1px solid #d2d2d7;
+  border-radius: 0;
+  background: rgba(0,113,227,0.06);
+  color: #0071e3;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.input-group-compact .btn:hover { background: rgba(0,113,227,0.12); }
+
+/* Descriptions */
+.descriptions { width: 100%; border-collapse: collapse; }
+.descriptions th, .descriptions td {
+  padding: 8px 16px;
+  border: 1px solid #d2d2d7;
+  font-size: 13px;
+  text-align: left;
+}
+.descriptions th { background: #f5f5f7; font-weight: 600; }
+
+/* =========================================
+   BEFORE - 当前状态
+   ========================================= */
+
+/* Tag */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tag-primary { background: rgba(0,113,227,0.1); color: #0071e3; }
+
+/* =========================================
+   AFTER - 优化后
+   ========================================= */
+
+/* Steps */
+.steps {
+  display: flex;
+  gap: 0;
+  margin-bottom: 32px;
+  padding: 0;
+  list-style: none;
+}
+.step {
+  flex: 1;
+  position: relative;
+  text-align: center;
+}
+.step::after {
+  content: '';
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  right: -50%;
+  height: 2px;
+  background: #d2d2d7;
+  z-index: 0;
+}
+.step:last-child::after { display: none; }
+.step.completed::after { background: #34c759; }
+.step.active::after { background: linear-gradient(90deg, #34c759 50%, #d2d2d7 50%); }
+.step-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #d2d2d7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #86868b;
+  position: relative;
+  z-index: 1;
+}
+.step.completed .step-dot { border-color: #34c759; background: #34c759; color: #fff; }
+.step.active .step-dot { border-color: #0071e3; background: #0071e3; color: #fff; }
+.step-title {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #86868b;
+}
+.step.completed .step-title { color: #1d1d1f; }
+.step.active .step-title { color: #0071e3; }
+
+/* Save status bar */
+.save-bar {
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.save-bar-success { background: #e8f8e8; color: #1a7a1a; border-bottom: 1px solid #a5d6a7; }
+.save-bar-icon { font-size: 16px; }
+
+/* Stat cards */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+.stat-card {
+  padding: 16px;
+  border: 1px solid #e5e5e7;
+  border-radius: 10px;
+  background: #fafafa;
+  text-align: center;
+}
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1d1d1f;
+  font-variant-numeric: tabular-nums;
+}
+.stat-label {
+  font-size: 12px;
+  color: #86868b;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+/* Alternate section background */
+.section-alt {
+  padding: 24px;
+  border-radius: 10px;
+  background: #f9f9fb;
+  margin-bottom: 40px;
+}
+
+/* Onboarding card */
+.onboarding {
+  max-width: 480px;
+  margin: 32px auto 0;
+  padding: 48px 40px;
+  border: 1px dashed #d2d2d7;
+  border-radius: 12px;
+  background: #fafafa;
+  text-align: center;
+}
+.onboarding-icon { font-size: 56px; margin-bottom: 16px; opacity: 0.5; }
+.onboarding h4 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+.onboarding p { font-size: 14px; color: #86868b; margin-bottom: 24px; line-height: 1.6; }
+
+/* Secondary actions row */
+.path-secondary {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Collapse for agent env */
+.collapse-panel {
+  border: 1px solid #e5e5e7;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.collapse-header {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fafafa;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 1px solid #e5e5e7;
+}
+.collapse-header .tag { margin-left: 8px; }
+.collapse-body { padding: 16px; font-size: 13px; }
+.collapse-body .desc-row { display: flex; gap: 16px; margin-bottom: 8px; }
+.collapse-body .desc-label { color: #86868b; min-width: 80px; }
+.collapse-body .desc-value { color: #1d1d1f; word-break: break-all; }
+
+/* Highlight annotations */
+.annotation {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+}
+.annotation-red { background: #fee2e2; color: #dc2626; }
+.annotation-green { background: #dcfce7; color: #16a34a; }
+
+.annotation-container { position: relative; }
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .col-4, .col-6, .col-8 { flex: 0 0 100%; max-width: 100%; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .page-wrap { padding: 16px; }
+}
+</style>
+</head>
+<body>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('before')">Before — 当前状态</button>
+  <button class="tab-btn" onclick="switchTab('after')">After — 优化后</button>
+</div>
+
+<!-- ============================================
+     BEFORE
+     ============================================ -->
+<div id="panel-before" class="mockup-panel active">
+<div class="page-wrap">
+  <div class="page-header">
+    <div class="breadcrumb">
+      <a href="#">脚本管理</a><span>/</span><strong>编辑 MaaFramework 项目</strong>
+    </div>
+    <button class="btn-back">← 返回</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="tag tag-primary">MaaFramework</span>
+      MaaFramework 项目配置
+    </div>
+    <div class="card-body">
+
+      <!-- Section 1: 基本信息 -->
+      <div class="section">
+        <div class="section-header"><h3>基本信息</h3></div>
+        <div class="row">
+          <div class="col-8">
+            <div class="form-label">脚本名称 <span class="help">ⓘ</span></div>
+            <input class="input" value="我的MaaFW脚本" />
+          </div>
+          <div class="col-4" style="flex:0 0 calc(100% / 6 * 4); max-width: calc(100% / 6 * 4)">
+            <div class="form-label">项目目录 <span class="help">ⓘ</span></div>
+            <div class="input-group-compact" style="display:flex">
+              <input class="input input-readonly" value="D:\Projects\maafw-project" style="flex:1" />
+              <button class="btn btn-sm">选择文件夹</button>
+              <button class="btn btn-sm">读取 interface</button>
+              <button class="btn btn-sm">准备运行环境</button>
+            </div>
+          </div>
+        </div>
+        <!-- Empty interface state -->
+        <div class="empty">
+          <div class="empty-icon">📭</div>
+          <div style="font-size:14px">尚未读取 interface.json</div>
+          <div style="font-size:12px;margin-top:4px">请先选择项目目录并点击"读取 interface"</div>
+        </div>
+      </div>
+
+      <!-- Section 2: 控制方式 -->
+      <div class="section">
+        <div class="section-header"><h3>控制方式与游戏资源</h3></div>
+        <div class="row">
+          <div class="col-6">
+            <div class="form-label">控制方式 <span class="help">ⓘ</span></div>
+            <select class="select" disabled><option>请先读取 interface</option></select>
+          </div>
+          <div class="col-6">
+            <div class="form-label">游戏资源 <span class="help">ⓘ</span></div>
+            <select class="select" disabled><option>请先读取 interface</option></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: 更新 -->
+      <div class="section">
+        <div class="section-header"><h3>项目更新</h3></div>
+        <div class="row">
+          <div class="col-4">
+            <div class="form-label">更新源 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Git</option></select>
+          </div>
+          <div class="col-4">
+            <div class="form-label">更新渠道 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Stable</option></select>
+          </div>
+          <div class="col-4">
+            <div class="form-label">Mirror 酱 CDK <span class="help">ⓘ</span></div>
+            <input class="input" placeholder="留空使用全局 CDK" />
+          </div>
+        </div>
+        <div class="row" style="align-items:center">
+          <div class="col-4">
+            <div class="form-label">自动更新</div>
+            <div class="switch"></div>
+          </div>
+          <div class="col-4">
+            <button class="btn" style="width:100%">手动更新</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: 运行配置 -->
+      <div class="section" style="margin-bottom:0">
+        <div class="section-header"><h3>运行配置</h3></div>
+        <div class="row">
+          <div class="col-4">
+            <div class="form-label">代理次数上限 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="0" />
+          </div>
+          <div class="col-4">
+            <div class="form-label">重试次数限制 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="3" />
+          </div>
+          <div class="col-4">
+            <div class="form-label">时间限制 (秒) <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="3600" />
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============================================
+     AFTER
+     ============================================ -->
+<div id="panel-after" class="mockup-panel">
+<div class="page-wrap">
+  <div class="page-header">
+    <div class="breadcrumb">
+      <a href="#">脚本管理</a><span>/</span><strong>项目配置</strong>
+    </div>
+    <button class="btn-back">← 返回</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="tag tag-primary">MaaFramework</span>
+      MaaFramework 项目配置
+    </div>
+
+    <!-- Save status bar -->
+    <div class="save-bar save-bar-success">
+      <span class="save-bar-icon">✓</span> 已自动保存
+    </div>
+
+    <div class="card-body">
+
+      <!-- Steps -->
+      <ul class="steps">
+        <li class="step completed">
+          <div class="step-dot">✓</div>
+          <div class="step-title">选择项目</div>
+        </li>
+        <li class="step active">
+          <div class="step-dot">2</div>
+          <div class="step-title">控制配置</div>
+        </li>
+        <li class="step">
+          <div class="step-dot">3</div>
+          <div class="step-title">更新设置</div>
+        </li>
+        <li class="step">
+          <div class="step-dot">4</div>
+          <div class="step-title">运行参数</div>
+        </li>
+      </ul>
+
+      <!-- Section 1: 基本信息 (Step 1 completed) -->
+      <div class="section" style="margin-bottom:40px">
+        <div class="section-header"><h3>基本信息</h3></div>
+        <div class="row">
+          <div class="col-8">
+            <div class="form-label">脚本名称 <span class="help">ⓘ</span></div>
+            <input class="input" value="我的MaaFW脚本" />
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <div style="flex:0 0 calc(100% / 6 * 4); max-width: calc(100% / 6 * 4)">
+            <div class="form-label">项目目录 <span class="help">ⓘ</span></div>
+            <div class="input-group-compact" style="display:flex">
+              <input class="input input-readonly" value="D:\Projects\maafw-project" style="flex:1" />
+              <button class="btn btn-sm btn-primary">选择文件夹</button>
+            </div>
+          </div>
+        </div>
+        <!-- Secondary actions (simplified path) -->
+        <div class="path-secondary">
+          <button class="btn btn-sm">读取 interface</button>
+          <button class="btn btn-sm">准备运行环境</button>
+        </div>
+
+        <!-- Stat cards instead of descriptions table -->
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-value">12</div>
+            <div class="stat-label">任务</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">3</div>
+            <div class="stat-label">预设</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">2</div>
+            <div class="stat-label">控制器</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">4</div>
+            <div class="stat-label">资源</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">0</div>
+            <div class="stat-label">导入</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">1</div>
+            <div class="stat-label">Agent</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">v2.1</div>
+            <div class="stat-label">版本</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" style="font-size:16px">MaaArknights</div>
+            <div class="stat-label">项目</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: 控制方式 (alternate bg, Step 2) -->
+      <div class="section-alt">
+        <div class="section-header"><h3>控制方式与游戏资源</h3></div>
+        <div class="row">
+          <div class="col-6">
+            <div class="form-label">控制方式 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Adb (安卓模拟器)</option></select>
+          </div>
+          <div class="col-6">
+            <div class="form-label">游戏资源 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Official</option></select>
+          </div>
+        </div>
+        <!-- ADB config (shown since Adb selected) -->
+        <div class="row" style="margin-top:16px">
+          <div class="col-6">
+            <div class="form-label">模拟器 <span class="help">ⓘ</span></div>
+            <select class="select"><option>选择模拟器…</option></select>
+          </div>
+          <div class="col-6">
+            <div class="form-label">实例 <span class="help">ⓘ</span></div>
+            <select class="select"><option>选择实例…</option></select>
+          </div>
+        </div>
+        <div class="alert alert-info" style="margin-top:12px">
+          ⓘ 策略说明: 需要先启动模拟器并确保 ADB 连接正常
+        </div>
+      </div>
+
+      <!-- Section 3: 更新 -->
+      <div class="section" style="margin-bottom:40px">
+        <div class="section-header"><h3>项目更新</h3></div>
+        <div class="row">
+          <div class="col-4">
+            <div class="form-label">更新源 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Git</option></select>
+          </div>
+          <div class="col-4">
+            <div class="form-label">更新渠道 <span class="help">ⓘ</span></div>
+            <select class="select"><option>Stable</option></select>
+          </div>
+          <div class="col-4">
+            <div class="form-label">Mirror 酱 CDK <span class="help">ⓘ</span></div>
+            <input class="input" placeholder="留空时使用全局 Mirror 酱 CDK…" />
+          </div>
+        </div>
+        <div class="row" style="align-items:center">
+          <div style="flex:0 0 auto">
+            <div class="form-label" style="margin-bottom:0">自动更新</div>
+          </div>
+          <div style="margin-left:12px"><div class="switch on"></div></div>
+          <div style="flex:1"></div>
+          <button class="btn">手动更新</button>
+        </div>
+      </div>
+
+      <!-- Section 4: 运行配置 -->
+      <div class="section-alt" style="margin-bottom:0">
+        <div class="section-header"><h3>运行配置</h3></div>
+        <div class="row">
+          <div class="col-4">
+            <div class="form-label">代理次数上限 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="0" />
+          </div>
+          <div class="col-4">
+            <div class="form-label">重试次数限制 <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="3" />
+          </div>
+          <div class="col-4">
+            <div class="form-label">时间限制 (秒) <span class="help">ⓘ</span></div>
+            <input class="number-input" type="number" value="3600" />
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mockup-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>
