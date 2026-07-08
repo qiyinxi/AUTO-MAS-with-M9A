@@ -13,6 +13,16 @@ DEFAULT_INSTANCE = {
     "config": {},
 }
 
+schema = {
+    "__no_plugin_config__": {
+        "type": "boolean",
+        "default": True,
+        "hidden": True,
+        "configurable": False,
+        "title": "No plugin-level configuration",
+    },
+}
+
 
 class Plugin(ScriptAdapterPlugin):
     """MaaFW script adapter plugin."""

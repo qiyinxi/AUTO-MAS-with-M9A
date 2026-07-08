@@ -9,6 +9,17 @@ from app.plugins.fields import PluginFieldGroup
 from automas_script_maafw.schema import SCRIPT_GROUPS, USER_GROUPS, build_source_config
 
 
+schema = {
+    "__no_plugin_config__": {
+        "type": "boolean",
+        "default": True,
+        "hidden": True,
+        "configurable": False,
+        "title": "No plugin-level configuration",
+    },
+}
+
+
 M9A_PERIOD_TASK_DEFAULTS = {
     "DailyOnceTasks": ["Psychube"],
     "WeeklyOnceTasks": [],

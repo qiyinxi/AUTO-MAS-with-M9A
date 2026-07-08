@@ -5,6 +5,17 @@ from typing import Any
 from app.plugins.fields import PluginField
 
 
+schema = {
+    "__no_plugin_config__": {
+        "type": "boolean",
+        "default": True,
+        "hidden": True,
+        "configurable": False,
+        "title": "No plugin-level configuration",
+    },
+}
+
+
 SCRIPT_GROUPS = (
     PluginField.group(
         "Info",
