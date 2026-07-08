@@ -14,6 +14,7 @@ class ScriptTypeDescriptor(BaseModel):
     display_name: str = Field(..., description="Display name")
     icon: str | None = Field(default=None, description="Icon id")
     icon_url: str | None = Field(default=None, description="Icon resource URL")
+    theme_color: str | None = Field(default=None, description="Theme color for UI tags")
     docs_url: str | None = Field(default=None, description="Docs URL")
     editor_kind: str = Field(..., description="Editor kind")
     supported_modes: list[str] = Field(..., description="Supported task modes")
@@ -54,6 +55,7 @@ class ScriptRecord(BaseModel):
     supported_modes: list[str] = Field(..., description="Supported task modes")
     icon: str | None = Field(default=None, description="Icon id")
     icon_url: str | None = Field(default=None, description="Icon resource URL")
+    theme_color: str | None = Field(default=None, description="Theme color for UI tags")
     docs_url: str | None = Field(default=None, description="Docs URL")
     edit_hint: dict[str, Any] | None = Field(
         default=None,

@@ -39,6 +39,7 @@ class M9APackPluginTest(unittest.TestCase):
         self.assertEqual(definition.metadata["framework"], "maafw")
         self.assertEqual(definition.metadata["project_pack"], "m9a")
         self.assertTrue(definition.metadata["m9a_standalone"])
+        self.assertEqual(definition.metadata["theme_color"], "cyan")
         self.assertIs(definition.user_groups, M9A_USER_GROUPS)
 
     def test_definition_declares_m9a_pack_defaults(self) -> None:

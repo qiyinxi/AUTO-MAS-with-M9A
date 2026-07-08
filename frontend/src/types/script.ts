@@ -493,6 +493,7 @@ export interface Script {
   supportedModes?: string[]
   icon?: string | null
   iconUrl?: string | null
+  themeColor?: string | null
   docsUrl?: string | null
   editHint?: {
     text?: string

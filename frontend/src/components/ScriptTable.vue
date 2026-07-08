@@ -31,7 +31,10 @@
                 </div>
                 <div class="script-details">
                   <h3 class="script-name">{{ script.name }}</h3>
-                  <a-tag :color="getScriptTypeTagColor(script.type)" class="script-type">
+                  <a-tag
+                    :color="getScriptTypeTagColor(script.type, script.themeColor)"
+                    class="script-type"
+                  >
                     {{ getScriptTypeLabel(script) }}
                   </a-tag>
                   <a-tag v-if="script.available === false" color="orange" class="script-type">

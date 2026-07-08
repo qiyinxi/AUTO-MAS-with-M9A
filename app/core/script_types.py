@@ -456,6 +456,7 @@ def build_descriptor(provider: ScriptTypeProvider) -> dict[str, Any]:
         "display_name": provider.display_name,
         "icon": provider.icon,
         "icon_url": f"/api/script-types/{provider.type_key}/icon" if provider.icon_path else None,
+        "theme_color": provider.metadata.get("theme_color"),
         "docs_url": provider.docs_url,
         "editor_kind": provider.editor_kind,
         "supported_modes": list(provider.supported_modes),

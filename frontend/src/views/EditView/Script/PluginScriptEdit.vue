@@ -38,7 +38,7 @@
           @error="event => handleScriptIconError(event, script.type)"
         />
         <span>{{ script?.name || '脚本配置' }}</span>
-        <a-tag :color="getScriptTypeTagColor(script?.type || '')">
+        <a-tag :color="getScriptTypeTagColor(script?.type || '', script?.themeColor)">
           {{ script?.displayName || script?.type || '未知类型' }}
         </a-tag>
       </a-space>

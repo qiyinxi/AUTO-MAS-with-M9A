@@ -248,7 +248,15 @@
               />
             </div>
             <div class="type-info">
-              <div class="type-title">{{ descriptor.display_name }}</div>
+              <div class="type-title">
+                <span>{{ descriptor.display_name }}</span>
+                <a-tag
+                  :color="getScriptTypeTagColor(descriptor.type_key, descriptor.theme_color)"
+                  class="type-tag"
+                >
+                  {{ descriptor.type_key }}
+                </a-tag>
+              </div>
               <div class="type-description">
                 支持模式：{{ descriptor.supported_modes.join(' / ') || '未声明' }}
               </div>
@@ -414,6 +422,7 @@ import {
   descriptorMapFromList,
   getScriptEditPath,
   getScriptIcon,
+  getScriptTypeTagColor,
   getUserCreatePath,
   getUserEditPath,
   handleScriptIconError,
@@ -1390,6 +1399,18 @@ const handlePassCheckUser = async (user: User) => {
   font-weight: 500;
   margin: 0 0 6px;
   color: var(--ant-color-text);
+}
+
+.type-title {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+
+.type-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .type-description,

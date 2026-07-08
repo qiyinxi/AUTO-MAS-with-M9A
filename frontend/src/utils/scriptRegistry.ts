@@ -102,7 +102,10 @@ export const handleScriptIconError = (event: Event, type: string) => {
   image.src = getFallbackScriptIcon(type)
 }
 
-export const getScriptTypeTagColor = (type: string) => {
+export const getScriptTypeTagColor = (type: string, themeColor?: string | null) => {
+  const declaredColor = themeColor?.trim()
+  if (declaredColor) return declaredColor
+
   switch (type) {
     case 'MAA':
       return 'blue'
@@ -110,8 +113,6 @@ export const getScriptTypeTagColor = (type: string) => {
       return 'purple'
     case 'MaaEnd':
       return 'cyan'
-    case 'M9A':
-      return 'gold'
     case 'MaaFW':
       return 'geekblue'
     case 'Okww':
@@ -244,6 +245,7 @@ export const normalizeScriptRecord = (
     supportedModes: record.supported_modes,
     icon: record.icon ?? descriptor?.icon ?? null,
     iconUrl: record.icon_url ?? descriptor?.icon_url ?? null,
+    themeColor: record.theme_color ?? descriptor?.theme_color ?? null,
     docsUrl: record.docs_url ?? descriptor?.docs_url ?? null,
     editHint: record.edit_hint ?? null,
     displayName: descriptor?.display_name ?? record.type,

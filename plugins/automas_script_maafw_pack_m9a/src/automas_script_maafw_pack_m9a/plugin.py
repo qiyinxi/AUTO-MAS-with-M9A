@@ -67,6 +67,7 @@ class Plugin(ScriptAdapterPlugin):
                     "source": "automas_script_maafw_pack_m9a",
                     "project_pack": "m9a",
                     "m9a_standalone": True,
+                    "theme_color": "cyan",
                     "script_edit_hint": {
                         "text": "遇到配置问题时，可以查看",
                         "link_text": "M9A 配置指南",
