@@ -83,3 +83,16 @@ MaaEnd update flow
 - MaaEnd 不复制 `interface_loader.py`，只消费 `maafw.interface.v1`。
 - MaaEnd 不拿 M9A 的 `Psychube` / `SleepDream` 一次性任务初始值。
 - GitHub Release 和 MirrorChyan 更新源需要用 MaaEnd/MXU 实际发行包样例验收。
+
+## 7. 交付基线与后续变更约定（2026-07-08 起生效）
+
+以下 wheel 已于 2026-07-08 交付 MaaEnd 专项适配者，构成兼容基线：
+
+- `automas_maafw_interface-0.1.0`（2026-07-08 构建，含 `__no_plugin_config__` 声明）
+- `automas_maafw_project_update-0.1.0`（同上）
+
+自交付起，对这两个包的任何改动必须遵守：
+
+1. **分发必 bump 版本**：修改后分发前提升 `pyproject.toml` 版本号（bug 修复升修订号，新增能力升次版本号），不允许再出现同版本号、不同内容的 wheel。
+2. **v1 契约向后兼容**：本文第 2、3 节列出的方法签名与语义不得破坏；新增能力通过可选参数或新增方法实现。
+3. **破坏性变更走新服务名**：需要不兼容变更时不修改 `maafw.interface.v1` / `maafw.project_update.v1`，应新开 `.v2` 服务并与 MaaEnd 专项提前对齐迁移窗口。
