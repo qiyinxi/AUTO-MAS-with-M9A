@@ -221,9 +221,13 @@ export interface MaaFWScriptConfig {
   }
   Update: {
     IfAutoUpdate: boolean
-    Source: 'MirrorChyan'
+    Source: '' | 'MirrorChyan' | 'GitHub'
     Channel: '' | 'stable' | 'beta'
     MirrorChyanCDK: string
+    GitHubRepo: string
+    GitHubTag: string
+    GitHubAssetPattern: string
+    GitHubToken: string
   }
   Run: {
     ProxyTimesLimit: number

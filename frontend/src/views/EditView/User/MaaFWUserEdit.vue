@@ -4,7 +4,6 @@
       :save-status="saveStatus"
       :save-error-message="saveErrorMessage"
       @cancel="handleCancel"
-      @clear-save-status="saveStatus = 'idle'"
     />
 
     <div class="user-edit-content">

@@ -1,13 +1,30 @@
 <template>
   <div class="user-edit-header">
-    <a-breadcrumb class="breadcrumb">
-      <a-breadcrumb-item>
-        <router-link to="/scripts" class="breadcrumb-link">脚本管理</router-link>
-      </a-breadcrumb-item>
-      <a-breadcrumb-item>
-        <span class="breadcrumb-current">用户配置</span>
-      </a-breadcrumb-item>
-    </a-breadcrumb>
+    <div class="header-left">
+      <a-breadcrumb class="breadcrumb">
+        <a-breadcrumb-item>
+          <router-link to="/scripts" class="breadcrumb-link">脚本管理</router-link>
+        </a-breadcrumb-item>
+        <a-breadcrumb-item>
+          <span class="breadcrumb-current">用户配置</span>
+        </a-breadcrumb-item>
+      </a-breadcrumb>
+      <Transition name="save-chip-fade">
+        <span
+          v-if="saveStatus !== 'idle'"
+          :class="['save-status-chip', `save-status-chip-${saveStatus}`]"
+        >
+          <LoadingOutlined v-if="saveStatus === 'saving'" spin />
+          <CheckCircleOutlined v-else-if="saveStatus === 'saved'" />
+          <a-tooltip v-else :title="saveErrorMessage || '保存失败，请重试'">
+            <CloseCircleOutlined />
+          </a-tooltip>
+          <span>{{
+            saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已自动保存' : '保存失败'
+          }}</span>
+        </span>
+      </Transition>
+    </div>
 
     <a-space>
       <a-button size="large" @click="emit('cancel')">
@@ -18,39 +35,15 @@
       </a-button>
     </a-space>
   </div>
-
-  <div v-if="saveStatus !== 'idle'" class="save-status-bar">
-    <a-alert
-      v-if="saveStatus === 'saving'"
-      type="info"
-      :banner="true"
-      message="保存中…"
-      :closable="false"
-      show-icon
-    />
-    <a-alert
-      v-else-if="saveStatus === 'saved'"
-      type="success"
-      :banner="true"
-      message="已自动保存"
-      :closable="true"
-      show-icon
-      @close="emit('clearSaveStatus')"
-    />
-    <a-alert
-      v-else-if="saveStatus === 'error'"
-      type="error"
-      :banner="true"
-      :message="saveErrorMessage || '保存失败，请重试'"
-      :closable="true"
-      show-icon
-      @close="emit('clearSaveStatus')"
-    />
-  </div>
 </template>
 
 <script setup lang="ts">
-import { ArrowLeftOutlined } from '@ant-design/icons-vue'
+import {
+  ArrowLeftOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  LoadingOutlined,
+} from '@ant-design/icons-vue'
 
 defineProps<{
   saveStatus: 'idle' | 'saving' | 'saved' | 'error'
@@ -59,7 +52,6 @@ defineProps<{
 
 const emit = defineEmits<{
   cancel: []
-  clearSaveStatus: []
 }>()
 </script>
 
@@ -71,6 +63,14 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.header-left {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .breadcrumb-link {
@@ -89,9 +89,39 @@ const emit = defineEmits<{
   white-space: nowrap;
 }
 
-.save-status-bar {
-  max-width: 1400px;
-  margin: -8px auto 16px;
+.save-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.save-status-chip-saving {
+  color: var(--ant-color-text-secondary);
+  background: var(--ant-color-fill-tertiary);
+}
+
+.save-status-chip-saved {
+  color: var(--ant-color-success);
+  background: var(--ant-color-success-bg);
+}
+
+.save-status-chip-error {
+  color: var(--ant-color-error);
+  background: var(--ant-color-error-bg);
+}
+
+.save-chip-fade-enter-active,
+.save-chip-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.save-chip-fade-enter-from,
+.save-chip-fade-leave-to {
+  opacity: 0;
 }
 
 @media (max-width: 768px) {

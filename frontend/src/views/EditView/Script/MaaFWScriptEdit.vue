@@ -19,6 +19,21 @@
           </div>
         </a-breadcrumb-item>
       </a-breadcrumb>
+      <Transition name="save-chip-fade">
+        <span
+          v-if="saveStatus !== 'idle'"
+          :class="['save-status-chip', `save-status-chip-${saveStatus}`]"
+        >
+          <LoadingOutlined v-if="saveStatus === 'saving'" spin />
+          <CheckCircleOutlined v-else-if="saveStatus === 'saved'" />
+          <a-tooltip v-else :title="saveErrorMessage || '保存失败，请重试'">
+            <CloseCircleOutlined />
+          </a-tooltip>
+          <span>{{
+            saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已自动保存' : '保存失败'
+          }}</span>
+        </span>
+      </Transition>
     </div>
 
     <a-space size="middle">
@@ -29,28 +44,6 @@
         返回
       </a-button>
     </a-space>
-  </div>
-
-  <div v-if="saveStatus !== 'idle'" class="save-status-bar">
-    <a-alert v-if="saveStatus === 'saving'" type="info" banner show-icon message="保存中…" />
-    <a-alert
-      v-else-if="saveStatus === 'saved'"
-      type="success"
-      banner
-      closable
-      show-icon
-      message="已自动保存"
-      @close="saveStatus = 'idle'"
-    />
-    <a-alert
-      v-else
-      type="error"
-      banner
-      closable
-      show-icon
-      :message="saveErrorMessage || '保存失败，请重试'"
-      @close="saveStatus = 'idle'"
-    />
   </div>
 
   <div class="script-edit-content">
@@ -64,10 +57,16 @@
       </template>
 
       <a-form ref="formRef" :model="formData" :rules="rules" layout="vertical" class="config-form">
-        <a-steps size="small" :current="currentStep" :items="stepItems" class="config-steps" />
+        <a-steps
+          v-if="isSetupMode"
+          size="small"
+          :current="currentStep"
+          :items="stepItems"
+          class="config-steps"
+        />
 
         <Transition name="step-fade" mode="out-in">
-          <div v-if="currentStep === 0" key="basic" class="form-section">
+          <div v-if="!isSetupMode || currentStep === 0" key="basic" class="form-section">
             <div class="section-header">
               <h3>基本信息</h3>
             </div>
@@ -117,7 +116,7 @@
                       选择文件夹
                     </a-button>
                   </a-input-group>
-                  <div class="path-secondary-actions">
+                  <div v-if="!isSetupMode" class="path-secondary-actions">
                     <a-button
                       size="middle"
                       class="path-button"
@@ -146,6 +145,58 @@
                 </a-form-item>
               </a-col>
             </a-row>
+
+            <div v-if="isSetupMode && maafwConfig.Info.Path" class="setup-checklist">
+              <div class="setup-check-item">
+                <span class="setup-check-status">
+                  <LoadingOutlined v-if="interfaceLoading" spin class="setup-icon-pending" />
+                  <CheckCircleOutlined v-else-if="isInterfaceReady" class="setup-icon-done" />
+                  <ExclamationCircleOutlined v-else class="setup-icon-todo" />
+                </span>
+                <div class="setup-check-copy">
+                  <div class="setup-check-title">第 1 步 · 读取 interface</div>
+                  <div class="setup-check-desc">
+                    {{
+                      isInterfaceReady
+                        ? `已读取 ${previewProjectTitle}，共 ${previewData?.tasks.length ?? 0} 个任务`
+                        : '解析项目声明的任务、控制器和资源，是后续所有配置的基础'
+                    }}
+                  </div>
+                </div>
+                <a-button
+                  :type="isInterfaceReady ? 'default' : 'primary'"
+                  size="large"
+                  :loading="interfaceLoading"
+                  :disabled="!maafwConfig.Info.Path"
+                  @click="handlePreviewInterface"
+                >
+                  {{ isInterfaceReady ? '重新读取' : '读取 interface' }}
+                </a-button>
+              </div>
+              <div class="setup-check-item">
+                <span class="setup-check-status">
+                  <LoadingOutlined v-if="agentEnvLoading" spin class="setup-icon-pending" />
+                  <CheckCircleOutlined v-else-if="isAgentEnvReady" class="setup-icon-done" />
+                  <CloseCircleOutlined v-else-if="isAgentEnvFailed" class="setup-icon-error" />
+                  <ExclamationCircleOutlined v-else class="setup-icon-todo" />
+                </span>
+                <div class="setup-check-copy">
+                  <div class="setup-check-title">第 2 步 · 准备运行环境</div>
+                  <div class="setup-check-desc">{{ agentEnvChecklistDescription }}</div>
+                </div>
+                <a-button
+                  :type="isAgentEnvReady ? 'default' : 'primary'"
+                  size="large"
+                  :loading="agentEnvLoading"
+                  :disabled="!maafwConfig.Info.Path"
+                  @click="handlePrepareAgentEnv"
+                >
+                  {{
+                    isAgentEnvReady ? '重新准备' : isAgentEnvFailed ? '重试准备' : '准备运行环境'
+                  }}
+                </a-button>
+              </div>
+            </div>
 
             <div v-if="previewData" class="interface-summary">
               <div class="interface-stat-grid">
@@ -268,7 +319,11 @@
         </Transition>
 
         <Transition name="step-fade" mode="out-in">
-          <div v-if="currentStep === 1" key="control" class="form-section form-section-alt">
+          <div
+            v-if="!isSetupMode || currentStep === 1"
+            key="control"
+            class="form-section form-section-alt"
+          >
             <div class="section-header">
               <h3>控制方式与游戏资源</h3>
             </div>
@@ -529,59 +584,12 @@
                     </a-form-item>
                   </a-col>
                 </a-row>
-                <a-row :gutter="24" class="control-detail-row">
-                  <a-col :span="18">
-                    <a-form-item>
-                      <template #label>
-                        <a-tooltip title="扫描并选择 MaaFW Win32 controller 要连接的游戏客户端窗口">
-                          <span class="form-label">
-                            游戏客户端
-                            <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
-                          </span>
-                        </a-tooltip>
-                      </template>
-                      <a-select
-                        v-model:value="maafwConfig.Device.HWnd"
-                        size="large"
-                        placeholder="请选择游戏客户端窗口"
-                        :loading="windowLoading"
-                        :disabled="interfaceDependentDisabled"
-                        @change="handleDesktopWindowChange"
-                      >
-                        <a-select-option :value="0">自动匹配</a-select-option>
-                        <a-select-option
-                          v-for="item in desktopWindowOptions"
-                          :key="item.value"
-                          :value="item.value"
-                        >
-                          {{ item.label }}
-                        </a-select-option>
-                      </a-select>
-                    </a-form-item>
-                  </a-col>
-                  <a-col :span="6">
-                    <a-form-item label="窗口扫描">
-                      <a-button
-                        size="large"
-                        block
-                        :loading="windowLoading"
-                        :disabled="interfaceDependentDisabled"
-                        @click="() => handlePreviewWindows()"
-                      >
-                        <template #icon>
-                          <FileSearchOutlined />
-                        </template>
-                        扫描客户端
-                      </a-button>
-                    </a-form-item>
-                  </a-col>
-                </a-row>
 
                 <a-alert
                   class="control-strategy-alert"
                   type="info"
                   show-icon
-                  message="Win32 控制方式会连接已打开的游戏客户端；未选择时按 interface 规则自动匹配。"
+                  message="Win32 控制方式会在任务运行时按 interface 规则自动匹配已打开的游戏客户端窗口，无需提前配置。"
                 />
               </div>
             </Transition>
@@ -589,7 +597,7 @@
         </Transition>
 
         <Transition name="step-fade" mode="out-in">
-          <div v-if="currentStep === 2" key="update" class="form-section">
+          <div v-if="!isSetupMode || currentStep === 2" key="update" class="form-section">
             <div class="section-header">
               <h3>项目更新</h3>
             </div>
@@ -621,7 +629,7 @@
                   />
                 </a-form-item>
               </a-col>
-              <a-col :span="8">
+              <a-col v-if="maafwConfig.Update.Source !== 'GitHub'" :span="8">
                 <a-form-item>
                   <template #label>
                     <a-tooltip
@@ -641,6 +649,94 @@
                     @blur="
                       handleChange('Update', 'MirrorChyanCDK', maafwConfig.Update.MirrorChyanCDK)
                     "
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col v-else :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="GitHub 仓库，格式 owner/repo，例如 MAA1999/M9A">
+                      <span class="form-label">
+                        GitHub 仓库
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-input
+                    v-model:value="maafwConfig.Update.GitHubRepo"
+                    placeholder="owner/repo"
+                    size="large"
+                    class="modern-input"
+                    @blur="handleChange('Update', 'GitHubRepo', maafwConfig.Update.GitHubRepo)"
+                  />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-row
+              v-if="maafwConfig.Update.Source === 'GitHub'"
+              :gutter="24"
+              class="update-config-row"
+            >
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="固定使用某个 Release tag；留空时使用最新 Release">
+                      <span class="form-label">
+                        Release Tag
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-input
+                    v-model:value="maafwConfig.Update.GitHubTag"
+                    placeholder="留空使用最新 Release"
+                    size="large"
+                    class="modern-input"
+                    @blur="handleChange('Update', 'GitHubTag', maafwConfig.Update.GitHubTag)"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="用正则匹配 Release 资产文件名；留空时匹配第一个 .zip 资产">
+                      <span class="form-label">
+                        资产匹配规则
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-input
+                    v-model:value="maafwConfig.Update.GitHubAssetPattern"
+                    placeholder="留空匹配第一个 .zip 资产"
+                    size="large"
+                    class="modern-input"
+                    @blur="
+                      handleChange(
+                        'Update',
+                        'GitHubAssetPattern',
+                        maafwConfig.Update.GitHubAssetPattern
+                      )
+                    "
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8">
+                <a-form-item>
+                  <template #label>
+                    <a-tooltip title="访问私有仓库或提升 API 限额时填写；公开仓库可留空">
+                      <span class="form-label">
+                        GitHub Token
+                        <QuestionCircleOutlined class="help-icon" aria-hidden="true" />
+                      </span>
+                    </a-tooltip>
+                  </template>
+                  <a-input-password
+                    v-model:value="maafwConfig.Update.GitHubToken"
+                    placeholder="可选，私有仓库需要"
+                    size="large"
+                    class="modern-input"
+                    @blur="handleChange('Update', 'GitHubToken', maafwConfig.Update.GitHubToken)"
                   />
                 </a-form-item>
               </a-col>
@@ -722,7 +818,11 @@
         </Transition>
 
         <Transition name="step-fade" mode="out-in">
-          <div v-if="currentStep === 3" key="run" class="form-section form-section-alt">
+          <div
+            v-if="!isSetupMode || currentStep === 3"
+            key="run"
+            class="form-section form-section-alt"
+          >
             <div class="section-header">
               <h3>运行配置</h3>
             </div>
@@ -845,7 +945,7 @@
           </div>
         </Transition>
 
-        <div class="step-nav">
+        <div v-if="isSetupMode" class="step-nav">
           <a-button
             v-if="currentStep > 0"
             size="large"
@@ -854,25 +954,29 @@
           >
             上一步
           </a-button>
-          <a-button
-            v-if="currentStep < 3"
-            type="primary"
-            size="large"
-            class="step-nav-button step-nav-primary"
-            :disabled="!canAdvanceNext"
-            @click="goToStep(currentStep + 1)"
-          >
-            下一步
-          </a-button>
-          <a-button
-            v-else
-            type="primary"
-            size="large"
-            class="step-nav-button step-nav-primary"
-            @click="handleCancel"
-          >
-            完成
-          </a-button>
+          <div class="step-nav-right">
+            <a-button
+              v-if="currentStep < 3"
+              type="primary"
+              size="large"
+              class="step-nav-button step-nav-main"
+              :disabled="!canAdvanceNext"
+              @click="goToStep(currentStep + 1)"
+            >
+              下一步
+            </a-button>
+            <template v-else>
+              <a-button size="large" class="step-nav-button" @click="handleCancel">完成</a-button>
+              <a-button
+                type="primary"
+                size="large"
+                class="step-nav-button step-nav-main"
+                @click="goCreateFirstUser"
+              >
+                创建第一个用户！
+              </a-button>
+            </template>
+          </div>
         </div>
       </a-form>
     </a-card>
@@ -910,10 +1014,14 @@ import type { FormInstance } from 'ant-design-vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   ArrowLeftOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   CopyOutlined,
+  ExclamationCircleOutlined,
   FileSearchOutlined,
   FolderOpenOutlined,
   InboxOutlined,
+  LoadingOutlined,
   QuestionCircleOutlined,
   SyncOutlined,
   ToolOutlined,
@@ -925,7 +1033,6 @@ import { useSettingsApi } from '@/composables/useSettingsApi'
 import { getScriptIcon, handleScriptIconError } from '@/utils/scriptRegistry'
 import type {
   MaaFWAgentEnvPrepareData,
-  MaaFWDesktopWindowInfo,
   MaaFWInterfacePreviewData,
   MaaFWScriptConfig,
   Script,
@@ -939,7 +1046,6 @@ const router = useRouter()
 const registryApi = useScriptRegistryApi()
 const { getSettings } = useSettingsApi()
 const { loading: interfaceLoading, previewInterface } = useMaaFWApi()
-const { loading: windowLoading, previewWindows } = useMaaFWApi()
 const { loading: agentEnvLoading, prepareAgentEnv } = useMaaFWApi()
 const { loading: projectUpdateLoading, updateProjectResources } = useMaaFWApi()
 
@@ -954,7 +1060,6 @@ const hasUnsavedChanges = ref(false)
 const previewData = ref<MaaFWInterfacePreviewData | null>(null)
 const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const projectUpdateLogs = ref<string[]>([])
-const desktopWindows = ref<MaaFWDesktopWindowInfo[]>([])
 const scriptEditHint = ref<Script['editHint']>(null)
 const scriptIconUrl = ref<string | null>(null)
 const dailyOnceTasks = ref<string[]>([])
@@ -966,21 +1071,27 @@ const isAutoUpdateDisabled = computed(() =>
   Boolean(previewData.value && !previewData.value.project.version)
 )
 const currentStep = ref(0)
+const isSetupMode = ref(false)
 let saveStatusTimer: ReturnType<typeof setTimeout> | null = null
 
-const isStepOneComplete = computed(() => Boolean(previewData.value))
+const isInterfaceReady = computed(() => Boolean(previewData.value))
+const isAgentEnvReady = computed(
+  () => Boolean(agentEnvResult.value) && agentEnvResult.value?.status !== 'error'
+)
+const isAgentEnvFailed = computed(() => agentEnvResult.value?.status === 'error')
+const isStepZeroReady = computed(() => isInterfaceReady.value && isAgentEnvReady.value)
 const isStepTwoComplete = computed(() =>
   Boolean(maafwConfig.Info.Controller && maafwConfig.Info.Resource)
 )
 const maxReachableStep = computed(() => {
-  if (!isStepOneComplete.value) return 0
+  if (!isStepZeroReady.value) return 0
   if (!isStepTwoComplete.value) return 1
   return 3
 })
 const stepItems = computed(() => [
   {
     title: '选择项目',
-    status: currentStep.value === 0 ? 'process' : isStepOneComplete.value ? 'finish' : 'wait',
+    status: currentStep.value === 0 ? 'process' : isStepZeroReady.value ? 'finish' : 'wait',
   },
   {
     title: '控制配置',
@@ -1014,7 +1125,7 @@ const periodTaskOptions = computed(() =>
 type MaaFWConcreteUpdateSource = Exclude<MaaFWScriptConfig['Update']['Source'], ''>
 type MaaFWConcreteUpdateChannel = Exclude<MaaFWScriptConfig['Update']['Channel'], ''>
 
-const MAAFW_UPDATE_SOURCES: MaaFWConcreteUpdateSource[] = ['MirrorChyan']
+const MAAFW_UPDATE_SOURCES: MaaFWConcreteUpdateSource[] = ['MirrorChyan', 'GitHub']
 const MAAFW_UPDATE_CHANNELS: MaaFWConcreteUpdateChannel[] = ['stable', 'beta']
 const MAAFW_DIRECT_CONTROLLER_TYPES = ['Adb', 'Win32'] as const
 
@@ -1082,6 +1193,10 @@ const getDefaultMaaFWScriptConfig = (): MaaFWScriptConfig => ({
     Source: 'MirrorChyan',
     Channel: 'stable',
     MirrorChyanCDK: '',
+    GitHubRepo: '',
+    GitHubTag: '',
+    GitHubAssetPattern: '',
+    GitHubToken: '',
   },
   Run: {
     ProxyTimesLimit: 0,
@@ -1155,7 +1270,7 @@ const setSaveStatus = (status: 'idle' | 'saving' | 'saved' | 'error', errorMessa
 }
 
 const canAdvanceNext = computed(() => {
-  if (currentStep.value === 0) return isStepOneComplete.value
+  if (currentStep.value === 0) return isStepZeroReady.value
   if (currentStep.value === 1) return isStepTwoComplete.value
   return true
 })
@@ -1262,6 +1377,19 @@ const agentEnvDescription = computed(() => {
   return 'Runner 隔离 venv 已预热；项目内二进制 Agent 直接使用；项目自带 Python 只做健康检查；缺少项目 Python 时使用项目专属隔离 venv。'
 })
 
+const agentEnvChecklistDescription = computed(() => {
+  if (isAgentEnvFailed.value) {
+    return agentEnvResult.value?.message || '准备失败，请查看下方日志后重试'
+  }
+  if (isAgentEnvReady.value) {
+    const agentCount = agentEnvResult.value?.agentCount ?? 0
+    return agentCount > 0
+      ? `运行环境已就绪，共 ${agentCount} 个 Agent`
+      : '运行环境已就绪，当前项目没有声明 Agent'
+  }
+  return '预热 Runner 隔离环境并安装 Agent 依赖，避免首次运行时长时间卡在环境安装'
+})
+
 const controllerOptions = computed(() => previewData.value?.controllers || [])
 const directControllerOptions = computed(() =>
   controllerOptions.value.filter(controller => isDirectControllerType(controller.type))
@@ -1310,17 +1438,6 @@ const resourceOptions = computed(() =>
   getResourceOptionsByController(effectiveControllerName.value)
 )
 
-const desktopWindowOptions = computed(() =>
-  desktopWindows.value.map(item => {
-    const windowTitle = item.windowName || '未命名窗口'
-    const className = item.className || '未知类名'
-    return {
-      value: item.hWnd,
-      label: `${windowTitle} · ${className} · ${item.hWnd}`,
-    }
-  })
-)
-
 const resolveResourceName = (
   resourceName?: string,
   controllerName = effectiveControllerName.value
@@ -1342,9 +1459,6 @@ const handleControllerChange = async () => {
   maafwConfig.Info.Resource = nextResource
   await handleChange('Info', 'Controller', maafwConfig.Info.Controller)
   await handleChange('Info', 'Resource', maafwConfig.Info.Resource)
-  if (isDesktopController.value) {
-    await handlePreviewWindows(false)
-  }
 }
 
 const handleResourceChange = async () => {
@@ -1364,11 +1478,6 @@ const syncControllerResourceSelection = (persist = false) => {
     handleChange('Info', 'Controller', nextController)
     handleChange('Info', 'Resource', nextResource)
   }
-}
-
-const handleDesktopWindowChange = async (value: number) => {
-  maafwConfig.Device.HWnd = Number(value) || 0
-  await handleChange('Device', 'HWnd', maafwConfig.Device.HWnd)
 }
 
 const selectedEmulatorType = computed(() => emulatorTypeById.value[maafwConfig.Emulator.Id])
@@ -1588,9 +1697,6 @@ const handlePreviewInterface = async () => {
     await syncProjectLabelFromProject(data)
     syncControllerResourceSelection(!isInitializing.value)
     await prunePeriodTaskSelections()
-    if (isDesktopController.value) {
-      await handlePreviewWindows(false)
-    }
     message.success(`已读取 ${previewProjectTitle.value}`)
   }
 }
@@ -1665,36 +1771,7 @@ const refreshPreviewIfPossible = async () => {
     await syncProjectLabelFromProject(data)
     syncControllerResourceSelection(!isInitializing.value)
     await prunePeriodTaskSelections()
-    if (isDesktopController.value) {
-      await handlePreviewWindows(false)
-    }
   }
-}
-
-const handlePreviewWindows = async (showMessage = true) => {
-  if (!maafwConfig.Info.Path) {
-    if (showMessage) message.warning('请先选择 MaaFramework 项目目录')
-    return
-  }
-  if (!isDesktopController.value) return
-
-  const data = await previewWindows(maafwConfig.Info.Path, effectiveControllerName.value)
-  if (!data) return
-
-  desktopWindows.value = data.windows
-  if (
-    maafwConfig.Device.HWnd &&
-    !data.windows.some(item => item.hWnd === maafwConfig.Device.HWnd)
-  ) {
-    maafwConfig.Device.HWnd = 0
-  }
-
-  if (!showMessage) return
-  if (data.windows.length === 0) {
-    message.info('未扫描到匹配的游戏客户端窗口')
-    return
-  }
-  message.success(`已扫描到 ${data.windows.length} 个游戏客户端窗口`)
 }
 
 const loadScript = async () => {
@@ -1718,6 +1795,7 @@ const loadScript = async () => {
     scriptEditHint.value = scriptDetail.edit_hint ?? null
     scriptIconUrl.value = scriptDetail.icon_url ?? null
     applyScriptConfig(scriptDetail.config as MaaFWScriptConfig)
+    isSetupMode.value = !maafwConfig.Info.Path
 
     if (maafwConfig.Emulator.Id && maafwConfig.Emulator.Id !== '-') {
       await loadEmulatorDeviceOptions(maafwConfig.Emulator.Id)
@@ -1834,6 +1912,10 @@ const selectGamePath = async () => {
   }
 }
 
+const goCreateFirstUser = () => {
+  router.push(`/scripts/${scriptId}/users/add/maafw`)
+}
+
 const handleCancel = () => {
   if (hasUnsavedChanges.value || isSaving.value) {
     Modal.confirm({
@@ -1878,13 +1960,47 @@ onBeforeUnmount(() => {
   padding: 0 8px;
 }
 
-.save-status-bar {
-  margin: -16px 8px 16px;
+.header-nav {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
-.header-nav {
-  flex: 1;
-  min-width: 0;
+.save-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.save-status-chip-saving {
+  color: var(--ant-color-text-secondary);
+  background: var(--ant-color-fill-tertiary);
+}
+
+.save-status-chip-saved {
+  color: var(--ant-color-success);
+  background: var(--ant-color-success-bg);
+}
+
+.save-status-chip-error {
+  color: var(--ant-color-error);
+  background: var(--ant-color-error-bg);
+}
+
+.save-chip-fade-enter-active,
+.save-chip-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.save-chip-fade-enter-from,
+.save-chip-fade-leave-to {
+  opacity: 0;
 }
 
 .breadcrumb :deep(ol) {
@@ -1959,9 +2075,71 @@ onBeforeUnmount(() => {
   height: 40px;
 }
 
-.step-nav-primary {
-  min-width: 120px;
+.step-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-left: auto;
+}
+
+.step-nav-main {
+  min-width: 120px;
+}
+
+.setup-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.setup-check-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-fill-quaternary);
+}
+
+.setup-check-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 22px;
+}
+
+.setup-icon-done {
+  color: var(--ant-color-success);
+}
+
+.setup-icon-error {
+  color: var(--ant-color-error);
+}
+
+.setup-icon-pending {
+  color: var(--ant-color-primary);
+}
+
+.setup-icon-todo {
+  color: var(--ant-color-text-quaternary);
+}
+
+.setup-check-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-check-title {
+  color: var(--ant-color-text);
+  font-weight: 600;
+}
+
+.setup-check-desc {
+  margin-top: 2px;
+  color: var(--ant-color-text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .type-tag {
@@ -2330,6 +2508,12 @@ onBeforeUnmount(() => {
     flex-direction: column;
     gap: 16px;
     align-items: stretch;
+  }
+
+  .setup-check-item {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
   }
 
   .config-card :deep(.ant-card-body) {
