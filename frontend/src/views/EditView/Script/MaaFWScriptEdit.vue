@@ -8,7 +8,7 @@
         <a-breadcrumb-item>
           <div class="breadcrumb-current">
             <img
-              :src="getScriptIcon(formData.type)"
+              :src="getScriptIcon(formData.type, scriptIconUrl)"
               :alt="formData.type"
               class="breadcrumb-logo"
               @error="event => handleScriptIconError(event, formData.type)"
@@ -781,7 +781,7 @@
 
     <div v-if="scriptEditHint" class="script-edit-hint">
       <img
-        :src="getScriptIcon(formData.type)"
+        :src="getScriptIcon(formData.type, scriptIconUrl)"
         :alt="formData.type"
         class="script-edit-hint-logo"
         @error="event => handleScriptIconError(event, formData.type)"
@@ -851,6 +851,7 @@ const agentEnvResult = ref<MaaFWAgentEnvPrepareData | null>(null)
 const projectUpdateLogs = ref<string[]>([])
 const desktopWindows = ref<MaaFWDesktopWindowInfo[]>([])
 const scriptEditHint = ref<Script['editHint']>(null)
+const scriptIconUrl = ref<string | null>(null)
 const dailyOnceTasks = ref<string[]>([])
 const weeklyOnceTasks = ref<string[]>([])
 const monthlyOnceTasks = ref<string[]>([])
@@ -1522,6 +1523,7 @@ const loadScript = async () => {
 
     formData.type = scriptDetail.type as ScriptType
     scriptEditHint.value = scriptDetail.edit_hint ?? null
+    scriptIconUrl.value = scriptDetail.icon_url ?? null
     applyScriptConfig(scriptDetail.config as MaaFWScriptConfig)
 
     if (maafwConfig.Emulator.Id && maafwConfig.Emulator.Id !== '-') {

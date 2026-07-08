@@ -7,7 +7,12 @@
         </a-breadcrumb-item>
         <a-breadcrumb-item>
           <div class="breadcrumb-current">
-            <img src="../../../assets/M9A.png" alt="M9A" class="breadcrumb-logo" />
+            <img
+              :src="getScriptIcon(formData.type, scriptIconUrl)"
+              :alt="formData.type"
+              class="breadcrumb-logo"
+              @error="event => handleScriptIconError(event, formData.type)"
+            />
             编辑脚本
           </div>
         </a-breadcrumb-item>
@@ -305,7 +310,12 @@
     <!-- M9A 配置指南（页面底部常驻提示） -->
     <div class="guide-footer">
       <div class="guide-footer-content">
-        <img src="@/assets/M9A.png" alt="M9A" class="guide-logo" />
+        <img
+          :src="getScriptIcon(formData.type, scriptIconUrl)"
+          :alt="formData.type"
+          class="guide-logo"
+          @error="event => handleScriptIconError(event, formData.type)"
+        />
         <div class="guide-message">
           <span class="guide-text">提醒您：阁下若是遇到了难题，不妨查看</span>
           <a
@@ -329,6 +339,8 @@ import type { FormInstance } from 'ant-design-vue'
 import { message } from 'ant-design-vue'
 import type { M9AScriptConfig, ScriptType } from '../../../types/script.ts'
 import { useScriptApi } from '../../../composables/useScriptApi.ts'
+import { useScriptRegistryApi } from '@/composables/useScriptRegistryApi'
+import { getScriptIcon, handleScriptIconError } from '@/utils/scriptRegistry'
 import { Service, type ComboBoxItem } from '../../../api'
 import {
   ArrowLeftOutlined,
@@ -341,12 +353,14 @@ const logger = window.electronAPI.getLogger('M9A脚本编辑')
 const route = useRoute()
 const router = useRouter()
 const { getScript, updateScript } = useScriptApi()
+const registryApi = useScriptRegistryApi()
 
 const formRef = ref<FormInstance>()
 const pageLoading = ref(false)
 const scriptId = route.params.id as string
 const isInitializing = ref(true)
 const isSaving = ref(false)
+const scriptIconUrl = ref<string | null>(null)
 
 const formData = reactive({
   name: '',
@@ -428,10 +442,21 @@ const refreshScript = async () => {
 }
 
 onMounted(async () => {
-  await loadScript()
+  await Promise.all([loadScript(), loadScriptTypeIcon()])
   await loadEmulatorOptions()
   isInitializing.value = false
 })
+
+const loadScriptTypeIcon = async () => {
+  try {
+    const descriptors = await registryApi.getScriptTypes()
+    const descriptor = descriptors.find(item => item.type_key === formData.type)
+    scriptIconUrl.value = descriptor?.icon_url ?? null
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`鍔犺浇鑴氭湰绫诲瀷鍥炬爣澶辫触: ${errorMsg}`)
+  }
+}
 
 const loadScript = async () => {
   pageLoading.value = true

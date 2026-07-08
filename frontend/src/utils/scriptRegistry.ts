@@ -1,7 +1,6 @@
 import maaIcon from '@/assets/MAA.png'
 import srcIcon from '@/assets/SRC.png'
 import maaEndIcon from '@/assets/MaaEnd.png'
-import m9aIcon from '@/assets/M9A.png'
 import okwwIcon from '@/assets/ok-ww.ico'
 import hsrIcon from '@/assets/hsr.png'
 import autoMasIcon from '@/assets/AUTO-MAS.ico'
@@ -80,8 +79,6 @@ export const getFallbackScriptIcon = (type: string) => {
       return srcIcon
     case 'MaaEnd':
       return maaEndIcon
-    case 'M9A':
-      return m9aIcon
     case 'Okww':
       return okwwIcon
     case 'HSR':
