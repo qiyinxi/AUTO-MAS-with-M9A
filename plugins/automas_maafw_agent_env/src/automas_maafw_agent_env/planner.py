@@ -58,15 +58,22 @@ def _coerce_agent_configs(
 ) -> list[MaaFWAgent]:
     if raw_agent is None:
         return []
-    if isinstance(raw_agent, MaaFWAgent):
-        return [raw_agent]
-    if isinstance(raw_agent, dict):
-        return [MaaFWAgent.model_validate(raw_agent)]
-    if isinstance(raw_agent, list):
-        return [
-            item if isinstance(item, MaaFWAgent) else MaaFWAgent.model_validate(item)
-            for item in raw_agent
-        ]
+    if isinstance(raw_agent, (list, tuple)):
+        return [_coerce_single_agent(item) for item in raw_agent]
+    return [_coerce_single_agent(raw_agent)]
+
+
+def _coerce_single_agent(item: Any) -> MaaFWAgent:
+    # 不用 isinstance(item, MaaFWAgent) 直接判定：dev HMR 会重载
+    # automas_maafw_interface.models，使得缓存 interface 携带的旧 MaaFWAgent
+    # 类与本模块 import 的新类实例判定失败。改为按 dict / 任意 pydantic 模型
+    # 归一化（与 runner._coerce_interface 的 model_dump 兜底同源）。
+    if isinstance(item, MaaFWAgent):
+        return item
+    if isinstance(item, dict):
+        return MaaFWAgent.model_validate(item)
+    if hasattr(item, "model_dump"):
+        return MaaFWAgent.model_validate(item.model_dump())
     raise MaaFWAgentEnvError("agent declaration must be an object or list")
 
 

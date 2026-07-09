@@ -53,6 +53,46 @@ def _okww_config_file_path(config_dir: Path, filename: str) -> Path:
     return config_dir / filename
 
 
+def _okww_read_json_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _okww_write_json_file_atomic(path: Path, data: dict[str, Any]) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _ensure_okww_user_config_defaults(config_dir: Path, source_dir: Path | None) -> None:
+    if source_dir is None or not source_dir.is_dir():
+        return
+    from app.task.Okww.config_schema import get_all_config_info
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    for info in get_all_config_info():
+        filename = str(info["filename"])
+        source_path = source_dir / filename
+        if not source_path.is_file():
+            continue
+        current_path = _okww_config_file_path(config_dir, filename)
+        source_data = _okww_read_json_file(source_path)
+        current_data = _okww_read_json_file(current_path)
+        merged_data = {**source_data, **current_data}
+        if merged_data != current_data:
+            _okww_write_json_file_atomic(current_path, merged_data)
+
+
 _MAAFW_IMAGE_SUFFIXES = {
     ".avif",
     ".bmp",
@@ -61,6 +101,7 @@ _MAAFW_IMAGE_SUFFIXES = {
     ".jpeg",
     ".jpg",
     ".png",
+    ".svg",
     ".webp",
 }
 
@@ -179,15 +220,53 @@ def _plugin_provider(type_key: str):
 def _is_maafw_framework_script(script_config: Any) -> bool:
     """判定脚本配置是否属于 MaaFW 框架运行链路（含 M9A 等 pack 形态）。"""
 
+    from app.core.script_types import script_type_registry
+
+    # 插件形态脚本统一存为 PluginScriptConfig，类名不进注册表，
+    # 必须按 Meta.PluginTypeKey 解析 provider，否则通用 MaaFW 项目会被误判。
+    try:
+        from app.models.plugin_script_config import PluginScriptConfig
+
+        if isinstance(script_config, PluginScriptConfig):
+            type_key = str(script_config.get("Meta", "PluginTypeKey") or "").strip()
+            if not type_key:
+                return False
+            provider = script_type_registry.get(type_key)
+            return provider.metadata.get("framework") == "maafw"
+    except Exception:
+        pass
+
     config_class_name = type(script_config).__name__
     try:
-        from app.core.script_types import script_type_registry
-
-        provider = script_type_registry.get_by_script_config(config_class_name)
+        provider = script_type_registry.get_by_script_config(script_config)
         return provider.metadata.get("framework") == "maafw"
     except Exception:
         # 注册表未就绪或类名未注册时，回退到已知 legacy 类名。
         return config_class_name in {"MaaFWConfig", "M9AConfig"}
+
+
+async def _resolve_maafw_script_form(script_config: Any) -> dict[str, Any]:
+    """解析 MaaFW 框架脚本的表单态配置（插件形态与 legacy 均适用）。
+
+    插件形态脚本统一存为 PluginScriptConfig，真实配置在 PluginData.Config
+    （JSON 字符串），须经 storage_to_form 解码后才有 Info.Path / Update.* 字段；
+    legacy MaaFWConfig/M9AConfig 直接 toDict 即为表单态。
+    """
+    from app.models.plugin_script_config import PluginScriptConfig
+
+    if isinstance(script_config, PluginScriptConfig):
+        from app.core.script_config_codec import storage_to_form
+
+        type_key = str(script_config.get("Meta", "PluginTypeKey") or "").strip()
+        provider = _plugin_provider(type_key)
+        if provider is None:
+            raise RuntimeError(f"无法解析插件脚本类型: {type_key or '(空)'}")
+        raw = script_config.get("PluginData", "Config")
+        return await storage_to_form(provider, raw, "script")
+
+    payload = await script_config.toDict()
+    payload.pop("SubConfigsInfo", None)
+    return payload
 
 
 def _plugin_type_key_from_payload(payload: dict[str, Any]) -> str:
@@ -916,7 +995,14 @@ async def update_maafw_project(
                 ),
             )
 
-        project_path_raw = str(script_config.get("Info", "Path") or "").strip()
+        # 插件形态脚本的 Info.Path/Update.* 藏在 PluginData.Config，需先解码成表单态
+        script_form = await _resolve_maafw_script_form(script_config)
+        info_group = script_form.get("Info")
+        info_group = info_group if isinstance(info_group, dict) else {}
+        update_group = script_form.get("Update")
+        update_group = update_group if isinstance(update_group, dict) else {}
+
+        project_path_raw = str(info_group.get("Path") or "").strip()
         if not project_path_raw:
             append_log("请先配置 MaaFW 项目目录")
             return MaaFWProjectUpdateOut(
@@ -936,15 +1022,15 @@ async def update_maafw_project(
         current_version = interface_model.version or ""
 
         mirror_cdk = (
-            script_config.get("Update", "MirrorChyanCDK")
+            update_group.get("MirrorChyanCDK")
             or Config.get("Update", "MirrorChyanCDK")
         )
-        channel = script_config.get("Update", "Channel") or Config.get("Update", "Channel")
+        channel = update_group.get("Channel") or Config.get("Update", "Channel")
         source_config = None
         try:
             from automas_script_maafw.schema import build_source_config
 
-            source_config = build_source_config(await script_config.toDict())
+            source_config = build_source_config(script_form)
         except Exception as e:
             append_log(f"读取脚本更新源配置失败，回退默认更新源: {type(e).__name__}: {e}")
         update_result = await MaaFWProjectUpdateService().update_if_needed(
@@ -1268,7 +1354,6 @@ async def get_okww_configs_list(script_id: str, user_id: str):
     """
     try:
         import json
-        import shutil
         from app.task.Okww.config_schema import (
             get_all_config_info, build_fields_for_config, load_okww_option_labels,
         )
@@ -1285,11 +1370,9 @@ async def get_okww_configs_list(script_id: str, user_id: str):
         # ok-ww 源配置目录（从 RootPath 派生，用于自动初始化）
         okww_configs_dir = Path(root_path) / _OKWW_REL_CONFIG_DIR if root_path else None
 
-        # 自动初始化：用户目录为空时从 ok-ww configs 复制默认配置
-        need_init = not mas_config_dir.exists() or not any(mas_config_dir.iterdir())
-        if need_init and okww_configs_dir and okww_configs_dir.is_dir():
-            mas_config_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(okww_configs_dir, mas_config_dir, dirs_exist_ok=True)
+        # 自动初始化并按需补齐字段：逐文件将源默认值与用户现值合并（tmp+rename 原子写），
+        # 避免旧用户升级后缺失新配置字段，也避免非原子 copytree 中断损坏配置。
+        _ensure_okww_user_config_defaults(mas_config_dir, okww_configs_dir)
 
         configs_info = get_all_config_info()
 

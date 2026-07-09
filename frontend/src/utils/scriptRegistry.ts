@@ -146,6 +146,8 @@ const BUILTIN_EDITOR_SEGMENTS: Record<string, string> = {
 const TYPE_KEY_EDITOR_SEGMENTS: Record<string, string> = {
   MaaFW: 'maafw',
   M9A: 'maafw',
+  // ok-ww 使用专属编辑页（/edit/okww 等），与 PR #287/#288 的视觉与配置字段保持一致
+  Okww: 'okww',
 }
 
 export const getScriptEditPath = (script: Pick<Script, 'id' | 'type' | 'editorKind'>) => {

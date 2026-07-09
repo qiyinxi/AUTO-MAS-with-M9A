@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sys
 import uuid
 from contextlib import suppress
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from app.core import Config
 from app.models.ConfigBase import MultipleConfig
@@ -18,9 +22,10 @@ from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.plugins.pypi_site import get_plugin_import_paths
 from app.services import Notify
 from app.task.general.tools import execute_script_task
-from app.utils import get_logger
+from app.utils import ProcessInfo, ProcessManager, get_logger
 from app.utils.constants import UTC4
 from automas_maafw_interface.models import MaaFWController, MaaFWInterface
+from automas_maafw_interface.preview import build_adb_emulator_extra_capabilities
 from automas_maafw_interface.service import MaaFWInterfaceService
 from automas_maafw_runner.models import (
     MaaFWDeviceConfig,
@@ -36,6 +41,31 @@ logger = get_logger("MaaFW 插件自动代理")
 
 _RUNNING_PROJECT_PATHS: set[str] = set()
 _RUNNING_PROJECT_PATHS_LOCK = asyncio.Lock()
+
+
+# MaaFW 的 ADB 截图/输入方法枚举（EmulatorExtras 硬件加速相关）在此镜像为整型常量，
+# 而非 `from maa.controller import MaaAdb*Enum`。本模块受导入边界约束
+# （tests/plugins/test_maafw_import_boundaries.py 禁止导入时把 maa 载入 sys.modules），
+# 直接 import maa 会加载原生绑定，故改为对齐 plugins/pypi/site-packages/maa/define.py
+# 的取值：
+#   screencap Default = All & ~RawByNetcat & ~MinicapDirect & ~MinicapStream = -57
+#   screencap EmulatorExtras = 1 << 6 (64)
+#   input Default = All & ~EmulatorExtras = -9；input All = ~0 = -1；EmulatorExtras = 1 << 3 (8)
+_ADB_SCREENCAP_DEFAULT = -57
+_ADB_SCREENCAP_EMULATOR_EXTRAS = 1 << 6
+_ADB_INPUT_DEFAULT = -9
+_ADB_INPUT_ALL = -1
+_ADB_INPUT_EMULATOR_EXTRAS = 1 << 3
+
+
+@dataclass(frozen=True)
+class MaaFWAdbControlProfile:
+    """描述某模拟器实例的 ADB EmulatorExtras 能力与 controller extras 配置。"""
+
+    emulator_type: str | None
+    screencap_extra: bool
+    input_extra: bool
+    config: dict[str, Any]
 
 
 def _build_worker_env() -> dict[str, str]:
@@ -89,11 +119,14 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         self.curdate = datetime.now(tz=UTC4).strftime("%Y-%m-%d")
         self.run_complete = False
         self.opened_emulator = False
+        self.opened_game = False
+        self.game_process_manager = ProcessManager()
         self.project_lock_key: str | None = None
         self.runner_process: asyncio.subprocess.Process | None = None
         self._cached_adb_address: str | None = None
         self._cached_device_info: DeviceInfo | None = None
         self._cached_adb_path: str | None = None
+        self._cached_adb_profile: MaaFWAdbControlProfile | None = None
 
     async def check(self) -> str:
         proxy_times = (
@@ -127,22 +160,12 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 self.cur_user_item.status = "异常"
                 return "当前 MaaFW controller 需要 ADB，请在脚本管理页选择模拟器和实例"
         elif self.run_plan.controllerType == "Win32":
-            configured_hwnd = (
-                self.cur_user_config.get("Device", "HWnd")
-                or self.script_config.get("Device", "HWnd")
-            )
-            if not _optional_int(configured_hwnd):
-                try:
-                    controller = _find_controller(
-                        self.interface_model,
-                        self.run_plan.controllerName,
-                    )
-                    if not _match_controller_windows(controller):
-                        self.cur_user_item.status = "异常"
-                        return "当前 MaaFW controller 需要 Win32 窗口，请先打开游戏或配置窗口句柄"
-                except Exception as exc:
-                    self.cur_user_item.status = "异常"
-                    return f"扫描 MaaFW Win32 窗口失败: {exc}"
+            # 由 MAS 负责启动桌面游戏，因此仅校验 Game.Path 指向真实 exe，
+            # 窗口由 _ensure_desktop_game_started 启动游戏后再解析，无需此处已存在
+            game_path = Path(str(self.script_config.get("Game", "Path") or "").strip())
+            if not game_path.is_file():
+                self.cur_user_item.status = "异常"
+                return "当前 MaaFW controller 需要由 MAS 启动游戏，请在脚本管理页选择实际游戏 exe"
 
         if not await self._try_enter_project_path():
             self.cur_user_item.status = "跳过"
@@ -195,6 +218,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 try:
                     if self.run_plan is None or self.interface_model is None:
                         raise RuntimeError("MaaFW 运行计划尚未初始化")
+                    await self._ensure_desktop_game_started()
                     device_config = await self._build_device_config(
                         self.run_plan,
                         self.interface_model,
@@ -236,6 +260,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         finally:
             await self._shutdown_runner()
             await self._close_emulator()
+            await self._close_game()
             await self._release_project_path()
 
     async def final_task(self) -> None:
@@ -245,6 +270,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             return
 
         await self._close_emulator()
+        await self._close_game()
         await self._save_user_logs()
         if self.run_complete:
             if (
@@ -284,6 +310,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             pass
         await self._shutdown_runner()
         await self._close_emulator()
+        await self._close_game()
         await self._release_project_path()
 
     def _build_run_plan(self, interface_model: MaaFWInterface) -> MaaFWRunPlan:
@@ -353,12 +380,14 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         if plan.controllerType == "Adb":
             address, device_info = await self._resolve_adb_address()
             adb_path = await self._resolve_adb_path(address, device_info)
+            adb_profile = await self._build_adb_control_profile()
             return MaaFWDeviceConfig(
                 type="Adb",
                 adbPath=adb_path,
                 address=address,
-                screencapMethods=int(self.script_config.get("Device", "AdbScreencapMethods")),
-                inputMethods=int(self.script_config.get("Device", "AdbInputMethods")),
+                screencapMethods=self._resolve_adb_screencap_methods(adb_profile),
+                inputMethods=self._resolve_adb_input_methods(adb_profile),
+                config=adb_profile.config,
             )
 
         if plan.controllerType == "Win32":
@@ -426,6 +455,159 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             emulator_path = Path(emulator_config.get("Info", "Path"))
             return emulator_path.parent / "adb.exe"
         return None
+
+    async def _build_adb_control_profile(self) -> MaaFWAdbControlProfile:
+        """解析当前模拟器的 EmulatorExtras 能力，并构造 MuMu/雷电 controller extras 配置。"""
+        if self._cached_adb_profile is not None:
+            return self._cached_adb_profile
+
+        emulator_id = self.script_config.get("Emulator", "Id")
+        emulator_index = self.script_config.get("Emulator", "Index")
+        if emulator_id == "-" or emulator_index in ("", "-"):
+            self._cached_adb_profile = MaaFWAdbControlProfile(None, False, False, {})
+            return self._cached_adb_profile
+
+        try:
+            emulator_config = Config.EmulatorConfig[uuid.UUID(emulator_id)]
+            emulator_type = str(emulator_config.get("Info", "Type") or "")
+            emulator_path = Path(emulator_config.get("Info", "Path"))
+            # build_adb_emulator_extra_capabilities 通过 find_spec 探测运行时 maa，
+            # 不会把 maa 载入 sys.modules，满足导入边界约束；返回 {type: {screencap,input}}。
+            capabilities = build_adb_emulator_extra_capabilities()
+            capability = capabilities.get(emulator_type, {})
+            screencap_extra = bool(capability.get("screencap", False))
+            input_extra = bool(capability.get("input", False))
+            if emulator_type == "ldplayer" and screencap_extra:
+                config = await self._build_ldplayer_adb_controller_config(
+                    emulator_path,
+                    emulator_index,
+                )
+                self._cached_adb_profile = MaaFWAdbControlProfile(
+                    emulator_type,
+                    screencap_extra,
+                    input_extra,
+                    config,
+                )
+                return self._cached_adb_profile
+            if emulator_type == "mumu" and (screencap_extra or input_extra):
+                config = self._build_mumu_adb_controller_config(
+                    emulator_path,
+                    emulator_index,
+                )
+                self._cached_adb_profile = MaaFWAdbControlProfile(
+                    emulator_type,
+                    screencap_extra,
+                    input_extra,
+                    config,
+                )
+                return self._cached_adb_profile
+            self._cached_adb_profile = MaaFWAdbControlProfile(
+                emulator_type,
+                screencap_extra,
+                input_extra,
+                {},
+            )
+            return self._cached_adb_profile
+        except Exception as exc:
+            logger.warning(f"构造 MaaFW ADB extra 配置失败，使用默认配置: {exc}")
+
+        self._cached_adb_profile = MaaFWAdbControlProfile(None, False, False, {})
+        return self._cached_adb_profile
+
+    def _resolve_adb_screencap_methods(self, profile: MaaFWAdbControlProfile) -> int:
+        extra_method = _ADB_SCREENCAP_EMULATOR_EXTRAS
+        if profile.emulator_type in {"ldplayer", "mumu"}:
+            default_methods = _ADB_SCREENCAP_DEFAULT
+            if profile.screencap_extra:
+                return default_methods | extra_method
+            return _remove_method(default_methods, extra_method, default_methods)
+        return _remove_method(
+            int(self.script_config.get("Device", "AdbScreencapMethods")),
+            extra_method,
+            _remove_method(
+                _ADB_SCREENCAP_DEFAULT,
+                extra_method,
+                _ADB_SCREENCAP_DEFAULT,
+            ),
+        )
+
+    def _resolve_adb_input_methods(self, profile: MaaFWAdbControlProfile) -> int:
+        extra_input_method = _ADB_INPUT_EMULATOR_EXTRAS
+        if profile.emulator_type == "mumu" and profile.input_extra:
+            return _ADB_INPUT_ALL
+        if profile.emulator_type in {"ldplayer", "mumu"}:
+            return _ADB_INPUT_DEFAULT
+
+        configured = int(self.script_config.get("Device", "AdbInputMethods"))
+        if not profile.input_extra:
+            return _remove_method(
+                configured,
+                extra_input_method,
+                _ADB_INPUT_DEFAULT,
+            )
+        return configured
+
+    async def _build_ldplayer_adb_controller_config(
+        self,
+        emulator_path: Path,
+        emulator_index: str,
+    ) -> dict[str, Any]:
+        emulator_root = emulator_path.parent
+        index = int(emulator_index)
+        pid = 0
+
+        # get_device_info 仅存在于部分模拟器管理器（雷电有，MuMu 无），
+        # 且 list2 可能超时/异常，故整体兜底为实例索引 + pid=0。
+        if self.emulator_manager is not None:
+            try:
+                devices = await self.emulator_manager.get_device_info(emulator_index)
+                device = devices.get(emulator_index)
+                if device is not None:
+                    index = device.idx
+                    pid = device.pid
+            except Exception as exc:
+                logger.warning(f"获取雷电模拟器 extra 信息失败，使用实例索引兜底: {exc}")
+
+        ld_config: dict[str, Any] = {
+            "enable": True,
+            "index": index,
+            "path": str(emulator_root).replace("\\", "/"),
+            "pid": pid,
+        }
+        ld_library = emulator_root / "ldopengl64.dll"
+        if ld_library.exists():
+            ld_config["lib"] = str(ld_library).replace("\\", "/")
+
+        return {
+            "extras": {
+                "ld": ld_config,
+            },
+        }
+
+    @staticmethod
+    def _build_mumu_adb_controller_config(
+        emulator_path: Path,
+        emulator_index: str,
+    ) -> dict[str, Any]:
+        emulator_root = emulator_path.parent.parent
+        mumu_config: dict[str, Any] = {
+            "enable": True,
+            "index": int(emulator_index),
+            "path": str(emulator_root).replace("\\", "/"),
+        }
+        for library in (
+            emulator_root / "nx_main" / "sdk" / "external_renderer_ipc.dll",
+            emulator_root / "shell" / "sdk" / "external_renderer_ipc.dll",
+        ):
+            if library.exists():
+                mumu_config["lib"] = str(library).replace("\\", "/")
+                break
+
+        return {
+            "extras": {
+                "mumu": mumu_config,
+            },
+        }
 
     def _resolve_window_handle(self, controller: MaaFWController) -> int:
         configured_hwnd = (
@@ -637,6 +819,188 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         finally:
             self.opened_emulator = False
 
+    async def _ensure_desktop_game_started(self) -> None:
+        """Win32 场景下由 MAS 负责启动/激活桌面游戏客户端，供后续窗口解析使用。"""
+        if self.run_plan is None or self.run_plan.controllerType != "Win32":
+            return
+        if self.opened_game:
+            return
+
+        game_path = Path(str(self.script_config.get("Game", "Path") or "").strip())
+        if not game_path.is_file():
+            raise RuntimeError("当前 MaaFW controller 需要由 MAS 启动游戏，请在脚本管理页选择实际游戏 exe")
+
+        if self.interface_model is not None and self.run_plan is not None:
+            controller = _find_controller(
+                self.interface_model,
+                self.run_plan.controllerName,
+            )
+            matches = _match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                await self._activate_desktop_game_window(game_path)
+                return
+
+        if _is_process_path_running(game_path):
+            message = f"检测到游戏进程已在运行，跳过由 MAS 重复启动游戏: {game_path.name}"
+            logger.info(message)
+            self.script_info.log = message
+            await self._wait_for_desktop_game_ready(game_path)
+            await self._activate_desktop_game_window(game_path)
+            return
+
+        game_arguments = shlex.split(str(self.script_config.get("Game", "Arguments") or "").strip())
+        logger.info(f"启动游戏: {game_path} - {self.script_config.get('Game', 'Arguments')}")
+        await self.game_process_manager.open_process(
+            game_path,
+            *game_arguments,
+            cwd=game_path.parent,
+        )
+
+        try:
+            await self._wait_for_desktop_game_ready(game_path)
+        except Exception:
+            with suppress(Exception):
+                await self.game_process_manager.kill()
+            raise
+
+        self.opened_game = True
+        await self._activate_desktop_game_window(game_path)
+
+    async def _wait_for_desktop_game_ready(
+        self,
+        game_path: Path,
+        poll_interval: float = 1.0,
+    ) -> None:
+        wait_time = max(0, int(self.script_config.get("Game", "WaitTime") or 0))
+        if self.run_plan is None or self.interface_model is None:
+            raise RuntimeError("MaaFW 运行计划未完成初始化")
+
+        configured_hwnd = (
+            self.cur_user_config.get("Device", "HWnd")
+            or self.script_config.get("Device", "HWnd")
+        )
+        explicit_hwnd = _optional_int(configured_hwnd)
+        controller = _find_controller(self.interface_model, self.run_plan.controllerName)
+
+        self._append_log(
+            f"正在等待游戏客户端窗口就绪，最大等待时间 {wait_time}s: {game_path.name}"
+        )
+        if wait_time <= 0:
+            if not _is_process_path_running(game_path):
+                raise RuntimeError(f"游戏进程未启动: {game_path.name}")
+            if explicit_hwnd:
+                self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                return
+            if not _match_controller_windows(controller):
+                raise RuntimeError(f"游戏窗口未就绪: {game_path.name}")
+            return
+
+        waited = 0.0
+        process_detected = False
+        while waited < wait_time:
+            if not explicit_hwnd:
+                matches = _match_controller_windows(controller)
+                if matches:
+                    selected = matches[0]
+                    self._append_log(
+                        "检测到游戏客户端窗口: "
+                        f"hWnd={selected.hWnd}, class={selected.className}, "
+                        f"title={selected.windowName}"
+                    )
+                    return
+
+            if _is_process_path_running(game_path):
+                if not process_detected:
+                    self._append_log(f"检测到游戏进程已启动: {game_path.name}")
+                    process_detected = True
+
+                if explicit_hwnd:
+                    self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                    return
+
+                matches = _match_controller_windows(controller)
+                if matches:
+                    selected = matches[0]
+                    self._append_log(
+                        "检测到游戏客户端窗口: "
+                        f"hWnd={selected.hWnd}, class={selected.className}, "
+                        f"title={selected.windowName}"
+                    )
+                    return
+
+            sleep_seconds = min(poll_interval, wait_time - waited)
+            await asyncio.sleep(sleep_seconds)
+            waited += sleep_seconds
+
+        if not explicit_hwnd:
+            matches = _match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                return
+
+        if _is_process_path_running(game_path):
+            if explicit_hwnd:
+                self._append_log(f"已配置窗口句柄，跳过窗口正则等待: {explicit_hwnd}")
+                return
+
+            matches = _match_controller_windows(controller)
+            if matches:
+                selected = matches[0]
+                self._append_log(
+                    "检测到游戏客户端窗口: "
+                    f"hWnd={selected.hWnd}, class={selected.className}, "
+                    f"title={selected.windowName}"
+                )
+                return
+
+            raise RuntimeError(f"游戏窗口在 {wait_time}s 内未就绪: {game_path.name}")
+
+        raise RuntimeError(f"游戏进程在 {wait_time}s 内未启动: {game_path.name}")
+
+    async def _activate_desktop_game_window(self, game_path: Path) -> None:
+        try:
+            await self.game_process_manager.search_process(
+                ProcessInfo(exe=str(game_path.resolve())),
+                datetime.now() + timedelta(seconds=5),
+            )
+        except Exception as exc:
+            logger.warning(f"MaaFW 定位游戏进程窗口失败: {exc}")
+            self._append_log(f"游戏进程已启动，但定位窗口失败: {exc}")
+            return
+
+        activate_end_time = datetime.now() + timedelta(seconds=5)
+        while datetime.now() < activate_end_time:
+            if await self.game_process_manager.activate_window():
+                self._append_log("游戏窗口已置于前台")
+                return
+            await asyncio.sleep(0.5)
+
+        self._append_log("游戏窗口前置失败，将继续启动 MaaFW 任务")
+
+    async def _close_game(self) -> None:
+        if not self.opened_game:
+            return
+        if not self.script_config.get("Game", "CloseOnFinish"):
+            return
+
+        try:
+            await self.game_process_manager.kill()
+        except Exception as exc:
+            logger.warning(f"MaaFW 清理时关闭游戏失败: {exc}")
+        finally:
+            self.opened_game = False
+
     async def _try_enter_project_path(self) -> bool:
         project_lock_key = _normalize_project_path(self.project_path)
         async with _RUNNING_PROJECT_PATHS_LOCK:
@@ -710,6 +1074,16 @@ def _match_controller_windows(controller: MaaFWController) -> list[Any]:
     return list(service.match_controller_windows(controller))
 
 
+def _is_process_path_running(executable_path: Path) -> bool:
+    target_path = executable_path.resolve()
+    for proc in psutil.process_iter(["exe"]):
+        with suppress(psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            raw_exe = proc.info.get("exe") or proc.exe()
+            if raw_exe and Path(raw_exe).resolve() == target_path:
+                return True
+    return False
+
+
 def _optional_int(value: Any) -> int | None:
     if value in (None, "", "-"):
         return None
@@ -717,6 +1091,12 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _remove_method(methods: int, method: int, fallback: int) -> int:
+    """从位掩码中剔除 method 位；若结果为 0（无可用方法）则回退到 fallback。"""
+    filtered = methods & ~method
+    return filtered or fallback
 
 
 def _load_json_dict(value: Any) -> dict[str, Any]:

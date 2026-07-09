@@ -87,8 +87,9 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
             if config.get("Info", "Status")
             and config.get("Info", "RemainedDay") != 0
         ]
-        logger.info(
-            f"MaaFW 插件用户列表加载完成，已筛选用户数: {len(runtime.script_info.user_list)}"
+        self._emit_log(
+            runtime,
+            f"MaaFW 插件用户列表加载完成，已筛选用户数: {len(runtime.script_info.user_list)}",
         )
 
     def run_auto_proxy(self, runtime: ScriptAdapterRuntime) -> TaskExecuteBase:
@@ -105,6 +106,9 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
     async def finalize(self, runtime: ScriptAdapterRuntime) -> None:
         try:
             if runtime.user_config is not None and runtime.mode == "AutoProxy":
+                # prepare() 锁定了整棵配置树（含 UserData），写回前必须先解锁，
+                # 否则 PluginUserConfig.set() 会抛出 "配置已锁定, 无法修改"
+                await runtime.storage.unlock()
                 await runtime.storage.save_user_models(runtime.user_config)
         finally:
             await runtime.storage.unlock()
@@ -131,14 +135,14 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
         script_config: MaaFWConfig,
     ) -> None:
         if not script_config.get("Update", "IfAutoUpdate"):
-            self._send_update_log(runtime, "MaaFW 项目运行前自动更新已关闭")
+            self._emit_log(runtime, "MaaFW 项目运行前自动更新已关闭")
             return
 
         project_path = Path(script_config.get("Info", "Path")).resolve()
         try:
             interface_model = MaaFWInterfaceService().load(project_path)
         except MaaFWInterfaceLoadError as exc:
-            self._send_update_log(runtime, f"MaaFW 项目更新跳过，interface 读取失败: {exc}")
+            self._emit_log(runtime, f"MaaFW 项目更新跳过，interface 读取失败: {exc}")
             return
 
         script_data = await runtime.storage.read_script_data()
@@ -155,7 +159,7 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
                 mirror_cdk=mirror_cdk,
                 channel=channel,
                 proxy=Config.proxy,
-                send_log=lambda message: self._send_update_log(runtime, message),
+                send_log=lambda message: self._emit_log(runtime, message),
                 source_config=source_config,
             )
             if update_result.updated:
@@ -163,7 +167,7 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
                     project_path,
                     force_reload=True,
                 )
-                self._send_update_log(runtime, "MaaFW project updated, preparing agent Python env")
+                self._emit_log(runtime, "MaaFW project updated, preparing agent Python env")
                 agent_prepare_logs: list[str] = []
                 try:
                     await asyncio.to_thread(
@@ -174,12 +178,18 @@ class MaaFWAdapterHooks(ScriptAdapterHooks):
                     )
                 finally:
                     for log_line in agent_prepare_logs:
-                        self._send_update_log(runtime, log_line)
+                        self._emit_log(runtime, log_line)
         except Exception as exc:
-            self._send_update_log(runtime, f"MaaFW 项目更新失败，继续使用当前目录: {exc}")
+            self._emit_log(runtime, f"MaaFW 项目更新失败，继续使用当前目录: {exc}")
 
     @staticmethod
-    def _send_update_log(runtime: ScriptAdapterRuntime, message: str) -> None:
+    def _emit_log(runtime: ScriptAdapterRuntime, message: str) -> None:
+        """把 adapter 关键操作日志同时写入后端日志与 UI 通道。
+
+        UI 侧由 task_manager 广播 script_info.log（task.log 事件），因此这里
+        除了 logger.info，还要追加到共享缓冲并刷新 script_info.log，
+        否则用户在脚本管理页看不到插件适配阶段的进度。
+        """
         logger.info(message)
         logs = runtime.extra.setdefault("maafw_project_update_logs", [])
         if isinstance(logs, list):

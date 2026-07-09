@@ -55,6 +55,22 @@
     </div>
     <div class="header-actions">
       <a-space size="middle">
+        <a-tooltip title="收起所有脚本的用户列表">
+          <a-button size="large" :disabled="scripts.length === 0" @click="handleCollapseAll">
+            <template #icon>
+              <UpOutlined />
+            </template>
+            一键收起
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="展开所有脚本的用户列表">
+          <a-button size="large" :disabled="scripts.length === 0" @click="handleExpandAll">
+            <template #icon>
+              <DownOutlined />
+            </template>
+            一键展开
+          </a-button>
+        </a-tooltip>
         <a-button type="primary" size="large" class="link" @click="handleAddScript">
           <template #icon>
             <PlusOutlined />
@@ -102,6 +118,7 @@
 
   <ScriptTable
     v-if="scripts.length > 0 || !scriptListError"
+    ref="scriptTableRef"
     :scripts="scripts"
     :active-connections="activeConnections"
     :all-plans-data="allPlansData"
@@ -402,11 +419,13 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   ClockCircleOutlined,
+  DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
   PlusOutlined,
   ReloadOutlined,
   SettingOutlined,
+  UpOutlined,
   UserOutlined,
 } from '@ant-design/icons-vue'
 import ScriptTable from '@/components/ScriptTable.vue'
@@ -445,6 +464,7 @@ const md = new MarkdownIt({
 })
 
 const scripts = ref<Script[]>([])
+const scriptTableRef = ref<InstanceType<typeof ScriptTable> | null>(null)
 const scriptTypeDescriptors = ref<ScriptTypeDescriptor[]>([])
 const scriptListError = ref<string | null>(null)
 // 增加：标记是否已经完成过一次脚本列表加载（成功或失败都算一次）
@@ -568,6 +588,14 @@ const loadCurrentPlan = async () => {
   }
 }
 
+const handleCollapseAll = () => {
+  scriptTableRef.value?.collapseAllUsers()
+}
+
+const handleExpandAll = () => {
+  scriptTableRef.value?.expandAllUsers()
+}
+
 const handleAddScript = () => {
   if (!selectedType.value && availableScriptTypes.value.length > 0) {
     selectedType.value = availableScriptTypes.value[0].type_key
@@ -643,9 +671,14 @@ const handleConfirmAddScript = async () => {
   try {
     const result = await registryApi.addScript(selectedType.value)
     typeSelectVisible.value = false
-    router.push(
-      getScriptEditPath({ id: result.id, type: result.type, editorKind: result.editor_kind })
-    )
+    // MaaFW / M9A 新建脚本进入引导流程，其余类型直接进入编辑页
+    if (result.type === 'MaaFW' || result.type === 'M9A') {
+      router.push(`/scripts/${result.id}/setup/maafw`)
+    } else {
+      router.push(
+        getScriptEditPath({ id: result.id, type: result.type, editorKind: result.editor_kind })
+      )
+    }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
     logger.error(`添加脚本失败: ${errorMsg}`)
