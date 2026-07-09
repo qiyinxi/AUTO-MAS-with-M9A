@@ -243,7 +243,6 @@
           v-if="userId"
           :script-id="scriptId"
           :user-id="userId"
-          endpoint-prefix="/plugin/okww/configs"
           @saved="handleConfigSaved"
         />
       </a-card>
@@ -344,7 +343,8 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowLeftOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
-import { useScriptRegistryApi } from '@/composables/useScriptRegistryApi'
+import { useUserApi } from '@/composables/useUserApi'
+import { useScriptApi } from '@/composables/useScriptApi'
 import WebhookManager from '@/components/WebhookManager.vue'
 import OkwwConfigEditor from '@/views/OkwwUserEdit/OkwwConfigEditor.vue'
 import ExtraScriptSection from '@/components/ExtraScriptSection.vue'
@@ -352,7 +352,8 @@ import ExtraScriptSection from '@/components/ExtraScriptSection.vue'
 const logger = window.electronAPI.getLogger('ok-ww用户编辑')
 const route = useRoute()
 const router = useRouter()
-const api = useScriptRegistryApi()
+const { addUser, getUsers, updateUser } = useUserApi()
+const { getScript } = useScriptApi()
 
 const scriptId = route.params.scriptId as string
 const userId = ref((route.params.userId as string) || '')
@@ -362,6 +363,7 @@ const scriptName = ref('ok-ww脚本')
 const pageLoading = ref(true)
 const isInitializing = ref(true)
 const isSaving = ref(false)
+const pendingSave = ref<{ key: string; value: unknown } | null>(null)
 
 /** ok-ww 已适配任务（-t 1..8）；9–11 不提供选项 */
 const OKWW_MAX_TASK_INDEX = 8
@@ -464,11 +466,11 @@ const currentStartupArguments = computed(() => `-t ${formData.Task.TaskIndex || 
 const handleCancel = () => router.push('/scripts')
 
 const createUserImmediately = async () => {
-  const created = await api.addUser(scriptId)
-  if (!created?.id) {
-    throw new Error('创建用户失败')
+  const resp = await addUser(scriptId)
+  if (!resp?.userId) {
+    throw new Error(resp?.message || '创建用户失败')
   }
-  userId.value = created.id
+  userId.value = resp.userId
   isEdit.value = true
   await router.replace({
     name: 'OkwwUserEdit',
@@ -477,7 +479,11 @@ const createUserImmediately = async () => {
 }
 
 const saveField = async (key: string, value: unknown) => {
-  if (isInitializing.value || isSaving.value || !userId.value) return
+  if (isInitializing.value || !userId.value) return
+  if (isSaving.value) {
+    pendingSave.value = { key, value }
+    return
+  }
 
   isSaving.value = true
   try {
@@ -494,19 +500,22 @@ const saveField = async (key: string, value: unknown) => {
       formData.userName = String(value || '')
     }
 
-    await api.updateUser(scriptId, userId.value, patch)
+    await updateUser(scriptId, userId.value, patch)
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    logger.error(msg)
-    message.error(msg)
+    logger.error(e instanceof Error ? e.message : String(e))
   } finally {
     isSaving.value = false
+    if (pendingSave.value) {
+      const pending = pendingSave.value
+      pendingSave.value = null
+      void saveField(pending.key, pending.value)
+    }
   }
 }
 
 const saveTaskConfig = async () => {
   if (isInitializing.value || !userId.value) return
-  await api.updateUser(scriptId, userId.value, {
+  await updateUser(scriptId, userId.value, {
     Task: {
       TaskIndex: formData.Task.TaskIndex,
     },
@@ -518,17 +527,14 @@ const handleTaskIndexChange = async (value: number) => {
   try {
     await saveTaskConfig()
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    logger.error(msg)
-    message.error(msg)
+    logger.error(e instanceof Error ? e.message : String(e))
   }
 }
 
 const loadScriptInfo = async () => {
-  const scripts = await api.getScripts(scriptId)
-  const script = scripts[0]
-  if (script) {
-    scriptName.value = script.name
+  const detail = await getScript(scriptId)
+  if (detail) {
+    scriptName.value = detail.name
   }
 }
 
@@ -538,13 +544,14 @@ const loadUser = async () => {
     if (!userId.value) {
       await createUserImmediately()
     }
-    const users = await api.getUsers(scriptId, userId.value)
-    const user = users[0]
-    if (!user) {
+    const resp = await getUsers(scriptId, userId.value)
+    const userIndex = resp?.index?.find(i => i.uid === userId.value)
+    const data = resp?.data?.[userId.value]
+    if (!userIndex || !data) {
       throw new Error('用户不存在或加载失败')
     }
 
-    const userData = user.config as Partial<OkwwUserFormData>
+    const userData = data as Partial<OkwwUserFormData>
 
     Object.assign(formData, {
       Info: { ...getDefaultUserData().Info, ...(userData.Info || {}) },
@@ -566,13 +573,12 @@ const loadUser = async () => {
       }
     }
     if (Object.keys(patch).length > 0) {
-      await api.updateUser(scriptId, userId.value, patch)
+      await updateUser(scriptId, userId.value, patch)
     }
     await nextTick()
     formData.userName = formData.Info.Name || ''
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    logger.error(msg)
+    logger.error(e instanceof Error ? e.message : String(e))
     message.error('加载用户失败')
     handleCancel()
   } finally {
@@ -580,6 +586,7 @@ const loadUser = async () => {
     pageLoading.value = false
   }
 }
+
 const handleConfigSaved = () => {
   logger.info('OK-WW 配置已保存')
 }

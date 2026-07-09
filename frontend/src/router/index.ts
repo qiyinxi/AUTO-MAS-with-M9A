@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import type { RouteLocationGeneric } from 'vue-router'
 import { useAppInitialization } from '@/composables/useAppInitialization'
 import { getInitializationDecision } from '@/utils/initializationDecision'
 import { startSkippedInitializationStartup } from '@/utils/skippedInitializationStartup'
@@ -34,8 +35,8 @@ const routes = [
   },
   {
     path: '/scripts/:id/edit/m9a',
+    redirect: (to: RouteLocationGeneric) => `/scripts/${to.params.id}/edit/maafw`,
     name: 'M9AScriptEdit',
-    component: () => import('../views/EditView/Script/M9AScriptEdit.vue'),
     meta: { title: '编辑M9A脚本' },
   },
   {
@@ -100,8 +101,8 @@ const routes = [
   },
   {
     path: '/scripts/:scriptId/users/add/m9a',
+    redirect: (to: RouteLocationGeneric) => `/scripts/${to.params.scriptId}/users/add/maafw`,
     name: 'M9AUserAdd',
-    component: () => import('../views/EditView/User/M9AUserEdit.vue'),
     meta: { title: '添加M9A用户' },
   },
   {
@@ -130,8 +131,9 @@ const routes = [
   },
   {
     path: '/scripts/:scriptId/users/:userId/edit/m9a',
+    redirect: (to: RouteLocationGeneric) =>
+      `/scripts/${to.params.scriptId}/users/${to.params.userId}/edit/maafw`,
     name: 'M9AUserEdit',
-    component: () => import('../views/EditView/User/M9AUserEdit.vue'),
     meta: { title: '编辑M9A用户' },
   },
   {

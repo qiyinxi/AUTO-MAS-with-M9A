@@ -55,22 +55,6 @@
     </div>
     <div class="header-actions">
       <a-space size="middle">
-        <a-tooltip title="收起所有脚本的用户列表">
-          <a-button size="large" :disabled="scripts.length === 0" @click="handleCollapseAll">
-            <template #icon>
-              <UpOutlined />
-            </template>
-            一键收起
-          </a-button>
-        </a-tooltip>
-        <a-tooltip title="展开所有脚本的用户列表">
-          <a-button size="large" :disabled="scripts.length === 0" @click="handleExpandAll">
-            <template #icon>
-              <DownOutlined />
-            </template>
-            一键展开
-          </a-button>
-        </a-tooltip>
         <a-button type="primary" size="large" class="link" @click="handleAddScript">
           <template #icon>
             <PlusOutlined />
@@ -118,7 +102,6 @@
 
   <ScriptTable
     v-if="scripts.length > 0 || !scriptListError"
-    ref="scriptTableRef"
     :scripts="scripts"
     :active-connections="activeConnections"
     :all-plans-data="allPlansData"
@@ -209,7 +192,12 @@
         >
           <div class="script-item-content">
             <div class="script-icon">
-              <img :src="getScriptIcon(script.type)" :alt="script.type" class="type-icon" />
+              <img
+                :src="getScriptIcon(script.type, script.iconUrl)"
+                :alt="script.type"
+                class="type-icon"
+                @error="event => handleScriptIconError(event, script.type)"
+              />
             </div>
             <div class="script-info">
               <div class="script-name">{{ script.name }}</div>
@@ -253,13 +241,22 @@
           <div class="type-content">
             <div class="type-logo-container">
               <img
-                :src="getScriptIcon(descriptor.type_key)"
+                :src="getScriptIcon(descriptor.type_key, descriptor.icon_url)"
                 :alt="descriptor.type_key"
                 class="type-logo"
+                @error="event => handleScriptIconError(event, descriptor.type_key)"
               />
             </div>
             <div class="type-info">
-              <div class="type-title">{{ descriptor.display_name }}</div>
+              <div class="type-title">
+                <span>{{ descriptor.display_name }}</span>
+                <a-tag
+                  :color="getScriptTypeTagColor(descriptor.type_key, descriptor.theme_color)"
+                  class="type-tag"
+                >
+                  {{ descriptor.type_key }}
+                </a-tag>
+              </div>
               <div class="type-description">
                 支持模式：{{ descriptor.supported_modes.join(' / ') || '未声明' }}
               </div>
@@ -405,13 +402,11 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   ClockCircleOutlined,
-  DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
   PlusOutlined,
   ReloadOutlined,
   SettingOutlined,
-  UpOutlined,
   UserOutlined,
 } from '@ant-design/icons-vue'
 import ScriptTable from '@/components/ScriptTable.vue'
@@ -427,8 +422,10 @@ import {
   descriptorMapFromList,
   getScriptEditPath,
   getScriptIcon,
+  getScriptTypeTagColor,
   getUserCreatePath,
   getUserEditPath,
+  handleScriptIconError,
   normalizeScriptRecord,
 } from '@/utils/scriptRegistry'
 import MarkdownIt from 'markdown-it'
@@ -448,7 +445,6 @@ const md = new MarkdownIt({
 })
 
 const scripts = ref<Script[]>([])
-const scriptTableRef = ref<InstanceType<typeof ScriptTable> | null>(null)
 const scriptTypeDescriptors = ref<ScriptTypeDescriptor[]>([])
 const scriptListError = ref<string | null>(null)
 // 增加：标记是否已经完成过一次脚本列表加载（成功或失败都算一次）
@@ -509,7 +505,9 @@ const filteredTemplates = computed(() => {
   )
 })
 
-const availableScriptTypes = computed(() => scriptTypeDescriptors.value)
+const availableScriptTypes = computed(() =>
+  scriptTypeDescriptors.value.filter(descriptor => descriptor.available !== false)
+)
 
 const isScriptAvailable = (script: Script) => script.available !== false
 
@@ -568,14 +566,6 @@ const loadCurrentPlan = async () => {
     logger.error(`加载计划表数据失败: ${errorMsg}`)
     // 不显示错误消息，因为计划表数据是可选的
   }
-}
-
-const handleCollapseAll = () => {
-  scriptTableRef.value?.collapseAllUsers()
-}
-
-const handleExpandAll = () => {
-  scriptTableRef.value?.expandAllUsers()
 }
 
 const handleAddScript = () => {
@@ -1411,6 +1401,18 @@ const handlePassCheckUser = async (user: User) => {
   font-weight: 500;
   margin: 0 0 6px;
   color: var(--ant-color-text);
+}
+
+.type-title {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+
+.type-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .type-description,
