@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { BackendHealthOut } from '../models/BackendHealthOut';
 import type { Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post } from '../models/Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post';
 import type { Body_update_oknte_config_api_scripts_oknte_configs_update_post } from '../models/Body_update_oknte_config_api_scripts_oknte_configs_update_post';
 import type { ComboBoxOut } from '../models/ComboBoxOut';
@@ -33,6 +34,8 @@ import type { HSRManagedConfigOut } from '../models/HSRManagedConfigOut';
 import type { HSRStageOptionsOut } from '../models/HSRStageOptionsOut';
 import type { InfoOut } from '../models/InfoOut';
 import type { MaaEndOptionsOut } from '../models/MaaEndOptionsOut';
+import type { MaaFWInterfacePreviewIn } from '../models/MaaFWInterfacePreviewIn';
+import type { MaaFWInterfacePreviewOut } from '../models/MaaFWInterfacePreviewOut';
 import type { NoticeOut } from '../models/NoticeOut';
 import type { OutBase } from '../models/OutBase';
 import type { PatternDebugIn } from '../models/PatternDebugIn';
@@ -112,6 +115,18 @@ import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class Service {
+    /**
+     * 获取后端就绪状态
+     * 返回核心 API 与后台初始化状态。
+     * @returns BackendHealthOut Successful Response
+     * @throws ApiError
+     */
+    public static getHealthApiCoreHealthGet(): CancelablePromise<BackendHealthOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/core/health',
+        });
+    }
     /**
      * 关闭后端程序
      * 关闭后端程序
@@ -718,6 +733,26 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/scripts/webhook/order',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 预览 MaaFW interface
+     * 读取 MaaFW 项目 interface，并返回 controller/resource/task 摘要。
+     * @param requestBody
+     * @returns MaaFWInterfacePreviewOut Successful Response
+     * @throws ApiError
+     */
+    public static previewMaafwInterfaceApiScriptsMaafwPreviewPost(
+        requestBody: MaaFWInterfacePreviewIn,
+    ): CancelablePromise<MaaFWInterfacePreviewOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/preview',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

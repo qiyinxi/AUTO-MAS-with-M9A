@@ -2,14 +2,14 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type SrcUserConfig_Data = {
+export type MaaFWConfig_Info = {
     /**
-     * 上次代理日期
+     * MaaFW 脚本名称
      */
-    LastProxyDate?: (string | null);
+    Name?: (string | null);
     /**
-     * 代理次数
+     * MaaFW 项目根目录
      */
-    ProxyTimes?: (number | null);
+    Path?: (string | null);
 };
 

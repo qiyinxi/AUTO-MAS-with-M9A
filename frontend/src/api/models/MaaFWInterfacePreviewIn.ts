@@ -2,10 +2,10 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type MaaUserConfig_Data = {
+export type MaaFWInterfacePreviewIn = {
     /**
-     * 剿灭达到周上限时的 ISO 周
+     * MaaFW 项目根目录，应包含 interface.json
      */
-    AnnihilationCompletedWeek?: (string | null);
+    path: string;
 };
 
