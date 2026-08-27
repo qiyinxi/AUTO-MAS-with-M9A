@@ -43,6 +43,7 @@ from app.models.config import (
     MaaConfig,
     SrcConfig,
     M9AConfig,
+    MaaFWConfig,
     MaaEndConfig,
     OkwwConfig,
     OkNteConfig,
@@ -758,7 +759,15 @@ class AppConfig(GlobalConfig):
     async def add_script(
         self,
         script: Literal[
-            "MAA", "SRC", "General", "MaaEnd", "M9A", "Okww", "OkNte", "HSR"
+            "MAA",
+            "SRC",
+            "General",
+            "MaaEnd",
+            "M9A",
+            "MaaFW",
+            "Okww",
+            "OkNte",
+            "HSR",
         ],
         script_id: str | None = None,
     ) -> tuple[
@@ -768,6 +777,7 @@ class AppConfig(GlobalConfig):
         | GeneralConfig
         | MaaEndConfig
         | M9AConfig
+        | MaaFWConfig
         | OkwwConfig
         | OkNteConfig
         | HSRConfig,
