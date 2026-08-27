@@ -465,6 +465,7 @@ const getDefaultUserData = (): Omit<OkNteUserFormData, 'userName'> => ({
     Mode: '简洁',
     Resource: '官服',
     RemainedDay: -1,
+    IfUseMasConfig: true,
     IfScriptBeforeTask: false,
     ScriptBeforeTask: '',
     IfScriptAfterTask: false,
