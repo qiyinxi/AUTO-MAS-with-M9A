@@ -36,6 +36,7 @@ from .config import (
     OkwwConfig,
     OkNteConfig,
     HSRConfig,
+    MaaFWConfig,
 )
 
 def __getattr__(name: str) -> object:
@@ -62,6 +63,7 @@ from app.task import (
     OkwwManager,
     OkNteManager,
     HSRManager,
+    MaaFWManager,
 )
 from app.utils.constants import POWER_SIGN_MAP
 
@@ -343,6 +345,8 @@ class Task(TaskExecuteBase):
                     task_item = M9AManager(script_item)
                 elif isinstance(script_config, HSRConfig):
                     task_item = HSRManager(script_item)
+                elif isinstance(script_config, MaaFWConfig):
+                    task_item = MaaFWManager(script_item)
                 else:
                     logger.error(
                         f"不支持的脚本类型: {type(script_config).__name__}"
