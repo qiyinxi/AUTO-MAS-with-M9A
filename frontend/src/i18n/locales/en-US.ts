@@ -1527,11 +1527,8 @@ export default {
       confirmTitle: 'Switch this script to managed?',
       confirmBody:
         'This imports {path} and turns the script into a managed one. User config and queue membership are untouched.',
-      deleteSource: 'Also delete the original project folder',
-      deleteWarning:
-        '{path} will be deleted. This cannot be undone. The project contents are already stored in full in the AUTO-MAS project store.',
+      keepSource: 'The original project folder is left untouched — AUTO-MAS never deletes it. Once the managed version runs fine, you can remove it yourself.',
       failed: 'Could not switch to managed',
-      partial: 'Switched to managed, but the original folder was kept',
     },
     managed: {
       title: 'Managed project',

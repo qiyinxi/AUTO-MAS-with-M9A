@@ -1447,10 +1447,8 @@ export default {
       needPath: '请先设置 MFW 项目路径。',
       confirmTitle: '把这个脚本转为托管？',
       confirmBody: '将导入 {path} 并把该脚本改为托管形态。用户配置与队列成员不受影响。',
-      deleteSource: '同时删除原项目目录',
-      deleteWarning: '{path} 将被删除，此操作不可撤销。项目内容已经完整存入 AUTO-MAS 的项目库。',
+      keepSource: '迁移后原项目目录原样保留，AUTO-MAS 不会动它；确认托管版本能正常运行后，你可以自己删除。',
       failed: '转为托管失败',
-      partial: '已转为托管，但原目录未删除',
     },
     managed: {
       title: '托管项目',

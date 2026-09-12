@@ -22,16 +22,13 @@ export function useMaaFWManagedApi() {
 
   const fail = (message: string) => ({ ok: false as const, message })
 
-  async function migrateToManaged(payload: { scriptId: string; deleteSource: boolean }) {
+  async function migrateToManaged(payload: { scriptId: string }) {
     migrating.value = true
     try {
       const res = await MaaFwService.migrateMaafwScriptToManagedApiScriptsMaafwManagedMigratePost({
         scriptId: payload.scriptId,
-        deleteSource: payload.deleteSource,
       })
       if (res.code !== 200 || !res.data) return fail(res.message ?? '')
-      // 删原目录失败时后端仍然回 200：迁移本身已经完成，撤回去只会更糟。
-      // sourceDeleteError 留给调用方决定要不要提醒。
       return {
         ok: true as const,
         data: res.data as MaaFWManagedMigrateData,
