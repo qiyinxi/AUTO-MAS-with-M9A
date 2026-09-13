@@ -871,7 +871,7 @@ describe('模式分流', () => {
 
 describe('Runtime 随本体更新', () => {
   it('在源码换完之后、重新监督之前核对 Runtime，并按受管源码根去找钉扎', async () => {
-    syncOutcome = { status: 'upgraded', pin: { version: 'v0.1.5', sha256: 'a'.repeat(64) } }
+    syncOutcome = { status: 'upgraded', pin: { version: 'v0.1.5' } }
 
     const outcome = await updateBackendViaRuntime(
       TARGET,
@@ -898,7 +898,7 @@ describe('Runtime 随本体更新', () => {
   it('拿不到新 Runtime 不影响本体更新成功，段照样收口', async () => {
     syncOutcome = {
       status: 'failed',
-      pin: { version: 'v0.1.5', sha256: 'a'.repeat(64) },
+      pin: { version: 'v0.1.5' },
       error: '全部下载源均失败',
       code: 'RUNTIME_BINARY_DOWNLOAD_FAILED',
     }
@@ -921,7 +921,7 @@ describe('Runtime 随本体更新', () => {
 
   it('取消更新时不核对 Runtime，也不开下载', async () => {
     FakeRuntimeClient.scripts = [cancelledScript()]
-    syncOutcome = { status: 'upgraded', pin: { version: 'v0.1.5', sha256: 'a'.repeat(64) } }
+    syncOutcome = { status: 'upgraded', pin: { version: 'v0.1.5' } }
 
     const outcome = await updateBackendViaRuntime(
       TARGET,

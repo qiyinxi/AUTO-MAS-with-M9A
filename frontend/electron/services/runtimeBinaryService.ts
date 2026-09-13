@@ -5,12 +5,14 @@
  * （`repo/`）能被 `bootstrap --version` 换成新版本，Runtime 却停在装机那天的版本，于是
  * 「新本体 + 旧 Runtime」这种从未联调过的组合会在用户机器上出现。
  *
- * 这里把 Runtime 的版本钉扎在本体源码里（`repo/res/runtime.json`），让它跟着源码走：
+ * 这里把 Runtime 的版本钉扎在本体源码里（`repo/res/runtime-version.txt`），让它跟着源码走：
  *
- * 1. 发布 CI 从仓库根的 `res/runtime.json` 读版本与 SHA-256，下载并校验后捆绑进安装包；
- * 2. 本体更新把新的 `res/runtime.json` 带进 `repo/`；
+ * 1. 发布 CI 从仓库根的 `res/runtime-version.txt` 读版本，下载该 Release 的 exe、按同一
+ *    Release 的 `SHA256SUMS.txt` 校验后捆绑进安装包；
+ * 2. 本体更新把新的 `res/runtime-version.txt` 带进 `repo/`；
  * 3. 每次经 Runtime 启动后端时（`bootstrap --if-needed` 之后、`supervise` 之前）问一次磁盘上
- *    那个 exe 自己是什么版本，与钉扎不一致就下载钉扎的那一版、校验 SHA-256 后原地替换。
+ *    那个 exe 自己是什么版本，与钉扎不一致就下载钉扎的那一版、按 `SHA256SUMS.txt` 校验后
+ *    原地替换。
  *
  * 几条刻意的取舍：
  *
@@ -18,6 +20,9 @@
  *   回去，否则回退这条路仍然会得到没联调过的组合。
  * - **判身份用自报版本，不用文件哈希；哈希只用来校验下载物。** 理由见
  *   {@link readInstalledRuntimeVersion}。
+ * - **仓库里只钉版本号，哈希取自 Release 自带的 `SHA256SUMS.txt`。** 与发布 CI、本地打包
+ *   脚本同一份清单、同一种校验；仓库不再抄一份哈希，也就没有「版本改了哈希没改」的失败面。
+ *   清单和 exe 从同一个源取：代理源篡改或缓存错了，两者一起换源。
  * - **原地替换，不做多版本并存。** 校验通过的新文件直接盖回原路径，`resolveRuntimeExecutable()`
  *   与所有持有旧路径字符串的地方都不用动——`RuntimeClient` 每条命令都是重新 spawn 同一个
  *   路径。替换本身的原子性见 {@link replaceRuntimeBinary}。
@@ -40,17 +45,22 @@ const logger = getLogger('Runtime二进制')
 
 // ==================== 钉扎文件 ====================
 
-/** 钉扎文件在源码树里的相对路径，仓库根与受管 `repo/` 下同名同位。 */
-export const RUNTIME_PIN_RELATIVE_PATH = path.join('res', 'runtime.json')
+/**
+ * 钉扎文件在源码树里的相对路径，仓库根与受管 `repo/` 下同名同位。
+ *
+ * 与发布 CI（`.github/workflows/build-app.yml`）、本地打包脚本
+ * （`scripts/build-local-package.ps1`）读的是同一个文件：一行版本号，例如 `v0.1.7`。
+ */
+export const RUNTIME_PIN_RELATIVE_PATH = path.join('res', 'runtime-version.txt')
 
-/** 钉扎文件的大小上限：它只有两个字段，超过说明读到的不是它。 */
+/** 钉扎文件的大小上限：它只有一行版本号，超过说明读到的不是它。 */
 const MAX_PIN_FILE_BYTES = 64 * 1024
 
 /**
  * 版本号的合法形态：`v` 加点分数字，可跟一段预发布/构建后缀。
  *
- * 与 `runtimeUpdateService` 里那条同源——版本号会被拼进下载 URL，带 `/` 或空白的值必须在
- * 这里挡掉，不能指望远端返回 404。
+ * 与发布 CI、本地打包脚本和 `runtimeUpdateService` 里那条同源——版本号会被拼进下载 URL，
+ * 带 `/` 或空白的值必须在这里挡掉，不能指望远端返回 404。
  */
 const RUNTIME_VERSION_PATTERN = /^v\d+(\.\d+)*([-+][0-9A-Za-z.-]+)?$/
 
@@ -58,16 +68,14 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/
 
 /** 本体对 Runtime 版本的钉扎。 */
 export interface RuntimeBinaryPin {
-  /** 发布标签，同时是 Release 的 tag 与资产名里的版本段，例如 `v0.1.4`。 */
+  /** 发布标签，同时是 Release 的 tag 与资产名里的版本段，例如 `v0.1.7`。 */
   version: string
-  /** `auto-mas-runtime-<version>.exe` 的 SHA-256，小写十六进制，只用来校验下载物。 */
-  sha256: string
 }
 
 /**
  * 读取并校验钉扎文件。
  *
- * 文件缺失、JSON 损坏、字段非法一律返回 null（调用方按「本体没有钉扎」处理而不是报错）：
+ * 文件缺失、为空、版本号非法一律返回 null（调用方按「本体没有钉扎」处理而不是报错）：
  * 携带该文件之前发布的本体版本本来就没有它，回退到那些版本时不该把启动流程弄失败。
  */
 export function readRuntimeBinaryPin(sourceRoot: string): RuntimeBinaryPin | null {
@@ -76,22 +84,12 @@ export function readRuntimeBinaryPin(sourceRoot: string): RuntimeBinaryPin | nul
     const stat = fs.statSync(pinPath)
     if (!stat.isFile() || stat.size > MAX_PIN_FILE_BYTES) return null
 
-    const parsed = JSON.parse(fs.readFileSync(pinPath, 'utf8')) as {
-      version?: unknown
-      sha256?: unknown
-    }
-    const version = typeof parsed.version === 'string' ? parsed.version.trim() : ''
-    const sha256 = typeof parsed.sha256 === 'string' ? parsed.sha256.trim().toLowerCase() : ''
-
+    const version = fs.readFileSync(pinPath, 'utf8').trim()
     if (!RUNTIME_VERSION_PATTERN.test(version)) {
-      logger.warn(`${pinPath} 的 version 非法，忽略该钉扎: ${String(parsed.version)}`)
+      logger.warn(`${pinPath} 的版本号非法，忽略该钉扎: ${JSON.stringify(version)}`)
       return null
     }
-    if (!SHA256_PATTERN.test(sha256)) {
-      logger.warn(`${pinPath} 的 sha256 非法，忽略该钉扎: ${String(parsed.sha256)}`)
-      return null
-    }
-    return { version, sha256 }
+    return { version }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       logger.warn(
@@ -136,24 +134,69 @@ const RUNTIME_DOWNLOAD_PREFIXES: readonly { key: string; name: string; prefix: s
 /** Runtime 发布仓库，与发布 CI 的 `gh release download -R` 同一个。 */
 const RUNTIME_RELEASE_REPO = 'AUTO-MAS-Project/AUTO-MAS-Runtime'
 
+/** 每个 Release 自带的校验清单，与发布 CI、本地打包脚本用的是同一份。 */
+const RUNTIME_SUMS_ASSET = 'SHA256SUMS.txt'
+
 /** 一个候选下载源。 */
 export interface RuntimeBinarySource {
   key: string
   name: string
+  /** `auto-mas-runtime-<version>.exe` */
   url: string
+  /** 同一 Release 的 `SHA256SUMS.txt`，exe 的期望哈希从它里面取。 */
+  sumsUrl: string
+}
+
+/** Release 里 exe 资产的文件名，也是 `SHA256SUMS.txt` 里对应行的第二列。 */
+export function runtimeAssetName(version: string): string {
+  return `auto-mas-runtime-${version}.exe`
 }
 
 /** 按尝试顺序列出某个版本的全部候选下载地址。 */
 export function buildRuntimeBinarySources(version: string): RuntimeBinarySource[] {
-  const asset = `auto-mas-runtime-${version}.exe`
-  return RUNTIME_DOWNLOAD_PREFIXES.map(source => ({
-    key: source.key,
-    name: source.name,
-    url: `${source.prefix}/${RUNTIME_RELEASE_REPO}/releases/download/${version}/${asset}`,
-  }))
+  const asset = runtimeAssetName(version)
+  return RUNTIME_DOWNLOAD_PREFIXES.map(source => {
+    const release = `${source.prefix}/${RUNTIME_RELEASE_REPO}/releases/download/${version}`
+    return {
+      key: source.key,
+      name: source.name,
+      url: `${release}/${asset}`,
+      sumsUrl: `${release}/${RUNTIME_SUMS_ASSET}`,
+    }
+  })
 }
 
 // ==================== 校验 ====================
+
+/** 校验清单的大小上限：它每行不到百字节，超过说明拿到的是错误页之类的东西。 */
+const MAX_SUMS_FILE_BYTES = 64 * 1024
+
+/**
+ * 从 `SHA256SUMS.txt` 里找出某个资产的 SHA-256（小写十六进制）。
+ *
+ * 清单是 `sha256sum` 风格：每行「哈希、空白、文件名」，行尾可能是 CRLF。只认第二列与资产名
+ * 完全相等、第一列是 64 位十六进制的那一行；没有这一行或格式不对都返回 null，让调用方换源。
+ */
+export function parseRuntimeSums(text: string, asset: string): string | null {
+  for (const rawLine of text.split(/\r?\n/)) {
+    const columns = rawLine.trim().split(/\s+/)
+    if (columns.length < 2 || columns[1] !== asset) continue
+    const hash = columns[0].toLowerCase()
+    if (SHA256_PATTERN.test(hash)) return hash
+  }
+  return null
+}
+
+/** 读取下载到本地的清单并解析；文件过大或读不到时返回 null。 */
+function readRuntimeSums(sumsPath: string, asset: string): string | null {
+  try {
+    const stat = fs.statSync(sumsPath)
+    if (!stat.isFile() || stat.size > MAX_SUMS_FILE_BYTES) return null
+    return parseRuntimeSums(fs.readFileSync(sumsPath, 'utf8'), asset)
+  } catch {
+    return null
+  }
+}
 
 /** 流式计算 SHA-256；文件不存在或读失败返回 null。 */
 export function hashFileSha256(filePath: string): Promise<string | null> {
@@ -227,7 +270,7 @@ export interface RuntimeBinarySyncOptions {
   runtimePath: string
   /** 传给 Runtime 的 `--app-root`，这里只用于问它自己的版本。 */
   appRoot: string
-  /** 受管源码根（`<app-root>/repo`），钉扎文件在它下面的 `res/runtime.json`。 */
+  /** 受管源码根（`<app-root>/repo`），钉扎文件在它下面的 `res/runtime-version.txt`。 */
   sourceRoot: string
   onProgress?: (progress: RuntimeBinarySyncProgress) => void
   /** 本轮同步的总时间预算，缺省 {@link RUNTIME_BINARY_SYNC_BUDGET_MS}。 */
@@ -274,6 +317,15 @@ export const RUNTIME_BINARY_SYNC_BUDGET_MS = 10 * 60 * 1000
  * 所以每次尝试都写自己的临时文件（见 {@link DOWNLOAD_SUFFIX}），结束后再顺手清掉。
  */
 export const RUNTIME_BINARY_SOURCE_TIMEOUT_MS = RUNTIME_BINARY_SYNC_BUDGET_MS / 2
+
+/**
+ * 校验清单的下载时长上限。
+ *
+ * 清单不到一百字节，一个源连清单都拿不下来就没必要再等它的 exe；单独给一个短上限，让慢源
+ * 尽早出局，而不是白白吃掉一份 {@link RUNTIME_BINARY_SOURCE_TIMEOUT_MS}。同样计入总预算，
+ * 并且不超过单源上限。
+ */
+export const RUNTIME_BINARY_SUMS_TIMEOUT_MS = 30 * 1000
 
 const defaultDownload: NonNullable<RuntimeBinarySyncOptions['download']> = (
   url,
@@ -382,52 +434,85 @@ async function runSync(options: RuntimeBinarySyncOptions): Promise<RuntimeBinary
 
 type DownloadOutcome = { success: true; downloadPath: string } | { success: false; error: string }
 
-/** 逐个源尝试下载并校验 SHA-256，任一源拿到正确文件即返回该文件的路径。 */
+/**
+ * 逐个源尝试：先取该源的 `SHA256SUMS.txt` 得到期望哈希，再下 exe 并比对；任一源拿到正确
+ * 文件即返回该文件的路径。清单取不到、格式不对、exe 对不上，都只是换下一个源。
+ */
 async function downloadPinned(
   pin: RuntimeBinaryPin,
   runtimePath: string,
   options: RuntimeBinarySyncOptions
 ): Promise<DownloadOutcome> {
   const download = options.download ?? defaultDownload
+  const asset = runtimeAssetName(pin.version)
   const sources = buildRuntimeBinarySources(pin.version)
   const failures: string[] = []
   const deadline = Date.now() + (options.budgetMs ?? RUNTIME_BINARY_SYNC_BUDGET_MS)
   const sourceTimeoutMs = options.sourceTimeoutMs ?? RUNTIME_BINARY_SOURCE_TIMEOUT_MS
+  const sumsTimeoutMs = Math.min(sourceTimeoutMs, RUNTIME_BINARY_SUMS_TIMEOUT_MS)
+
+  const budgetExhausted = (): boolean => {
+    if (deadline - Date.now() > 0) return false
+    failures.push('已用满本轮时间预算，剩余下载源不再尝试')
+    logger.warn('Runtime 下载已用满时间预算，本轮放弃')
+    return true
+  }
 
   for (const [index, source] of sources.entries()) {
-    const remainingMs = deadline - Date.now()
-    if (remainingMs <= 0) {
-      failures.push('已用满本轮时间预算，剩余下载源不再尝试')
-      logger.warn('Runtime 下载已用满时间预算，本轮放弃')
-      break
-    }
+    if (budgetExhausted()) break
 
     const label = `${source.name}（${index + 1}/${sources.length}）`
     const message = `正在从 ${label} 下载 Runtime ${pin.version}`
-    logger.info(`尝试从 ${label} 下载 Runtime ${pin.version}: ${source.url}`)
     options.onProgress?.({ progress: 0, message })
 
+    // 第一步：校验清单。它的进度不往上报——几十字节瞬间到 100% 再回到 0 只会让界面跳动。
+    logger.info(`尝试从 ${label} 获取 Runtime ${pin.version} 的校验清单: ${source.sumsUrl}`)
+    const sumsPath = nextDownloadPath(runtimePath)
+    const sumsResult = await downloadWithTimeout(
+      download,
+      source.sumsUrl,
+      sumsPath,
+      Math.min(deadline - Date.now(), sumsTimeoutMs),
+      () => {}
+    )
+    if (!sumsResult.success) {
+      failures.push(`${source.name}: 校验清单获取失败（${sumsResult.error}）`)
+      // 超时放弃的那次仍在后台写自己的文件，等它自己结束时再清；这里删了也会被写回来。
+      if (!sumsResult.timedOut) removeQuietly(sumsPath)
+      continue
+    }
+    const expected = readRuntimeSums(sumsPath, asset)
+    removeQuietly(sumsPath)
+    if (!expected) {
+      // 代理源可能把错误页当正文返回；也可能该 Release 缺清单或清单里没有这个资产。
+      failures.push(`${source.name}: 校验清单里没有 ${asset} 的有效 SHA-256`)
+      logger.warn(`${label} 的校验清单不可用，换下一个源`)
+      continue
+    }
+
+    // 第二步：exe 本体。清单可能已经吃掉一截预算，重新算一次剩余时间。
+    if (budgetExhausted()) break
+    logger.info(`尝试从 ${label} 下载 Runtime ${pin.version}: ${source.url}`)
     const downloadPath = nextDownloadPath(runtimePath)
     const result = await downloadWithTimeout(
       download,
       source.url,
       downloadPath,
-      Math.min(remainingMs, sourceTimeoutMs),
+      Math.min(deadline - Date.now(), sourceTimeoutMs),
       progress => options.onProgress?.({ progress: progress.progress, message })
     )
     if (!result.success) {
       failures.push(`${source.name}: ${result.error}`)
-      // 超时放弃的那次仍在后台写自己的文件，等它自己结束时再清；这里删了也会被写回来。
       if (!result.timedOut) removeQuietly(downloadPath)
       continue
     }
 
     const actual = await hashFileSha256(downloadPath)
-    if (actual === pin.sha256) return { success: true, downloadPath }
+    if (actual === expected) return { success: true, downloadPath }
 
-    // 代理源可能把错误页当正文返回，也可能是发布资产被换过；两种都只能换下一个源。
-    failures.push(`${source.name}: SHA-256 不匹配（得到 ${actual ?? '不可读'}）`)
-    logger.warn(`${label} 下载的文件校验失败，换下一个源`)
+    // 清单与 exe 来自同一个源却对不上：该源缓存错乱或篡改了其中一个，只能换下一个源。
+    failures.push(`${source.name}: SHA-256 不匹配（清单 ${expected}，得到 ${actual ?? '不可读'}）`)
+    logger.warn(`${label} 下载的文件与其校验清单不符，换下一个源`)
     removeQuietly(downloadPath)
   }
 
