@@ -11,9 +11,11 @@ import type {
   M9AConfig,
   BetterGIConfig,
   ZzzOdConfig,
+  BAAHConfig,
 } from '@/api'
 import type {
   AutoEssenceLocation,
+  AutoEssenceMenu,
   MaaEndAutoCollectCommonRoute,
   MaaEndAutoCollectMode,
   MaaEndAutoCollectRoute,
@@ -36,11 +38,13 @@ export type ScriptType =
   | 'HSR'
   | 'BetterGI'
   | 'ZzzOd'
+  | 'BAAH'
 
 export type OkwwScriptConfig = OkwwConfig
 export type OkNteScriptConfig = OkNteConfig
 export type BetterGIScriptConfig = BetterGIConfig
 export type ZzzOdScriptConfig = ZzzOdConfig
+export type BAAHScriptConfig = BAAHConfig
 // MAA脚本配置
 export interface MAAScriptConfig {
   Info: {
@@ -158,6 +162,8 @@ export type MaaEndTaskConfig = MaaEndTaskSwitchConfig & {
   CrisisDrills: ProtocolSpaceTaskValue
   RewardsSetOption: RewardSetOption
   AutoEssenceSpecifiedLocation: AutoEssenceLocation
+  AutoEssenceMenu: AutoEssenceMenu
+  AutoEssenceTargetWeapons: string[]
 }
 
 // MaaEnd脚本配置
@@ -315,10 +321,23 @@ export interface MaaFWScriptConfig {
 
 export type MaaFWTaskOptionValue = string | string[] | Record<string, string>
 
+/**
+ * 三个字段的 key 都是「任务实例 id」而不是任务名：同一个任务可以被重复加入队列，
+ * 首份的 id 就是裸任务名，第二份起是 `<任务名>__MAS_DUP__<随机后缀>`。
+ */
 export interface MaaFWTaskSnapshot {
   taskOrder: string[]
   taskChecked: Record<string, boolean>
   taskOptions: Record<string, Record<string, MaaFWTaskOptionValue>>
+}
+
+/** 任务队列里的一项：同名任务可以有多份，靠 `id` 区分。 */
+export interface MaaFWQueuedTaskItem {
+  id: string
+  task: MaaFWTaskInfo
+  /** 同名副本中的序号，从 1 起；仅在 `copyTotal > 1` 时需要显示 */
+  copyIndex: number
+  copyTotal: number
 }
 
 export interface MaaFWUserConfig {
@@ -539,6 +558,7 @@ export interface Script {
     | MaaFWScriptConfig
     | HSRConfig
     | BetterGIConfig
+    | BAAHConfig
   users: User[]
 }
 
@@ -603,6 +623,7 @@ export interface User {
     IfFight: boolean
     IfMall: boolean
     IfAward: boolean
+    IfSwitchTheme: boolean
     IfReclamation: boolean
     IfRecruit: boolean
     IfStartUp: boolean
@@ -619,6 +640,8 @@ export interface User {
     CrisisDrills?: MaaEndTaskConfig['CrisisDrills']
     RewardsSetOption?: MaaEndTaskConfig['RewardsSetOption']
     AutoEssenceSpecifiedLocation?: MaaEndTaskConfig['AutoEssenceSpecifiedLocation']
+    AutoEssenceMenu?: MaaEndTaskConfig['AutoEssenceMenu']
+    AutoEssenceTargetWeapons?: MaaEndTaskConfig['AutoEssenceTargetWeapons']
   }
   QFluentWidgets: {
     ThemeColor: string
@@ -644,6 +667,7 @@ export interface AddScriptResponse {
     | HSRScriptConfig
     | BetterGIScriptConfig
     | ZzzOdScriptConfig
+    | BAAHScriptConfig
 }
 
 // 脚本索引项
@@ -661,6 +685,7 @@ export interface ScriptIndexItem {
     | 'HSRConfig'
     | 'BetterGIConfig'
     | 'ZzzOdConfig'
+    | 'BAAHConfig'
 }
 
 // 获取脚本API响应
@@ -682,6 +707,7 @@ export interface GetScriptsResponse {
     | HSRScriptConfig
     | BetterGIScriptConfig
     | ZzzOdScriptConfig
+    | BAAHScriptConfig
   >
 }
 
@@ -702,6 +728,7 @@ export interface ScriptDetail {
     | HSRConfig
     | BetterGIConfig
     | ZzzOdConfig
+    | BAAHConfig
   users?: User[]
   createTime?: string
 }

@@ -305,6 +305,9 @@ export default {
     maaCustomInfrastPlan: 'カスタム基地のシフト',
     maaCustomInfrastPlanHint: 'インポート済みの設定から使用するシフトを選びます',
     maaDaily: '日課タスク',
+    maaSwitchTheme: 'テーマ変更',
+    maaSwitchThemeHint:
+      'テーマ名は MAA の「テーマ変更」タスクで設定します。複数指定すると実行ごとに 1 つランダムに切り替わり、空の場合はスキップされます。MAA v6.17.3 以降が必要です',
     maaRoguelike: '自動ローグライク',
     maaRoguelikeHint: '長時間の実行はタイムアウトと誤判定される場合があります',
     maaGreenTicketStore: '緑チケット商店',
@@ -343,6 +346,7 @@ export default {
     item: 'アイテム',
     extractFieldsFromWindow: '開始／終了の正規表現で囲んだ範囲からフィールドを抽出します',
     targetStock: '目標在庫',
+    stock: '在庫',
     customBaseLayout: 'カスタム基地',
     resource: 'リソース',
     preset: 'プリセット',
@@ -352,7 +356,6 @@ export default {
     stageP0AlreadyExists: 'ステージ「{p0}」はすでに存在します',
     configurationSessionUserP0: 'ユーザー {p0} の設定セッションがタイムアウトしました',
     maaConfigurationFailedP0: 'MAA の設定に失敗しました: {p0}',
-    okNteConfigurationFailed: 'OK-NTE の設定に失敗しました: {p0}',
     srcConfigurationFailedP0: 'SRC の設定に失敗しました: {p0}',
     okWwSetupFailed: 'ok-ww の設定に失敗しました: {p0}',
     p0NotValidJson: '{p0} は有効な JSON ではありません',
@@ -368,14 +371,12 @@ export default {
     loadedP0P1Log: 'ログを {p0} 行読み込みました（全 {p1} 行）',
     startedP0MaaendConfiguration: '{p0} の MaaEnd 設定を開始しました',
     importedP0ConfigurationFile: '{p0}の設定ファイルをインポートしました',
-    startedOkNteSetup: 'ユーザー {p0} の OK-NTE 設定を開始しました',
     startedMaaSetupUser: 'ユーザー {p0} の MAA 設定を開始しました',
     startedSrcSetupUser: 'ユーザー {p0} の SRC 設定を開始しました',
     startedGeneralSetupUser: 'ユーザー {p0} の汎用設定を開始しました',
     openedOkWwSettings: '{p0} の ok-ww 設定を開きました',
     readP0: '{p0} を読み込みました',
     addedP0Tasks: 'タスクを {p0} 件追加しました',
-    okNteConfigurationUser: 'ユーザー {p0} の OK-NTE 設定が完了しました',
     configurationSessionUserP02:
       'ユーザー {p0} の設定セッションが 30 分でタイムアウトしました。設定を自動保存しています...',
     configurationUserP0Was: 'ユーザー {p0} の設定を保存しました',
@@ -664,7 +665,6 @@ export default {
     done: '完了',
     wutheringWavesWillBe:
       '選択したサーバーで鳴潮の更新を確認・実行します。数 GB のダウンロードが発生する場合があるため、ゲームが起動していないことを確認してください',
-    saved: '保存済み',
     turnAutomaticRelicSalvage:
       '遺物周回でバッグがいっぱいになって中断しないよう、ゲーム内で遺物の自動分解を有効にしておくことをおすすめします。',
     thisScriptDeclaresNo:
@@ -676,7 +676,6 @@ export default {
     run: '実行',
     folder: 'フォルダ',
     runOnceNewUser: '新規ユーザーは 1 回実行する',
-    youHaveUnsavedChanges2: '保存していない変更があります',
     noMatch: '一致なし',
     checkUpdates2: '更新を確認',
     emulator2: 'エミュレータ',
@@ -881,8 +880,6 @@ export default {
     okNteScriptConfiguration: 'OK-NTE スクリプト設定',
     okNtePath: 'OK-NTE のパス',
     okNtePathMatched: 'OK-NTE のパスを自動で検出しました',
-    okNteConfigurationSession:
-      'OK-NTE の設定セッションがタイムアウトしました。設定を自動保存しています',
     okNteConfiguration: 'OK-NTE の設定',
     howPcGameLaunched: 'PC 版ゲームの起動方式',
     sraPath: 'SRA のパス',
@@ -1009,7 +1006,6 @@ export default {
     onlyProcessesStartedBy:
       'このタスクが起動し、MAS が所有するプロセスのみを終了します。手動で開いたプロセスを誤って終了することはありません',
     optional: '任意',
-    couldNotStartOk: 'OK-NTE の設定を開始できませんでした',
     couldNotStartMaa: 'MAA の設定を開始できませんでした',
     couldNotStartSrc: 'SRC の設定を開始できませんでした',
     checkGameUpdateBefore: '起動前にゲームの更新を確認',
@@ -1121,6 +1117,56 @@ export default {
       '日課代行タスク実行中、MAA のログがこの時間だけ変化しなければタイムアウトとみなします',
     update: '更新を実行',
     runLimits: '実行の制限',
+    hsrExternalUpdate: '外部スクリプトの更新',
+    hsrUpdateSectionHint:
+      '三月七アシスタントと SRA はご自身でインストールしたサードパーティ製ツールのため、MAS は既定ではそのフォルダを書き換えません。自動更新は今回のタスクがすべて終わった後にのみ行われ、実行中のタスクをダウンロード待ちにすることはありません。有効化後は一巡完了してから初めて更新されます。すぐ更新したい場合は下の手動ボタンをお使いください。',
+    hsrUpdateModeTip:
+      'オフ：自動更新しない。タスク完了後：今回のユーザー全員が正常に実行を終えてから確認・更新します。タスクがキャンセル・失敗・設定チェック未通過の場合は更新しません。更新に失敗した場合は元に戻してスキップし、今回の結果には影響しません。元に戻すことにも失敗した場合のみ、今回のタスクを異常扱いにします',
+    hsrUpdateModeOff: 'オフ',
+    hsrUpdateModeAfterRun: 'タスク完了後',
+    hsrUpdateChannel: '更新チャンネル',
+    hsrUpdateChannelTip: '2 つのスクリプトで共通。ベータ版は不安定な場合があります',
+    hsrUpdateChannelStable: '安定版',
+    hsrUpdateChannelBeta: 'ベータ版',
+    hsrUpdateM7ASource: '三月七アシスタントのダウンロード元',
+    hsrUpdateM7ASourceTip:
+      '三月七アシスタントは GitHub と MirrorChyan からのみ入手できます。MirrorChyan を選ぶ場合は CDK が必須で、CDK が使えないときはエラーでスキップされ、自動的に GitHub へは切り替わりません',
+    hsrUpdateSRASource: 'SRA のダウンロード元',
+    hsrUpdateSRASourceTip:
+      'AUTO-MAS ダウンロードサイトは CDK 不要・帯域制限なしで、SRA の既定です。MirrorChyan を選ぶ場合は CDK が必須で、CDK が使えないときはエラーでスキップされ、自動的に GitHub へは切り替わりません',
+    hsrUpdateSourceAutoSite: 'AUTO-MAS ダウンロードサイト（CDK 不要）',
+    hsrUpdateSourceGithub: 'GitHub',
+    hsrUpdateSourceMirrorChyan: 'MirrorChyan（CDK 必須）',
+    hsrUpdateCdk: 'MirrorChyan CDK',
+    hsrUpdateCdkTip:
+      '三月七アシスタント / SRA の更新にのみ使い、全体設定の CDK とは無関係です。いずれかのダウンロード元に MirrorChyan を選んだ場合は必須です',
+    hsrUpdateCdkPlaceholder: 'MirrorChyan CDK を入力してください',
+    hsrUpdateCdkHint:
+      'いずれかのダウンロード元に MirrorChyan を選んだ場合は必須です。MirrorChyan 公式サイトで取得できます',
+    hsrUpdateCdkMissing:
+      'ダウンロード元に MirrorChyan を選んでいますが CDK が未入力です。更新時はエラーでスキップされ、GitHub へは自動的に切り替わりません',
+    hsrUpdateCdkGetLink: 'MirrorChyan CDK を取得',
+    hsrUpdateManual: '手動更新',
+    hsrUpdateManualTip:
+      '自動更新は今回のタスクが終わるまで待ちます。今すぐ更新したい場合はここから操作してください。タスク実行中は更新できません',
+    hsrUpdateNeedPath:
+      '三月七アシスタントまたは SRA のパスを設定すると、ここに確認 / 更新ボタンが表示されます',
+    hsrUpdateEngineM7A: '三月七アシスタント',
+    hsrUpdateEngineSRA: 'SRA',
+    hsrUpdateInstalledVersion: 'インストール済み：{version}',
+    hsrUpdateVersionUnknown: 'バージョン不明',
+    hsrUpdateCheckNow: '更新を確認',
+    hsrUpdateApplyNow: '今すぐ更新',
+    hsrUpdateDone: '{engine} を {version} に更新しました',
+    hsrUpdateUpToDate: '{engine} は最新版です（{version}）',
+    hsrUpdateAvailable:
+      '{engine} の新しいバージョン {latest} があります（現在 {current}）。「今すぐ更新」でインストールできます',
+    hsrUpdateNotInstallable:
+      '{engine} の新しいバージョン {version} がありますが、現在のダウンロード元からはインストールできません',
+    hsrUpdateNotInstallableHint:
+      '多くの場合 MirrorChyan CDK が未設定か使用できない状態です。CDK を確認するか、別のダウンロード元に切り替えてください',
+    hsrUpdateCheckFailed: '{engine} の更新確認に失敗しました',
+    hsrUpdateRequestFailed: '{engine} の更新リクエストに失敗しました',
     calyxCrimson: '疑似花萼（赤）',
     calyxCrimsonTraceMaterials: '疑似花萼（赤）：軌跡素材（金と赤は別々に保存されます）',
     calyxGolden: '疑似花萼（金）',
@@ -1164,7 +1210,6 @@ export default {
     maximumLines: '最大行数',
     youHaveUnsavedChanges: '保存していない変更があります',
     server: 'サーバー',
-    noActiveOkNte: '有効な OK-NTE 設定セッションがありません',
     localProjectDirectory: 'ローカルのプロジェクトフォルダ',
     readExtractionPatternReference: 'ログ抽出式のリファレンスを見る',
     rootPathSelected: 'ルートパスを選択しました',
@@ -1754,6 +1799,7 @@ export default {
     start: '起動',
     stop: '停止',
     hide: 'ウィンドウを隠す',
+    openStore: 'ゲームセンターを開く',
     settings: '設定',
     settingsTitle: 'インスタンス設定',
     settingsHint:
@@ -1832,6 +1878,7 @@ export default {
       creating: '作成中',
       deleting: '削除中',
       operating: '処理中',
+      openingStore: '起動中',
     },
     configGuard: '設定ガード',
     guardTip:
@@ -1866,6 +1913,8 @@ export default {
       batchPartial: '成功 {ok} 台、失敗 {fail} 台',
       batchFailed: '一括設定に失敗しました',
       operateFailed: 'デバイスの操作に失敗しました',
+      storeOpened: 'ゲームセンターを開きました',
+      storeOpenFailed: 'ゲームセンターを開けませんでした',
       createOk: 'インスタンスを作成しました（デバイス番号 #{slot}）',
       createFailed: 'インスタンスの作成に失敗しました',
       deleteOk: 'インスタンスを削除しました',
@@ -2255,12 +2304,8 @@ export default {
       networkFailed: '通信に失敗しました。接続を確認してください',
     },
     quickStart: {
-      mockDaily: 'キュー - 毎日の自動化',
-      mockGeneral: 'スクリプト - 汎用チェック',
-      mockNightly: 'キュー - 夜間バッチ',
-      listUnavailable: 'タスク一覧を取得できないため、仮のタスクを表示しています',
+      listUnavailable: 'タスク一覧を取得できません。ドロップダウンを開き直すと再試行します',
       selectTask: '先にタスクを選んでください',
-      mockNotStartable: 'これは仮のタスクです。実際のタスク一覧が読み込まれると起動できます',
       fallbackLabel: 'ホームのクイックタスク',
       started: 'タスクを開始しました',
       startedCount: '{p0}/{p1} 件のタスクを開始しました',
@@ -2278,6 +2323,8 @@ export default {
     firstRunEstimate: '初回の準備には数分かかります。ほかのことをしていて大丈夫です',
     slowHint: 'いつもより時間がかかっています。バックエンドの応答を待っています',
     viewLog: 'ログを見る',
+    transferSource: '{source} から',
+    probeUnavailable: '{source} は利用できません',
   },
   init: {
     failure: {
@@ -2730,6 +2777,7 @@ export default {
       OkNte: 'ok-nte',
       HSR: 'HSR',
       BetterGI: 'BetterGI',
+      BAAH: 'BAAH',
       General: '汎用',
     },
     typeDesc: {
@@ -2742,6 +2790,7 @@ export default {
       OkNte: 'Neverness to Everness（OK-NTE）の自動化。-t/-e でタスクを起動',
       HSR: '崩壊：スターレイル — 三月なのか / SRA の 2 種類に対応',
       BetterGI: '原神 BGI 専用の一条龍自動化スクリプト',
+      BAAH: 'ブルーアーカイブのデイリータスク自動化。複数アカウント（インスタンス）管理に対応',
       General: 'ログファイルを出力するあらゆるスクリプトに使える汎用の自動化',
     },
     mask: {
@@ -2850,6 +2899,7 @@ export default {
         OkNte: 'Neverness to Everness（OK-NTE）の自動化',
         HSR: '三月なのか / SRA の 2 種類に対応',
         BetterGI: '原神 BGI 専用の一条龍自動化スクリプト',
+        BAAH: 'ブルーアーカイブのデイリータスク自動化と複数アカウント管理',
       },
     },
     toast: {

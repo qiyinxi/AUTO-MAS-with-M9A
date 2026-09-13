@@ -23,6 +23,7 @@ from app.models.emulator import DeviceBase, DeviceInfo
 from app.models.schema import WSTaskNoticeData
 from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.services import Notify
+from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.task.MaaFW.tools.core.automas_maafw_controller_win32.service import (
     MaaFWWin32ControllerService,
@@ -53,7 +54,6 @@ from app.utils.paths import SOURCE_ROOT
 
 from .game_package import resolve_game_package
 from .project_path import release_project_path, try_reserve_project_path
-from .runtime_route import MaaFWManagedExecutionRoute, managed_execution_route
 
 logger = get_logger("MaaFW 插件自动代理")
 
@@ -345,10 +345,6 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         self._cached_adb_profile: MaaFWAdbControlProfile | None = None
         self.maafw_runtime_pool_root: Path | None = None
         self.maafw_runtime_pool_id: str | None = None
-        self.maafw_managed_execution = False
-        self.maafw_managed_project: Mapping[str, Any] | None = None
-        self.maafw_managed_runtime_binding: Mapping[str, Any] | None = None
-        self.maafw_managed_route: MaaFWManagedExecutionRoute | None = None
 
     async def check(self) -> str:
         proxy_times = (
@@ -1117,17 +1113,6 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             raise RuntimeError(
                 "MaaFW 运行任务缺少由 maafw.runtime_pool.v1 注入的 root/poolId"
             )
-        if self.maafw_managed_execution:
-            managed_route = self.maafw_managed_route
-            if managed_route is None:
-                raise RuntimeError("MaaFW Managed 执行缺少已预校验的可信 runtime route")
-        else:
-            managed_route = managed_execution_route(
-                managed_execution=False,
-                project=self.maafw_managed_project,
-                runtime_binding=self.maafw_managed_runtime_binding,
-                expected_pool_id=runtime_pool_id,
-            )
         native_debug_log_path = self.project_path / "debug" / "maafw.log"
         (
             native_debug_log_offset,
@@ -1145,17 +1130,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 service.prepare_environment,
                 self.project_path,
                 runtime_pool_root=runtime_pool_root,
-                runtime_requirements=(
-                    managed_route.runtime_requirements if managed_route else None
-                ),
-                runtime_requirement=(
-                    managed_route.maafw_requirement if managed_route else None
-                ),
-                runtime_id=managed_route.runtime_id if managed_route else None,
                 runtime_pool_id=runtime_pool_id,
-                runtime_python_constraint=(
-                    managed_route.python_constraint if managed_route else None
-                ),
                 lease_owner=f"automas-script-maafw:{self.script_info.script_id}",
                 lease_ttl_seconds=max(
                     600,
@@ -1189,16 +1164,8 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         worker_id: str | None = None
         try:
             runner_plan = self.run_plan
-            if runner_environment.maafw_version or managed_route is not None:
-                runner_plan = self.run_plan.model_copy(deep=True)
-            if managed_route is not None:
-                runner_plan.managedSharedAgentDependenciesComplete = (
-                    managed_route.shared_agent_dependencies_complete
-                )
-                runner_plan.managedPythonAgentIndexes = list(
-                    managed_route.managed_python_agent_indexes
-                )
             if runner_environment.maafw_version:
+                runner_plan = self.run_plan.model_copy(deep=True)
                 runner_plan.piEnv["PI_CLIENT_MAAFW_VERSION"] = (
                     f"v{runner_environment.maafw_version.lstrip('v')}"
                 )
@@ -1517,6 +1484,10 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         records = self._load_period_task_records()
         runnable_tasks = []
         skipped_tasks = []
+        # 周期限制按任务算，不按队列里的份数算：同一个任务被重复加入队列时，
+        # 本轮也只安排一次。否则「仅一次」在一轮内形同虚设，而且先跑的那份一
+        # 成功就会把整个任务名记成已完成，还没跑的副本会被当作已完成跳过。
+        period_limited_seen: set[str] = set()
         for task in plan.tasks:
             daily_done = (
                 task.name in daily_tasks
@@ -1546,6 +1517,22 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     )
                 )
                 continue
+            if (
+                task.name in daily_tasks
+                or task.name in weekly_tasks
+                or task.name in monthly_tasks
+            ):
+                if task.name in period_limited_seen:
+                    skipped_tasks.append(
+                        MaaFWSkippedTaskPlan(
+                            name=task.name,
+                            label=task.label,
+                            entry=task.entry,
+                            reason="本轮已安排一次",
+                        )
+                    )
+                    continue
+                period_limited_seen.add(task.name)
             runnable_tasks.append(task)
         return plan.model_copy(
             update={
@@ -1619,14 +1606,10 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         await self.cur_user_config.set("Data", "LastProxyStatus", "运行中")
 
     async def _close_emulator(self) -> None:
-        if not self.opened_emulator or self.emulator_manager is None:
+        if not self.opened_emulator:
             return
         try:
-            await self.emulator_manager.close(
-                self.script_config.get("Emulator", "Index")
-            )
-        except Exception as exc:
-            logger.warning(f"MaaFW 插件清理模拟器失败: {exc}")
+            await close_emulator(self, log_failure=False)
         finally:
             self.opened_emulator = False
 
@@ -2343,13 +2326,23 @@ def _format_run_overview_log(
         else plan.projectName
     )
     project_version = str(plan.piEnv.get("PI_VERSION") or "").strip() or "未知"
-    return (
+    overview = (
         "MaaFW 运行总览: "
         f"project={project_name}; version={project_version}; "
         f"controller={plan.controllerName}; resource={plan.resourceName}; "
         f"preset={selected_preset or '自定义'}; "
         f"enabled_tasks({len(plan.tasks)})={task_names}"
     )
+    if not plan.skippedTasks:
+        return overview
+
+    # 被跳过的任务此前没有任何出口，用户把任务加进队列却看不出它为什么没跑。
+    skipped_names = " -> ".join(
+        f"{_task_display_name(task)}({task.reason})" for task in plan.skippedTasks
+    )
+    if len(skipped_names) > _RUN_OVERVIEW_LOG_VALUE_LIMIT:
+        skipped_names = skipped_names[:_RUN_OVERVIEW_LOG_VALUE_LIMIT] + "..."
+    return f"{overview}; skipped_tasks({len(plan.skippedTasks)})={skipped_names}"
 
 
 def _current_period_keys(now: datetime | None = None) -> tuple[str, str, str]:

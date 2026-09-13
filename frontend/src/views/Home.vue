@@ -61,6 +61,7 @@
             :command-author="commandAuthor"
             :scheduler-task-options="schedulerTaskOptions"
             :scheduler-tasks-loading="schedulerTasksLoading"
+            :scheduler-tasks-unavailable="schedulerTasksUnavailable"
             :starting-home-task="startingHomeTask"
             @update:selected-task-ids="updateSelectedHomeTaskIds"
             @dropdown-visible-change="onSchedulerDropdownVisibleChange"
@@ -233,6 +234,7 @@ const {
   commandTitle,
   commandAuthor,
   schedulerTasksLoading,
+  schedulerTasksUnavailable,
   startingHomeTask,
   schedulerTaskOptions,
   selectedHomeTaskIds,
@@ -316,6 +318,29 @@ const activityBanners = computed<ActivityBannerItem[]>(() =>
     }
   })
 )
+
+// 只有模块可见时才拉活动数据；布局要等 loadHomeLayout 读回来才知道哪些模块被隐藏，
+// 所以以 layoutReady 为闸；隐藏时停掉重试定时器，卸载时由各源的 onScopeDispose 收尾
+const activitySourcesByModule: Array<[HomeModuleKey, { start: () => void; stop: () => void }]> = [
+  ['starrail', starRailSource],
+  ['genshin', genshinSource],
+  ['zenless', zenlessSource],
+  ['wutheringwaves', wutheringWavesSource],
+  ['nte', nevernessToEvernessSource],
+  ['reverse1999', reverse1999Source],
+  ['endfield', endfieldSource],
+]
+for (const [moduleKey, source] of activitySourcesByModule) {
+  watch(
+    // 各游戏活动源现在都收在「活动轮播」模块里：整个轮播被隐藏时同样不拉数据
+    () =>
+      layoutReady.value &&
+      isHomeModuleVisible('activities') &&
+      isHomeModuleVisible(moduleKey),
+    visible => (visible ? source.start() : source.stop()),
+    { immediate: true }
+  )
+}
 
 const greeting = computed(() => {
   const hour = new Date().getHours()

@@ -303,6 +303,9 @@ export default {
     maaCustomInfrastPlan: 'Custom infrastructure shift',
     maaCustomInfrastPlanHint: 'Pick the shift to use from the imported config',
     maaDaily: 'Daily tasks',
+    maaSwitchTheme: 'Switch theme',
+    maaSwitchThemeHint:
+      'Theme names are configured in MAA\'s "Switch Theme" task. Multiple names are picked at random each run; an empty list skips the task. Requires MAA v6.17.3 or later',
     maaRoguelike: 'Integrated Strategies',
     maaRoguelikeHint: 'A long run may be mistaken for a timeout',
     maaGreenTicketStore: 'Green Ticket Store',
@@ -341,6 +344,7 @@ export default {
     item: 'Item',
     extractFieldsFromWindow: 'Extract fields from a window bounded by the start and end patterns',
     targetStock: 'Target stock',
+    stock: 'Stock',
     customBaseLayout: 'Custom base layout',
     resource: 'Resource',
     preset: 'Preset',
@@ -350,7 +354,6 @@ export default {
     stageP0AlreadyExists: 'Stage "{p0}" already exists',
     configurationSessionUserP0: 'The configuration session for user {p0} timed out',
     maaConfigurationFailedP0: 'MAA configuration failed: {p0}',
-    okNteConfigurationFailed: 'OK-NTE configuration failed: {p0}',
     srcConfigurationFailedP0: 'SRC configuration failed: {p0}',
     okWwSetupFailed: 'ok-ww setup failed: {p0}',
     p0NotValidJson: '{p0} is not valid JSON',
@@ -367,14 +370,12 @@ export default {
     loadedP0P1Log: 'Loaded {p0} of {p1} log lines',
     startedP0MaaendConfiguration: 'Started the {p0} MaaEnd configuration',
     importedP0ConfigurationFile: 'Imported the {p0} configuration file',
-    startedOkNteSetup: 'Started the OK-NTE setup for user {p0}',
     startedMaaSetupUser: 'Started the MAA setup for user {p0}',
     startedSrcSetupUser: 'Started the SRC setup for user {p0}',
     startedGeneralSetupUser: 'Started the general setup for user {p0}',
     openedOkWwSettings: 'Opened the ok-ww settings for {p0}',
     readP0: 'Read {p0}',
     addedP0Tasks: 'Added {p0} tasks',
-    okNteConfigurationUser: 'The OK-NTE configuration for user {p0} is done',
     configurationSessionUserP02:
       'The configuration session for user {p0} timed out after 30 minutes; saving automatically...',
     configurationUserP0Was: 'The configuration for user {p0} was saved',
@@ -705,7 +706,6 @@ export default {
     done: 'Done',
     wutheringWavesWillBe:
       'Wuthering Waves will be checked and updated on the selected server. The update may download several GB, so make sure the game is not running',
-    saved: 'Saved',
     turnAutomaticRelicSalvage:
       'Turn on automatic relic salvage in game, so a full bag does not interrupt relic farming.',
     thisScriptDeclaresNo: 'This script declares no version, so updates cannot be checked',
@@ -716,7 +716,6 @@ export default {
     run: 'Run',
     folder: 'Folder',
     runOnceNewUser: 'Run once for a new user',
-    youHaveUnsavedChanges2: 'You have unsaved changes',
     noMatch: 'No match',
     checkUpdates2: 'Check for updates',
     emulator2: 'Emulator',
@@ -920,8 +919,6 @@ export default {
     okNteScriptConfiguration: 'OK-NTE script configuration',
     okNtePath: 'OK-NTE path',
     okNtePathMatched: 'OK-NTE path matched automatically',
-    okNteConfigurationSession:
-      'The OK-NTE configuration session timed out; saving the configuration',
     okNteConfiguration: 'OK-NTE configuration',
     howPcGameLaunched: 'How the PC game is launched',
     sraPath: 'SRA path',
@@ -1049,7 +1046,6 @@ export default {
     onlyProcessesStartedBy:
       'Only processes started by this task and owned by MAS are closed; processes you opened yourself are left alone',
     optional: 'Optional',
-    couldNotStartOk: 'Could not start the OK-NTE configuration',
     couldNotStartMaa: 'Could not start the MAA configuration',
     couldNotStartSrc: 'Could not start the SRC configuration',
     checkGameUpdateBefore: 'Check for a game update before launching',
@@ -1159,6 +1155,56 @@ export default {
       'Treat the daily run as timed out when the MAA log has not changed for this long',
     update: 'Update',
     runLimits: 'Run limits',
+    hsrExternalUpdate: 'External script updates',
+    hsrUpdateSectionHint:
+      'March7th Assistant and SRA are third-party tools you installed yourself, so MAS never rewrites their folders unless you turn this on. Auto update only runs after the whole run has finished and never makes the current run wait for a download; after enabling it, a full run has to complete before the first update happens. Use the manual buttons below to update right away.',
+    hsrUpdateModeTip:
+      'Off: never update automatically; After run: check and update once every user in this run has finished normally. No update happens if the run was cancelled, failed, or did not pass the config check. A failed update is rolled back and skipped without affecting the run result; only if the rollback itself fails is the run marked abnormal',
+    hsrUpdateModeOff: 'Off',
+    hsrUpdateModeAfterRun: 'After run',
+    hsrUpdateChannel: 'Update channel',
+    hsrUpdateChannelTip: 'Shared by both scripts; beta builds may be unstable',
+    hsrUpdateChannelStable: 'Stable',
+    hsrUpdateChannelBeta: 'Beta',
+    hsrUpdateM7ASource: 'March7th Assistant download source',
+    hsrUpdateM7ASourceTip:
+      'March7th Assistant is only available from GitHub and MirrorChyan. MirrorChyan requires a CDK; if the CDK is unusable the update fails and is skipped, it never silently falls back to GitHub',
+    hsrUpdateSRASource: 'SRA download source',
+    hsrUpdateSRASourceTip:
+      'The AUTO-MAS download site needs no CDK and has no rate limit, and is the default for SRA. MirrorChyan requires a CDK; if the CDK is unusable the update fails and is skipped, it never silently falls back to GitHub',
+    hsrUpdateSourceAutoSite: 'AUTO-MAS download site (no CDK)',
+    hsrUpdateSourceGithub: 'GitHub',
+    hsrUpdateSourceMirrorChyan: 'MirrorChyan (CDK required)',
+    hsrUpdateCdk: 'MirrorChyan CDK',
+    hsrUpdateCdkTip:
+      'Used only for March7th Assistant / SRA updates and unrelated to the CDK in global settings; required when either download source is MirrorChyan',
+    hsrUpdateCdkPlaceholder: 'Enter the MirrorChyan CDK',
+    hsrUpdateCdkHint:
+      'Required when either download source is MirrorChyan; get one on the MirrorChyan site',
+    hsrUpdateCdkMissing:
+      'MirrorChyan is selected as a download source but no CDK is set: the update will fail and be skipped, it will not fall back to GitHub',
+    hsrUpdateCdkGetLink: 'Get a MirrorChyan CDK',
+    hsrUpdateManual: 'Manual update',
+    hsrUpdateManualTip:
+      'Auto update waits for the run to finish; use these buttons to update now. Updating is not possible while a task is running',
+    hsrUpdateNeedPath:
+      'Set the March7th Assistant or SRA path and the check / update buttons will appear here',
+    hsrUpdateEngineM7A: 'March7th Assistant',
+    hsrUpdateEngineSRA: 'SRA',
+    hsrUpdateInstalledVersion: 'Installed: {version}',
+    hsrUpdateVersionUnknown: 'unknown version',
+    hsrUpdateCheckNow: 'Check for updates',
+    hsrUpdateApplyNow: 'Update now',
+    hsrUpdateDone: '{engine} updated to {version}',
+    hsrUpdateUpToDate: '{engine} is already up to date ({version})',
+    hsrUpdateAvailable:
+      '{engine} {latest} is available (current {current}); click "Update now" to install',
+    hsrUpdateNotInstallable:
+      '{engine} {version} is available, but it cannot be installed from the current download source',
+    hsrUpdateNotInstallableHint:
+      'Usually the MirrorChyan CDK is missing or unusable; check the CDK or switch to another download source',
+    hsrUpdateCheckFailed: 'Could not check for {engine} updates',
+    hsrUpdateRequestFailed: '{engine} update request failed',
     calyxCrimson: 'Calyx (Crimson)',
     calyxCrimsonTraceMaterials:
       'Calyx (Crimson): trace materials (gold and crimson are stored separately)',
@@ -1204,7 +1250,6 @@ export default {
     maximumLines: 'Maximum lines',
     youHaveUnsavedChanges: 'You have unsaved changes',
     server: 'Server',
-    noActiveOkNte: 'No active OK-NTE configuration session',
     localProjectDirectory: 'Local project directory',
     readExtractionPatternReference: 'Read the extraction-pattern reference',
     rootPathSelected: 'Root path selected',
@@ -1594,6 +1639,34 @@ export default {
       'The BetterGI setup session is about to time out and will be saved in 30 seconds',
     bettergiSettingsSaved: 'BetterGI settings saved',
     bettergiSettingsSaveFailed: 'Could not save the BetterGI settings',
+    // BAAH dedicated adapter
+    baahScriptConfiguration: 'BAAH script settings',
+    baahScriptNameHint: 'Distinguishes this BAAH script instance from others',
+    baahScriptPathHint:
+      'Full path of the BAAH main program (BAAH.exe); the program directory and its config and log directories are all derived from it',
+    baahManageConfig: 'Manage key settings',
+    baahManageConfigHint:
+      'When on, this app writes the settings BAAH needs before the run (exit when finished, write logs to disk) and restores your original values afterwards',
+    baahAutoStartNotice:
+      'Turn off BAAH auto-starting the emulator: leave its "emulator path" empty and let this app start the emulator. With "Manage key settings" on this app blanks that field for you; if you set it to No, clear it yourself in BAAH, otherwise both sides will launch an emulator and fight over it',
+    baahPushLogEnabled: 'Push task node details',
+    baahPushLogEnabledHint:
+      'When on, the BAAH task nodes of this run (finished / skipped / failed) are included in the task report; when off no task nodes are collected, while the run log and the result decision stay unchanged',
+    baahEmulatorHint:
+      'Pick the emulator this app should schedule; it starts the emulator and waits for the device before the run, so BAAH only connects and you need no emulator path or port inside BAAH',
+    baahNotBaahScript: 'This script is not a BAAH script',
+    baahRunTimesLimitHint: 'Stop the run when this many attempts still fail',
+    baahRunTimeLimitHint:
+      'Longest the run may go without new log output, in minutes; exceeding it counts as a failed run',
+    baahConfigName: 'BAAH config file name',
+    baahConfigNameHint:
+      'Enter an existing config file name from the BAAH UI (for example the bundled example); this app launches it as BAAH.exe example.json',
+    baahConfigNamePlaceholder: 'e.g. example',
+    baahUserTag: 'User tags',
+    baahUserTagHint: 'Generated by this app from run results, read-only',
+    baahLastProxyDate: 'Last run date',
+    baahProxyTimes: 'Run count',
+    baahDataReadOnlyHint: 'Tracked by this app automatically, read-only',
     // ZZZ-OD dedicated adapter
     zzzodScriptConfiguration: 'ZZZ-OD script settings',
     zzzodScriptNameHint: 'Distinguishes this ZZZ-OD script instance from others',
@@ -1688,12 +1761,31 @@ export default {
     configRestoreDetailView: 'View details',
     configRestoreDetailHint:
       'Opens the script page to view the detailed config. Make sure no other script with the same name is running!',
+    configRestoreDetailConfirm:
+      'The script view page will open and temporarily overwrite the current config. Make sure no script with the same name is running during viewing; otherwise conflicts may occur. If anything unexpected happens, you can restore via Config restore.',
+    configRestoreConfirmOk: 'Confirm',
     configRestoreAction: 'Restore',
     configRestoreSuccess: 'Config restored',
     configRestoreFailed: 'Failed to restore config',
     configRestoreConfirmTitle: 'Overwrite current config',
     configRestoreConfirmDesc:
       'Restores the config at this point in time to its location. The current config is backed up automatically before restoring and can be recovered anytime via "Config restore". Continue?',
+    // ok-nte 原生配置备份的描述覆写（ok-nte 无直控模式，归档时机与通用措辞不同）
+    oknteConfigRestoreScriptDesc:
+      'Backups of the ok-nte native config; restoring applies directly to ok-nte itself. Created automatically (dedup) when opening this edit page, before running ok-nte or opening its config UI, latest 10 kept',
+    // ok-nte 原生设置/查看会话（措辞对齐一条龙）
+    oknteSessionStopFailed: 'Could not stop the OK-NTE setup session',
+    oknteSessionStartFailed: 'Could not start the OK-NTE setup session',
+    oknteSessionFailed: 'OK-NTE setup failed: {p0}',
+    oknteSessionOpened: 'OK-NTE setup opened',
+    oknteViewOpened: 'OK-NTE viewer opened',
+    oknteSessionTimeoutWarn:
+      'The OK-NTE setup session is about to time out and will be saved in 30 seconds',
+    oknteViewingTitle: 'Viewing OK-NTE config',
+    oknteViewingDesc: 'The ok-nte window shows the selected backup, for viewing only.',
+    oknteViewingDesc2:
+      'Viewing temporarily switches the config; click "Close viewer" when done.',
+    oknteViewClose: 'Close viewer',
     // 预览字段展示标题（通用组件用；value 为后端枚举值，label 走词表）
     configRestorePreviewMode: 'Config mode',
     configRestorePreviewLauncher: 'Launcher',
@@ -1724,7 +1816,7 @@ export default {
     zzzodViewingTitle: 'Viewing ZZZ-OD config',
     zzzodViewingDesc: 'The OneDragon window shows the selected backup, for viewing only.',
     zzzodViewingDesc2:
-      'Viewing does not change the fields on this page; click "Close viewer" when done.',
+      'Viewing temporarily switches the config; click "Close viewer" when done.',
     zzzodViewClose: 'Close viewer',
     zzzodSettingsSaved: 'ZZZ-OD settings saved',
     zzzodSettingsSaveFailed: 'Could not save the ZZZ-OD settings',
@@ -2044,6 +2136,7 @@ export default {
     start: 'Start',
     stop: 'Stop',
     hide: 'Hide window',
+    openStore: 'Open game center',
     settings: 'Settings',
     settingsTitle: 'Instance settings',
     settingsHint:
@@ -2124,6 +2217,7 @@ export default {
       creating: 'Creating',
       deleting: 'Deleting',
       operating: 'Working',
+      openingStore: 'Opening',
     },
     configGuard: 'Config guard',
     guardTip:
@@ -2158,6 +2252,8 @@ export default {
       batchPartial: '{ok} succeeded, {fail} failed',
       batchFailed: 'Batch settings failed',
       operateFailed: 'The device operation failed',
+      storeOpened: 'Game center opened',
+      storeOpenFailed: 'Failed to open the game center',
       createOk: 'Instance created as device #{slot}',
       createFailed: 'Failed to create the instance',
       deleteOk: 'Instance deleted',
@@ -2541,12 +2637,8 @@ export default {
       networkFailed: 'Network request failed — check your connection',
     },
     quickStart: {
-      mockDaily: 'Queue — daily automation',
-      mockGeneral: 'Script — general check',
-      mockNightly: 'Queue — nightly batch',
-      listUnavailable: 'Task list unavailable — showing placeholders',
+      listUnavailable: 'Task list unavailable — reopen the dropdown to retry',
       selectTask: 'Pick a task first',
-      mockNotStartable: 'This is a placeholder task; it can start once the real task list loads',
       fallbackLabel: 'Home quick task',
       started: 'Task started',
       startedCount: 'Started {p0}/{p1} tasks',
@@ -2565,6 +2657,8 @@ export default {
       'First-time setup usually takes a few minutes. Feel free to do something else.',
     slowHint: 'This is slower than usual. Still waiting for the backend.',
     viewLog: 'Open the log',
+    transferSource: 'from {source}',
+    probeUnavailable: '{source} unavailable',
   },
   init: {
     failure: {
@@ -2889,6 +2983,7 @@ export default {
       created: 'New queue created — consider giving it a clearer name.',
       createFailed: 'Could not create the queue: {error}',
       addQueueFailed: 'Could not add the queue: {error}',
+      loadQueueFailed: 'Could not load the queue details',
       deleted: 'Queue deleted',
       deleteFailed: 'Could not delete the queue: {error}',
       saveFailed: 'Save failed',
@@ -3008,6 +3103,7 @@ export default {
       HSR: 'HSR',
       BetterGI: 'BetterGI',
       ZzzOd: 'ZZZ-OD',
+      BAAH: 'BAAH',
       General: 'General',
     },
     typeDesc: {
@@ -3020,6 +3116,7 @@ export default {
       HSR: 'Honkai: Star Rail — March7th / SRA dual-script support',
       BetterGI: 'Genshin OneDragon automation script (BetterGI)',
       ZzzOd: 'Zenless Zone Zero OneDragon · daily automation with instance (account) management',
+      BAAH: 'Blue Archive Aris Helper · daily task automation with instance (account) management',
       General: 'Generic automation for any script that writes a log file',
     },
     mask: {
@@ -3120,6 +3217,7 @@ export default {
         HSR: 'March7th / SRA dual-script support',
         BetterGI: 'Genshin OneDragon automation script (BetterGI)',
         ZzzOd: 'Zenless Zone Zero OneDragon · daily automation with instance management',
+        BAAH: 'Blue Archive Aris Helper · daily task automation with instance management',
       },
     },
     toast: {

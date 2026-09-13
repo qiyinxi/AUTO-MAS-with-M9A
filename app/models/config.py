@@ -25,16 +25,17 @@ import json
 import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
+from app.utils import get_logger
 from app.utils.constants import (
     CYCLE_EMPTY_TIME,
     MAA_STAGE_KEY,
     MAAEND_AUTO_COLLECT_MODES,
     MAAEND_AUTO_COLLECT_ROUTE_OPTIONS,
     MAAEND_AUTO_COLLECT_TASK,
+    MAAEND_AUTO_ESSENCE_MENUS,
     MAAEND_DELIVERY_COMMISSION_SOURCES,
     MAAEND_DELIVERY_TASK,
     MAAEND_PROTOCOL_SPACE_TASK_OPTIONS,
@@ -71,6 +72,7 @@ from .ConfigBase import (
     MultipleUIDValidator,
     OptionsValidator,
     RangeValidator,
+    StringListValidator,
     StringValidator,
     TypedMultipleUIDValidator,
     URLValidator,
@@ -80,6 +82,8 @@ from .ConfigBase import (
     VirtualConfigValidator,
 )
 from .schema import TagItem
+
+logger = get_logger("配置模型")
 
 
 def init_maaend_task_config(config) -> None:
@@ -128,6 +132,20 @@ def init_maaend_task_config(config) -> None:
         "AutoEssenceSpecifiedLocation",
         MAAEND_SANITY_TASK_DEFAULTS["AutoEssenceSpecifiedLocation"],
         StringValidator(),
+    )
+    ## 基质刷取模式（兼容 MaaEnd 2.28+ 的 Random/Location/Target）
+    config.Task_AutoEssenceMenu = ConfigItem(
+        "Task",
+        "AutoEssenceMenu",
+        MAAEND_SANITY_TASK_DEFAULTS["AutoEssenceMenu"],
+        OptionsValidator(list(MAAEND_AUTO_ESSENCE_MENUS)),
+    )
+    ## 基质目标武器 ID（选项由 MaaEnd 安装目录动态提供）
+    config.Task_AutoEssenceTargetWeapons = ConfigItem(
+        "Task",
+        "AutoEssenceTargetWeapons",
+        list(MAAEND_SANITY_TASK_DEFAULTS["AutoEssenceTargetWeapons"]),
+        StringListValidator(),
     )
 
     ## 抢委托送货最低接取价格（万）
@@ -209,16 +227,25 @@ def _normalize_maaend_sanity_task_type(task_data: object) -> None:
         return
 
     sanity_task_type = task_data.get("SanityTaskType")
-    if sanity_task_type in MAAEND_SANITY_TASK_TYPES:
-        return
-
     if sanity_task_type == "ProtocolSpace":
         protocol_space_tab = task_data.get("ProtocolSpaceTab")
         if protocol_space_tab in MAAEND_SANITY_TASK_TYPES[:-1]:
             task_data["SanityTaskType"] = protocol_space_tab
 
+    if task_data.get("SanityTaskType") not in MAAEND_SANITY_TASK_TYPES:
+        return
 
-def normalize_maaend_plan_key(raw_key: object) -> dict[str, str]:
+    # 2.28+ 将基质模式拆为 AutoEssenceMenu；旧用户配置只有地点字段。
+    menu = task_data.get("AutoEssenceMenu")
+    if menu not in MAAEND_AUTO_ESSENCE_MENUS:
+        target_weapons = task_data.get("AutoEssenceTargetWeapons")
+        if isinstance(target_weapons, list) and target_weapons:
+            task_data["AutoEssenceMenu"] = "Target"
+        elif isinstance(task_data.get("AutoEssenceSpecifiedLocation"), str):
+            task_data["AutoEssenceMenu"] = "Location"
+
+
+def normalize_maaend_plan_key(raw_key: object) -> dict[str, Any]:
     """将固定配置或旧计划表日期槽位转换为 MaaEnd key。"""
 
     if isinstance(raw_key, dict) and "Key" in raw_key:
@@ -239,6 +266,25 @@ def normalize_maaend_plan_key(raw_key: object) -> dict[str, str]:
             if isinstance(location, str)
             else "",
         }
+        if "AutoEssenceMenu" in data:
+            menu = data["AutoEssenceMenu"]
+            target_weapons = data.get("AutoEssenceTargetWeapons")
+            candidate["AutoEssenceMenu"] = (
+                menu
+                if menu in MAAEND_AUTO_ESSENCE_MENUS
+                else (
+                    "Target"
+                    if isinstance(target_weapons, list) and target_weapons
+                    else "Location"
+                )
+            )
+        if "AutoEssenceTargetWeapons" in data:
+            target_weapons = data["AutoEssenceTargetWeapons"]
+            candidate["AutoEssenceTargetWeapons"] = (
+                [item for item in target_weapons if isinstance(item, str)]
+                if isinstance(target_weapons, list)
+                else []
+            )
     else:
         if sanity_task_type not in MAAEND_SANITY_TASK_TYPES[:-1]:
             sanity_task_type = MAAEND_SANITY_TASK_DEFAULTS["SanityTaskType"]
@@ -264,14 +310,46 @@ def normalize_maaend_plan_key(raw_key: object) -> dict[str, str]:
     try:
         key = schema_model.MaaEndPlanConfig_Item(Key=candidate).Key
     except ValueError:
-        key = schema_model.MaaEndProtocolSpacePlanKey()
+        # Essence 的新字段来自动态资源；字段漂移或旧值损坏时仍保留基质任务，
+        # 不应因为模式值无法识别而退回协议空间。
+        key = (
+            schema_model.MaaEndAutoEssencePlanKey()
+            if sanity_task_type == "Essence"
+            else schema_model.MaaEndProtocolSpacePlanKey()
+        )
+    if isinstance(key, schema_model.MaaEndAutoEssencePlanKey):
+        # 保留历史 key 的稳定形状：新字段只在调用方明确提供时写入。
+        result: dict[str, Any] = {
+            "SanityTaskType": "Essence",
+            "AutoEssenceSpecifiedLocation": key.AutoEssenceSpecifiedLocation,
+        }
+        if key.AutoEssenceMenu is not None and "AutoEssenceMenu" in candidate:
+            result["AutoEssenceMenu"] = key.AutoEssenceMenu
+        if key.AutoEssenceTargetWeapons and "AutoEssenceTargetWeapons" in candidate:
+            result["AutoEssenceTargetWeapons"] = list(key.AutoEssenceTargetWeapons)
+        return result
     return key.model_dump()
 
 
-def validate_maaend_plan_key(raw_key: object) -> dict[str, str]:
+def validate_maaend_plan_key(raw_key: object) -> dict[str, Any]:
     """严格校验并返回规范化的 MaaEnd key。"""
 
     key = schema_model.MaaEndPlanConfig_Item(Key=raw_key).Key
+    if isinstance(key, schema_model.MaaEndAutoEssencePlanKey):
+        data = raw_key.get("Key", raw_key) if isinstance(raw_key, dict) else {}
+        result: dict[str, Any] = {
+            "SanityTaskType": "Essence",
+            "AutoEssenceSpecifiedLocation": key.AutoEssenceSpecifiedLocation,
+        }
+        if isinstance(data, dict) and "AutoEssenceMenu" in data:
+            result["AutoEssenceMenu"] = key.AutoEssenceMenu
+        if (
+            isinstance(data, dict)
+            and "AutoEssenceTargetWeapons" in data
+            and key.AutoEssenceTargetWeapons
+        ):
+            result["AutoEssenceTargetWeapons"] = list(key.AutoEssenceTargetWeapons)
+        return result
     return key.model_dump()
 
 
@@ -284,7 +362,7 @@ class MaaEndPlanKeyValidator(ValidatorBase):
         except ValueError:
             return False
 
-    def correct(self, value: Any) -> dict[str, str]:
+    def correct(self, value: Any) -> dict[str, Any]:
         return normalize_maaend_plan_key(value)
 
 
@@ -789,6 +867,10 @@ class MaaUserConfig(ConfigBase):
         self.Task_IfMall = ConfigItem("Task", "IfMall", True, BoolValidator())
         ## 是否领取奖励
         self.Task_IfAward = ConfigItem("Task", "IfAward", True, BoolValidator())
+        ## 是否更换主题（主题名称在 MAA 侧配置，MAS 仅透传）
+        self.Task_IfSwitchTheme = ConfigItem(
+            "Task", "IfSwitchTheme", False, BoolValidator()
+        )
         ## 是否自动肉鸽
         self.Task_IfRoguelike = ConfigItem(
             "Task", "IfRoguelike", False, BoolValidator()
@@ -1188,11 +1270,12 @@ class MaaEndUserConfig(ConfigBase):
         await super().load(data)
 
     def cache_maaend_resource(self, resource: dict[str, Any]) -> None:
-        """缓存 MaaEnd 基质刷取地点资源。"""
+        """缓存 MaaEnd 动态资源的展示文本。"""
 
         self._maaend_essence_location_labels = {
             str(item["value"]): str(item["label"])
-            for item in resource["essenceLocations"]
+            for item in resource.get("essenceLocations", [])
+            if isinstance(item, dict) and item.get("value") is not None
         }
 
     def _get_maaend_location_label(self, value: str) -> str:
@@ -1200,7 +1283,7 @@ class MaaEndUserConfig(ConfigBase):
             return ""
         return self._maaend_essence_location_labels.get(value, value)
 
-    def get_effective_sanity_task_key(self) -> tuple[dict[str, str], str]:
+    def get_effective_sanity_task_key(self) -> tuple[dict[str, Any], str]:
         """获取当前生效的完整 MaaEnd key。"""
 
         mode = self.get("Info", "SanityMode")
@@ -1247,16 +1330,25 @@ class MaaEndUserConfig(ConfigBase):
                 }
             )
 
-            detail_key = (
-                task_key["AutoEssenceSpecifiedLocation"]
-                if sanity_task_type == "Essence"
-                else task_key[sanity_task_type]
-            )
-            detail_label = (
-                self._get_maaend_location_label(detail_key)
-                if sanity_task_type == "Essence"
-                else MAAEND_SANITY_TASK_DETAIL_LABELS[detail_key]
-            )
+            if sanity_task_type == "Essence" and task_key.get("AutoEssenceMenu") == "Target":
+                target_weapons = task_key.get("AutoEssenceTargetWeapons", [])
+                detail_key = "Target"
+                detail_label = (
+                    "目标武器（未限制）"
+                    if not target_weapons
+                    else f"目标武器（{len(target_weapons)} 件）"
+                )
+            else:
+                detail_key = (
+                    task_key["AutoEssenceSpecifiedLocation"]
+                    if sanity_task_type == "Essence"
+                    else task_key[sanity_task_type]
+                )
+                detail_label = (
+                    self._get_maaend_location_label(detail_key)
+                    if sanity_task_type == "Essence"
+                    else MAAEND_SANITY_TASK_DETAIL_LABELS[detail_key]
+                )
             tags.append(
                 {
                     "text": f"详细任务：{detail_label}",
@@ -1380,22 +1472,6 @@ class MaaEndConfig(ConfigBase):
             return
         for user_config in self.UserData.values():
             user_config.cache_maaend_resource(resource)
-
-    async def load_resource(self, force_reload: bool = False) -> dict[str, Any]:
-        """加载并缓存 MaaEnd 动态资源。"""
-
-        from app.task.MaaEnd.resource_loader import load_maaend_options
-
-        resource = await asyncio.to_thread(
-            partial(
-                load_maaend_options,
-                Path(self.get("Info", "Path")),
-                force_reload=force_reload,
-            )
-        )
-        for user_config in self.UserData.values():
-            user_config.cache_maaend_resource(resource)
-        return resource
 
     def get_loaded_resource(self) -> dict[str, Any]:
         """读取已经载入内存的 MaaEnd 动态资源。"""
@@ -2065,6 +2141,49 @@ class HSRConfig(ConfigBase):
         self.Run_LowPerformanceMode = ConfigItem(
             "Run", "LowPerformanceMode", False, BoolValidator()
         )
+        ## Update ----------------------------------------------------------
+        ## 外部脚本（M7A / SRA）的自动更新。默认关闭：这两个是用户自己安装、
+        ## 自带更新器的第三方工具，未经开启就改写它们的目录属于越界；停留在
+        ## 某个旧版也是真实需求。
+        ## 只有 AfterRun 一档，没有 BeforeRun：更新的收益本来就落在下一次运行
+        ## 上，没有理由让当前这轮先等一个 170–750MB 的下载。想立刻更新走配置
+        ## 页的手动按钮。留成枚举而非布尔，是为了日后要加档时不必做
+        ## bool→enum 迁移（MaaFW 正为此背着一个废弃字段）。
+        ## 选项顺序有意义：OptionsValidator.correct() 回退的是 **options[0]**，
+        ## 不是这里的默认值，Off 必须排在最前。
+        self.Update_AutoUpdateMode = ConfigItem(
+            "Update", "AutoUpdateMode", "Off", OptionsValidator(["Off", "AfterRun"])
+        )
+        ## 更新渠道，两个引擎共用。Mirror 酱还支持 alpha，**故意不开放**——
+        ## 那是项目方的内部验证档。这两个值必须与前端选项和 schema 的 Literal
+        ## 一致，三处任一多给一档，用户选了就会 422 或被静默纠回默认值。
+        self.Update_Channel = ConfigItem(
+            "Update", "Channel", "stable", OptionsValidator(["stable", "beta"])
+        )
+        ## 下载源按引擎拆开：两者可用的源本就不同，共用一项给不出不同默认值。
+        ## 版本检查恒走 Mirror 酱的免 CDK 接口（自建站没有 latest 接口，只能用
+        ## tag 拼 URL，靠这条口径补上）；这里只决定字节从哪来，且**不做自动
+        ## 分流**——选了 Mirror 酱而 CDK 不可用时报明原因并跳过，不悄悄换成
+        ## GitHub，用户得知道自己在从哪下载。
+        ## M7A 没有上 AUTO-MAS 自建站，所以只有两个源，默认 GitHub。
+        self.Update_M7ASource = ConfigItem(
+            "Update", "M7ASource", "GitHub", OptionsValidator(["GitHub", "MirrorChyan"])
+        )
+        ## SRA 默认自建站：免 CDK、不限流、sha256 与 GitHub 逐字节一致，且
+        ## SRA 上游 CI 会主动往这里推送，其自带更新器也有 AUTO-MAS 这一档。
+        self.Update_SRASource = ConfigItem(
+            "Update",
+            "SRASource",
+            "AutoSite",
+            OptionsValidator(["AutoSite", "GitHub", "MirrorChyan"]),
+        )
+        ## Mirror 酱 CDK，由用户自己填，**不做全局兜底**：全局那个服务的是
+        ## AUTO-MAS 自身的更新，和外部脚本不是一回事，串在一起只会让人猜自己
+        ## 在用哪个。选 Mirror 酱作为下载源时这一项必填。
+        self.Update_MirrorChyanCDK = ConfigItem(
+            "Update", "MirrorChyanCDK", "", EncryptValidator()
+        )
+
         ## TaskMapping -----------------------------------------------------
         ## 模块脚本分配（延迟导入以避免循环依赖）
         from app.task.HSR.task_mapping import HSR_TASK_MODULES as _HSR_TASK_MODULES
@@ -2298,7 +2417,8 @@ class MaaFWUserConfig(ConfigBase):
         ## Task ------------------------------------------------------------
         ## 当前选中的 interface preset 名称，留空时使用 interface 默认逻辑
         self.Task_SelectedPreset = ConfigItem("Task", "SelectedPreset", "")
-        ## 当前用户的任务快照，结构为 taskOrder/taskChecked/taskOptions
+        ## 当前用户的任务快照，结构为 taskOrder/taskChecked/taskOptions；
+        ## 三者的键都是任务实例 id，同一个任务可以重复入队（见 MaaFWTaskSnapshot）
         self.Task_TaskSnapshot = ConfigItem(
             "Task", "TaskSnapshot", "{ }", JSONValidator(dict)
         )
@@ -4092,21 +4212,9 @@ class ToolsConfig(ConfigBase):
         self.GameSign_ActivityEnabled = ConfigItem(
             "GameSign", "ActivityEnabled", True, BoolValidator()
         )
-        ## GameSign - 旧版签到窗口起点（保留用于读取历史配置，不参与调度）
-        self.GameSign_WindowStart = ConfigItem(
-            "GameSign", "WindowStart", "08:00", DateTimeValidator("%H:%M")
-        )
-        ## GameSign - 旧版签到窗口终点（保留用于读取历史配置，不参与调度）
-        self.GameSign_WindowEnd = ConfigItem(
-            "GameSign", "WindowEnd", "22:00", DateTimeValidator("%H:%M")
-        )
         ## GameSign - 启动时运行
         self.GameSign_RunOnStartup = ConfigItem(
             "GameSign", "RunOnStartup", False, BoolValidator()
-        )
-        ## GameSign - 旧版自动签到开关（保留用于读取历史配置，不参与调度）
-        self.GameSign_ScheduledRun = ConfigItem(
-            "GameSign", "ScheduledRun", True, BoolValidator()
         )
         ## GameSign - 是否立即开始
         self.GameSign_AutoStart = ConfigItem(
@@ -4117,10 +4225,6 @@ class ToolsConfig(ConfigBase):
         ## GameSign - 上次签到日期 (防止重复触发)
         self.GameSign_LastSignDate = ConfigItem(
             "GameSign", "LastSignDate", "2000-01-01", DateTimeValidator("%Y-%m-%d")
-        )
-        ## GameSign - 旧版今日随机签到时间（保留用于读取历史配置，不参与调度）
-        self.GameSign_ScheduledTime = ConfigItem(
-            "GameSign", "ScheduledTime", "", StringValidator()
         )
         ## GameSign - 签到状态标签 (虚拟字段)
         self.GameSign_Status = ConfigItem(
@@ -4460,6 +4564,7 @@ class GlobalConfig(ConfigBase):
                 HSRConfig,
                 BetterGIConfig,
                 ZzzOdConfig,
+                BAAHConfig,
             ]
         )
         ## 队列配置列表
@@ -4473,6 +4578,7 @@ class GlobalConfig(ConfigBase):
         M9AConfig.related_config["EmulatorConfig"] = self.EmulatorConfig
         MaaFWConfig.related_config["EmulatorConfig"] = self.EmulatorConfig
         GeneralConfig.related_config["EmulatorConfig"] = self.EmulatorConfig
+        BAAHConfig.related_config["EmulatorConfig"] = self.EmulatorConfig
         MaaUserConfig.related_config["PlanConfig"] = self.PlanConfig
         MaaEndUserConfig.related_config["PlanConfig"] = self.PlanConfig
         QueueItem.related_config["ScriptConfig"] = self.ScriptConfig
@@ -4551,10 +4657,135 @@ class GlobalConfig(ConfigBase):
                     )
 
                 all_stage_data[server] = stage_data
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.warning(
+                f"解析活动关卡信息失败, 按空关卡处理: {type(e).__name__}: {e}"
+            )
             return "{ }"
 
         return json.dumps(all_stage_data, ensure_ascii=False)
+
+
+class BAAHUserConfig(ConfigBase):
+    """BAAH 用户配置"""
+
+    def __init__(self) -> None:
+
+        ## Info ------------------------------------------------------------
+        ## 用户名称
+        self.Info_Name = ConfigItem("Info", "Name", "新用户", UserNameValidator())
+        ## 是否启用
+        self.Info_Status = ConfigItem("Info", "Status", True, BoolValidator())
+        ## 剩余天数
+        self.Info_RemainedDay = ConfigItem(
+            "Info", "RemainedDay", -1, RangeValidator(-1, 9999)
+        )
+        ## BAAH 配置文件名（BAAH_CONFIGS 目录下的文件名，不含 .json 后缀）
+        self.Info_ConfigName = ConfigItem("Info", "ConfigName", "")
+        ## 备注
+        self.Info_Notes = ConfigItem("Info", "Notes", "无")
+        ## 用户标签信息
+        self.Info_Tag = ConfigItem(
+            "Info", "Tag", "[ ]", VirtualConfigValidator(self.getTags)
+        )
+
+        ## Data ------------------------------------------------------------
+        ## 上次代理日期
+        self.Data_LastProxyDate = ConfigItem(
+            "Data", "LastProxyDate", "2000-01-01", DateTimeValidator("%Y-%m-%d")
+        )
+        ## 代理次数
+        self.Data_ProxyTimes = ConfigItem(
+            "Data", "ProxyTimes", 0, RangeValidator(0, 9999)
+        )
+
+        ## Notify ----------------------------------------------------------
+        ## 是否启用通知
+        self.Notify_Enabled = ConfigItem("Notify", "Enabled", False, BoolValidator())
+        ## 是否发送统计信息
+        self.Notify_IfSendStatistic = ConfigItem(
+            "Notify", "IfSendStatistic", False, BoolValidator()
+        )
+        ## 是否发送邮件
+        self.Notify_IfSendMail = ConfigItem(
+            "Notify", "IfSendMail", False, BoolValidator()
+        )
+        ## 收件地址
+        self.Notify_ToAddress = ConfigItem("Notify", "ToAddress", "")
+        ## 是否启用 Server 酱
+        self.Notify_IfServerChan = ConfigItem(
+            "Notify", "IfServerChan", False, BoolValidator()
+        )
+        ## Server 酱密钥
+        self.Notify_ServerChanKey = ConfigItem("Notify", "ServerChanKey", "")
+        ## 自定义 Webhook 列表
+        self.Notify_CustomWebhooks = MultipleConfig([Webhook])
+
+        super().__init__()
+
+    def getTags(self) -> str:
+        """生成 BAAH 用户标签列表"""
+        tags = []
+
+        # 任务代理标签（使用东4区时间）
+        tags.append(_tag_proxy(self, "任务"))
+
+        # 剩余天数标签
+        tags.append(_tag_remained_days(self))
+
+        # 备注标签
+        tags.append(_tag_notes(self))
+
+        return json.dumps(tags, ensure_ascii=False)
+
+
+class BAAHConfig(ConfigBase):
+    """BAAH 配置"""
+
+    related_config: dict[str, MultipleConfig] = {}
+
+    def __init__(self) -> None:
+
+        ## Info ------------------------------------------------------------
+        ## 脚本名称
+        self.Info_Name = ConfigItem("Info", "Name", "新 BAAH 脚本")
+
+        ## Script ----------------------------------------------------------
+        ## BAAH 主程序路径；程序目录、配置目录与日志目录都从它派生
+        self.Script_BAAHPath = ConfigItem("Script", "BAAHPath", "", FileValidator())
+        ## 是否由本软件托管运行所需的关键配置项
+        self.Script_IfManageConfig = ConfigItem(
+            "Script", "IfManageConfig", True, BoolValidator()
+        )
+        ## 是否在任务报告中展示 BAAH 的任务节点详情
+        self.Script_PushLogEnabled = ConfigItem(
+            "Script", "PushLogEnabled", True, BoolValidator()
+        )
+
+        ## Run -------------------------------------------------------------
+        ## 运行次数限制
+        self.Run_RunTimesLimit = ConfigItem(
+            "Run", "RunTimesLimit", 2, RangeValidator(1, 9999)
+        )
+        ## 运行时间限制（分钟）
+        self.Run_RunTimeLimit = ConfigItem(
+            "Run", "RunTimeLimit", 60, RangeValidator(1, 9999)
+        )
+
+        ## Emulator --------------------------------------------------------
+        ## 模拟器 ID
+        self.Emulator_Id = ConfigItem(
+            "Emulator",
+            "Id",
+            "-",
+            MultipleUIDValidator("-", self.related_config, "EmulatorConfig"),
+        )
+        ## 模拟器索引
+        self.Emulator_Index = ConfigItem("Emulator", "Index", "-")
+
+        self.UserData = MultipleConfig([BAAHUserConfig])
+
+        super().__init__()
 
 
 CLASS_BOOK = {
@@ -4569,6 +4800,7 @@ CLASS_BOOK = {
     "HSR": HSRConfig,
     "BetterGI": BetterGIConfig,
     "ZzzOd": ZzzOdConfig,
+    "BAAH": BAAHConfig,
 }
 """配置类映射表"""
 

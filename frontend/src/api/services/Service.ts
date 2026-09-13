@@ -18,23 +18,27 @@ import type { BetterGIScriptGroupSaveIn } from '../models/BetterGIScriptGroupSav
 import type { BetterGIScriptReadmeOut } from '../models/BetterGIScriptReadmeOut';
 import type { BetterGIScriptSettingsUiOut } from '../models/BetterGIScriptSettingsUiOut';
 import type { Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post } from '../models/Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post';
-import type { Body_update_oknte_config_api_scripts_oknte_configs_update_post } from '../models/Body_update_oknte_config_api_scripts_oknte_configs_update_post';
+import type { Body_get_maa_depot_stage_candidates_api_scripts_maa_depot_stage_candidates_post } from '../models/Body_get_maa_depot_stage_candidates_api_scripts_maa_depot_stage_candidates_post';
 import type { ComboBoxOut } from '../models/ComboBoxOut';
 import type { CommunityActivityOut } from '../models/CommunityActivityOut';
 import type { CommunityActivityQueryIn } from '../models/CommunityActivityQueryIn';
+import type { ConfigBackupEnsureIn } from '../models/ConfigBackupEnsureIn';
+import type { ConfigBackupEnsureOut } from '../models/ConfigBackupEnsureOut';
+import type { ConfigBackupListOut } from '../models/ConfigBackupListOut';
+import type { ConfigBackupPreviewOut } from '../models/ConfigBackupPreviewOut';
+import type { ConfigBackupRestoreIn } from '../models/ConfigBackupRestoreIn';
+import type { ConfigBackupRestoreOut } from '../models/ConfigBackupRestoreOut';
 import type { DispatchIn } from '../models/DispatchIn';
 import type { EmulatorCreateOut } from '../models/EmulatorCreateOut';
 import type { EmulatorDeleteIn } from '../models/EmulatorDeleteIn';
 import type { EmulatorGetIn } from '../models/EmulatorGetIn';
 import type { EmulatorGetOut } from '../models/EmulatorGetOut';
 import type { EmulatorOperateIn } from '../models/EmulatorOperateIn';
-import type { EmulatorReorderIn } from '../models/EmulatorReorderIn';
 import type { EmulatorSearchOut } from '../models/EmulatorSearchOut';
 import type { EmulatorStatusOut } from '../models/EmulatorStatusOut';
 import type { EmulatorUpdateIn } from '../models/EmulatorUpdateIn';
 import type { GameSignAccountCreateOut } from '../models/GameSignAccountCreateOut';
 import type { GameSignAccountDeleteIn } from '../models/GameSignAccountDeleteIn';
-import type { GameSignAccountGetIn } from '../models/GameSignAccountGetIn';
 import type { GameSignAccountReorderIn } from '../models/GameSignAccountReorderIn';
 import type { GameSignAccountsListOut } from '../models/GameSignAccountsListOut';
 import type { GameSignAccountUpdateIn } from '../models/GameSignAccountUpdateIn';
@@ -49,6 +53,8 @@ import type { HSRDirectConfigImportOut } from '../models/HSRDirectConfigImportOu
 import type { HSRManagedConfigOut } from '../models/HSRManagedConfigOut';
 import type { HSRSRAProfilesOut } from '../models/HSRSRAProfilesOut';
 import type { HSRStageOptionsOut } from '../models/HSRStageOptionsOut';
+import type { HSRUpdateIn } from '../models/HSRUpdateIn';
+import type { HSRUpdateOut } from '../models/HSRUpdateOut';
 import type { InfoOut } from '../models/InfoOut';
 import type { MaaEndOptionsOut } from '../models/MaaEndOptionsOut';
 import type { MaaFWAgentEnvPrepareIn } from '../models/MaaFWAgentEnvPrepareIn';
@@ -86,14 +92,12 @@ import type { QueueItemGetIn } from '../models/QueueItemGetIn';
 import type { QueueItemGetOut } from '../models/QueueItemGetOut';
 import type { QueueItemReorderIn } from '../models/QueueItemReorderIn';
 import type { QueueItemUpdateIn } from '../models/QueueItemUpdateIn';
-import type { QueueReorderIn } from '../models/QueueReorderIn';
 import type { QueueSetInBase } from '../models/QueueSetInBase';
 import type { QueueUpdateIn } from '../models/QueueUpdateIn';
 import type { ScriptConfigImportIn } from '../models/ScriptConfigImportIn';
 import type { ScriptCreateIn } from '../models/ScriptCreateIn';
 import type { ScriptCreateOut } from '../models/ScriptCreateOut';
 import type { ScriptDeleteIn } from '../models/ScriptDeleteIn';
-import type { ScriptFileIn } from '../models/ScriptFileIn';
 import type { ScriptGetIn } from '../models/ScriptGetIn';
 import type { ScriptGetOut } from '../models/ScriptGetOut';
 import type { ScriptReorderIn } from '../models/ScriptReorderIn';
@@ -136,18 +140,11 @@ import type { WebhookDeleteIn } from '../models/WebhookDeleteIn';
 import type { WebhookGetIn } from '../models/WebhookGetIn';
 import type { WebhookGetOut } from '../models/WebhookGetOut';
 import type { WebhookInBase } from '../models/WebhookInBase';
-import type { WebhookReorderIn } from '../models/WebhookReorderIn';
 import type { WebhookTestIn } from '../models/WebhookTestIn';
 import type { WebhookUpdateIn } from '../models/WebhookUpdateIn';
 import type { WebSocketMetaOut } from '../models/WebSocketMetaOut';
 import type { ZzzOdAppConfigOut } from '../models/ZzzOdAppConfigOut';
 import type { ZzzOdAppConfigSaveIn } from '../models/ZzzOdAppConfigSaveIn';
-import type { ZzzOdBackupEnsureIn } from '../models/ZzzOdBackupEnsureIn';
-import type { ZzzOdBackupEnsureOut } from '../models/ZzzOdBackupEnsureOut';
-import type { ZzzOdBackupListOut } from '../models/ZzzOdBackupListOut';
-import type { ZzzOdBackupPreviewOut } from '../models/ZzzOdBackupPreviewOut';
-import type { ZzzOdBackupRestoreIn } from '../models/ZzzOdBackupRestoreIn';
-import type { ZzzOdBackupRestoreOut } from '../models/ZzzOdBackupRestoreOut';
 import type { ZzzOdCatalogOut } from '../models/ZzzOdCatalogOut';
 import type { ZzzOdImportIn } from '../models/ZzzOdImportIn';
 import type { ZzzOdImportOut } from '../models/ZzzOdImportOut';
@@ -450,44 +447,6 @@ export class Service {
         });
     }
     /**
-     * 从文件加载脚本配置
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static importScriptFromFileApiScriptsImportFilePost(
-        requestBody: ScriptFileIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/import/file',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 导出脚本配置到文件
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static exportScriptToFileApiScriptsExportFilePost(
-        requestBody: ScriptFileIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/export/file',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 从网络加载脚本配置
      * @param requestBody
      * @returns OutBase Successful Response
@@ -716,6 +675,44 @@ export class Service {
         });
     }
     /**
+     * MAA 库存保持关卡候选（掉落指定材料，按单件期望理智升序，label 为 xx 理智/件）
+     * @param requestBody
+     * @returns ComboBoxOut Successful Response
+     * @throws ApiError
+     */
+    public static getMaaDepotStageCandidatesApiScriptsMaaDepotStageCandidatesPost(
+        requestBody: Body_get_maa_depot_stage_candidates_api_scripts_maa_depot_stage_candidates_post,
+    ): CancelablePromise<ComboBoxOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maa/depot/stage/candidates',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * MAA 仓库库存（label=数量字符串，value=物品ID）
+     * @param requestBody
+     * @returns ComboBoxOut Successful Response
+     * @throws ApiError
+     */
+    public static getMaaDepotInventoryApiScriptsMaaDepotInventoryPost(
+        requestBody: ScriptDeleteIn,
+    ): CancelablePromise<ComboBoxOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maa/depot/inventory',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 查询 webhook 配置
      * @param requestBody
      * @returns WebhookGetOut Successful Response
@@ -784,25 +781,6 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/scripts/webhook/delete',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 重新排序webhook项
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static reorderWebhookApiScriptsWebhookOrderPost(
-        requestBody: WebhookReorderIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/webhook/order',
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -1794,33 +1772,6 @@ export class Service {
         });
     }
     /**
-     * 列出配置备份（onedragon=一条龙原生配置 / mas=MAS 用户槽）
-     * 按时间倒序返回历史备份（运行/会话前自动归档，内容无变化跳过）。
-     * @param scriptId
-     * @param userId
-     * @param target
-     * @returns ZzzOdBackupListOut Successful Response
-     * @throws ApiError
-     */
-    public static listZzzodBackupsApiApiScriptsZzzodBackupsGet(
-        scriptId: string,
-        userId: string,
-        target: string = 'onedragon',
-    ): CancelablePromise<ZzzOdBackupListOut> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/scripts/zzzod/backups',
-            query: {
-                'scriptId': scriptId,
-                'userId': userId,
-                'target': target,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 获取一条龙两种启动器的安装情况与默认项
      * 渲染「启动器」下拉用（直控/用户两态通用）：未安装的启动器选项禁用变灰。
      * @param scriptId
@@ -1836,47 +1787,6 @@ export class Service {
             query: {
                 'scriptId': scriptId,
             },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 把指定备份恢复到目标位置（onedragon=一条龙原生配置 / mas=MAS 用户配置）
-     * onedragon：恢复一条龙原生配置（MAS 槽不触碰）；mas：恢复槽并全量回填本页字段。
-     * @param requestBody
-     * @returns ZzzOdBackupRestoreOut Successful Response
-     * @throws ApiError
-     */
-    public static restoreZzzodBackupApiApiScriptsZzzodBackupRestorePost(
-        requestBody: ZzzOdBackupRestoreIn,
-    ): CancelablePromise<ZzzOdBackupRestoreOut> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/zzzod/backup/restore',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 按需归档目标池当前配置（指纹去重，无变化跳过；编辑界面三时机调用）
-     * onedragon：一条龙原生配置当前状态（进入编辑界面时捕捉 MAS 操作前原始态）；
-     * mas：MAS 用户绑定槽当前状态（退出编辑界面时的用户侧终态）。
-     * @param requestBody
-     * @returns ZzzOdBackupEnsureOut Successful Response
-     * @throws ApiError
-     */
-    public static ensureZzzodBackupApiApiScriptsZzzodBackupEnsurePost(
-        requestBody: ZzzOdBackupEnsureIn,
-    ): CancelablePromise<ZzzOdBackupEnsureOut> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/zzzod/backup/ensure',
-            body: requestBody,
-            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },
@@ -1904,36 +1814,6 @@ export class Service {
         });
     }
     /**
-     * 读取指定备份的配置摘要（纯读不恢复，供「预览配置」快速展示）
-     * mas：账号字段与已启用任务编排（即 MAS 本页展示的配置）；onedragon：实例列表。
-     * @param scriptId
-     * @param userId
-     * @param time
-     * @param target
-     * @returns ZzzOdBackupPreviewOut Successful Response
-     * @throws ApiError
-     */
-    public static getZzzodBackupPreviewApiApiScriptsZzzodBackupPreviewGet(
-        scriptId: string,
-        userId: string,
-        time: string,
-        target: string = 'onedragon',
-    ): CancelablePromise<ZzzOdBackupPreviewOut> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/scripts/zzzod/backup/preview',
-            query: {
-                'scriptId': scriptId,
-                'userId': userId,
-                'time': time,
-                'target': target,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 获取内置 HSR 能力快照
      * 返回内置 HSR 的能力快照，不暴露原生编辑器会话。
      * @param scriptId
@@ -1949,6 +1829,29 @@ export class Service {
             query: {
                 'scriptId': scriptId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 检查或执行 HSR 外部脚本更新
+     * 手动检查或安装 M7A / SRA 的更新。
+     *
+     * 自动更新只在任务正常跑完后触发（``Update.AutoUpdateMode = AfterRun``），
+     * 这个接口是唯一不必等一轮任务就能更新的入口。
+     * @param requestBody
+     * @returns HSRUpdateOut Successful Response
+     * @throws ApiError
+     */
+    public static postHsrUpdateApiApiScriptsHsrUpdatePost(
+        requestBody: HSRUpdateIn,
+    ): CancelablePromise<HSRUpdateOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/hsr/update',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },
@@ -2072,35 +1975,6 @@ export class Service {
         });
     }
     /**
-     * 更新 OK-NTE 配置文件
-     * 更新 OK-NTE 配置文件
-     *
-     * Args:
-     * script_id: OK-NTE 脚本 ID
-     * user_id: 用户 ID
-     * filename: 配置文件名（如 DailyTask.json）
-     * data: 要更新的配置数据
-     *
-     * Returns:
-     * dict: 操作结果
-     * @param requestBody
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static updateOknteConfigApiScriptsOknteConfigsUpdatePost(
-        requestBody: Body_update_oknte_config_api_scripts_oknte_configs_update_post,
-    ): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/scripts/oknte/configs/update',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 批量更新 OK-NTE 配置文件
      * 批量更新 OK-NTE 配置文件
      *
@@ -2123,6 +1997,104 @@ export class Service {
             url: '/api/scripts/oknte/configs/batch-update',
             body: requestBody,
             mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 列出配置备份（时间倒序；target 取值由专项定义，非法值返回 400）
+     * 运行/会话下发前与编辑界面进出会自动归档，内容无变化跳过。
+     * @param scriptId
+     * @param userId
+     * @param target
+     * @returns ConfigBackupListOut Successful Response
+     * @throws ApiError
+     */
+    public static listConfigBackupsApiApiScriptsBackupListGet(
+        scriptId: string,
+        userId: string,
+        target: string,
+    ): CancelablePromise<ConfigBackupListOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/scripts/backup/list',
+            query: {
+                'scriptId': scriptId,
+                'userId': userId,
+                'target': target,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 按需归档目标池当前配置（指纹去重，无变化跳过；编辑界面进入/退出时机调用）
+     * target 取值由专项池定义（如 zzz-od 的 mas/onedragon、ok-nte 的 mas/native）。
+     * @param requestBody
+     * @returns ConfigBackupEnsureOut Successful Response
+     * @throws ApiError
+     */
+    public static ensureConfigBackupApiApiScriptsBackupEnsurePost(
+        requestBody: ConfigBackupEnsureIn,
+    ): CancelablePromise<ConfigBackupEnsureOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/backup/ensure',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 把指定备份恢复到目标位置（恢复前自动存底当前配置，误恢复可找回）
+     * 恢复语义由专项池定义：脚本原生池恢复到脚本本体，MAS 用户池恢复到
+     * 用户配置并按需回填前端表单。
+     * @param requestBody
+     * @returns ConfigBackupRestoreOut Successful Response
+     * @throws ApiError
+     */
+    public static restoreConfigBackupApiApiScriptsBackupRestorePost(
+        requestBody: ConfigBackupRestoreIn,
+    ): CancelablePromise<ConfigBackupRestoreOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/backup/restore',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 读取指定备份的配置摘要（纯读不恢复，供「预览配置」快速展示）
+     * data 载荷结构由专项定义（前端按 target 消费）；非法 target 返回 400。
+     * @param scriptId
+     * @param userId
+     * @param time
+     * @param target
+     * @returns ConfigBackupPreviewOut Successful Response
+     * @throws ApiError
+     */
+    public static getConfigBackupPreviewApiApiScriptsBackupPreviewGet(
+        scriptId: string,
+        userId: string,
+        time: string,
+        target: string,
+    ): CancelablePromise<ConfigBackupPreviewOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/scripts/backup/preview',
+            query: {
+                'scriptId': scriptId,
+                'userId': userId,
+                'time': time,
+                'target': target,
+            },
             errors: {
                 422: `Validation Error`,
             },
@@ -2322,25 +2294,6 @@ export class Service {
         });
     }
     /**
-     * 重新排序模拟器项
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static reorderEmulatorApiEmulatorOrderPost(
-        requestBody: EmulatorReorderIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/emulator/order',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 操作模拟器
      * @param requestBody
      * @returns OutBase Successful Response
@@ -2451,25 +2404,6 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/queue/delete',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 重新排序
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static reorderQueueApiQueueOrderPost(
-        requestBody: QueueReorderIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/queue/order',
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -2897,26 +2831,6 @@ export class Service {
         });
     }
     /**
-     * 获取游戏社区账号组详情
-     * 获取游戏社区账号组详情
-     * @param requestBody
-     * @returns GameSignAccountCreateOut Successful Response
-     * @throws ApiError
-     */
-    public static getGameSignAccountApiToolsSignAccountGetPost(
-        requestBody: GameSignAccountGetIn,
-    ): CancelablePromise<GameSignAccountCreateOut> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/tools/sign/account/get',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * 更新游戏社区账号组配置
      * 更新游戏社区账号组配置
      * @param requestBody
@@ -3136,25 +3050,6 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/setting/webhook/delete',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 重新排序webhook项
-     * @param requestBody
-     * @returns OutBase Successful Response
-     * @throws ApiError
-     */
-    public static reorderWebhookApiSettingWebhookOrderPost(
-        requestBody: WebhookReorderIn,
-    ): CancelablePromise<OutBase> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/setting/webhook/order',
             body: requestBody,
             mediaType: 'application/json',
             errors: {
