@@ -33,6 +33,7 @@ from app.models.ConfigBase import MultipleConfig
 from app.models.schema import WSTaskNoticeData
 from app.models.task import ScriptItem, TaskExecuteBase, UserItem
 from app.services import System
+from app.task.emulator_core import close_emulator
 from app.utils import get_logger
 from app.utils.constants import TASK_MODE_ZH
 from app.utils.io import read_file, write_file
@@ -110,21 +111,23 @@ class M9AManager(TaskExecuteBase):
             return "M9A 配置文件不存在或已损坏，请检查 M9A 路径或配置文件情况！"
         return "Pass"
 
-    async def _set_m9a_auto_update(self, enabled: bool):
-        """设置 M9A config.json 中 EnableAutoUpdateResource 的值"""
+    async def _set_m9a_auto_update(self, enabled: bool) -> bool:
+        """设置 M9A config.json 中 EnableAutoUpdateResource 的值, 返回是否写入成功"""
         if not self.m9a_config_path:
-            return
+            return False
         config_json = self.m9a_config_path / "config.json"
         if not config_json.exists():
-            return
+            return False
         try:
             config = read_file(config_json)
             config["EnableAutoUpdateResource"] = enabled
             write_file(config_json, config)
             status = "开启" if enabled else "关闭"
             logger.info(f"已{status} M9A 自动更新开关")
-        except Exception:
-            logger.warning("读写 M9A config.json 失败，跳过自动更新控制")
+        except Exception as e:
+            logger.warning(f"读写 M9A config.json 失败，跳过自动更新控制: {e}")
+            return False
+        return True
 
     async def _set_m9a_silent_mode(self):
         if not self.m9a_config_path:
@@ -259,7 +262,15 @@ class M9AManager(TaskExecuteBase):
             logger.info("检测到 M9A 有新版本，将启动虚拟用户执行自动更新")
 
             self.script_info._m9a_restart_triggered = False
-            await self._set_m9a_auto_update(True)
+            if not await self._set_m9a_auto_update(True):
+                # 开关写不进去, 虚拟更新用户跑了也是白跑; 记下真实原因交给更新结果通知
+                self._virtual_user_old_version = getattr(
+                    self.script_info, "_m9a_current_version", "未知"
+                )
+                self.script_info._m9a_err_log = [
+                    "读写 M9A config.json 失败，无法开启自动更新开关"
+                ]
+                return
 
             virtual_uid_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, "m9a-update.mas.auto")
             virtual_uid = str(virtual_uid_uuid)
@@ -317,9 +328,7 @@ class M9AManager(TaskExecuteBase):
         logger.success(f"已解锁脚本配置 {self.script_info.script_id}")
 
         if self.task_info.mode in ["AutoProxy"]:
-            await self.emulator_manager.close(
-                self.script_config.get("Emulator", "Index")
-            )
+            await close_emulator(self)
             await Config.ScriptConfig[
                 uuid.UUID(self.script_info.script_id)
             ].UserData.load(await self.user_config.toDict())
@@ -440,12 +449,12 @@ class M9AManager(TaskExecuteBase):
                     virtual_status = "获取资源包下载信息失败"
                 elif "进程异常结束" in last_err or "进程异常退出" in last_err:
                     virtual_status = "进程异常退出"
+                elif "无法开启自动更新开关" in last_err:
+                    virtual_status = "无法写入 M9A config.json"
                 else:
                     virtual_status = "未知错误"
 
             fail_title = f"M9A 资源更新失败 ({datetime.now().strftime('%m-%d')})"
-            fail_message = f"M9A 资源更新失败（{virtual_status}）\n当前版本: v{self._virtual_user_old_version}"
-
             fail_message = f"更新失败（{virtual_status}），当前版本: v{self._virtual_user_old_version}"
             fail_result = {
                 "title": fail_title,

@@ -38,6 +38,7 @@ from app.models.emulator import DeviceBase, DeviceInfo
 from app.models.schema import WSTaskNoticeData
 from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.services import Notify, System
+from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.utils import LogMonitor, ProcessManager, get_logger
 from app.utils.constants import (
@@ -696,12 +697,7 @@ class AutoProxyTask(TaskExecuteBase):
                     ]
                     self.cur_user_log.status = "模拟器启动失败"
 
-                    try:
-                        await self.emulator_manager.close(
-                            self.script_config.get("Emulator", "Index")
-                        )
-                    except Exception as e:
-                        logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                    await close_emulator(self)
 
                     await Notify.push_plyer(
                         "用户自动代理出现异常！",
@@ -758,12 +754,7 @@ class AutoProxyTask(TaskExecuteBase):
                     )
 
                     await self.maa_process_manager.kill()
-                    try:
-                        await self.emulator_manager.close(
-                            self.script_config.get("Emulator", "Index")
-                        )
-                    except Exception as e:
-                        logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                    await close_emulator(self)
                     await System.kill_process(self.maa_exe_path)
 
                     # 绿票商店每月顺手买一次，失败不重试也不惊动用户，月份没写回下次调度自会再来
@@ -853,10 +844,10 @@ class AutoProxyTask(TaskExecuteBase):
         if self.mode == "Routine" and self.cur_user_config.get(
             "Task", "IfActivityFirst"
         ):
+            # 活动关卡信息已在 MaaManager.prepare 里刷新过一次, 这里直接用缓存
             stage_info = await Config.get_stage_info(
                 "Info",
                 server=self.cur_user_config.get("Info", "Server"),
-                refresh=True,
             )
             activity_stage = _resolve_activity_stage(
                 stage_info.get("Activity", []),
@@ -865,8 +856,12 @@ class AutoProxyTask(TaskExecuteBase):
 
         # 优先按任务名称匹配，确保多个 Fight 任务各自继承原生高级配置。
         for en_task, zh_task in zip(MAA_TASKS, MAA_TASKS_ZH):
-            # 默认关闭时不写入新任务，兼容尚未支持库存保持的 MAA 版本
-            if en_task == "DepotMaintain" and not self.task_dict[en_task]:
+            # 默认关闭时不写入新任务，兼容尚未支持该任务类型的 MAA 版本
+            # （库存保持、更换主题；更换主题需 MAA v6.17.3+，旧版无法反序列化未知任务类型）
+            if (
+                en_task in ("DepotMaintain", "SwitchTheme")
+                and not self.task_dict[en_task]
+            ):
                 continue
 
             task_set[en_task] = _find_task_source(
@@ -1277,12 +1272,7 @@ class AutoProxyTask(TaskExecuteBase):
             type=protocol.TASK_NOTICE,
             data=WSTaskNoticeData(level="error", message=result.message),
         )
-        try:
-            await self.emulator_manager.close(
-                self.script_config.get("Emulator", "Index")
-            )
-        except Exception as e:
-            logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+        await close_emulator(self)
 
         await Notify.push_plyer(
             "游戏需要手动更新！",
@@ -1391,12 +1381,7 @@ class AutoProxyTask(TaskExecuteBase):
         await agree_bilibili(self.maa_tasks_path, False)
         if self.script_config.get("Run", "TaskTransitionMethod") == "ExitEmulator":
             logger.info("用户任务结束, 关闭模拟器")
-            try:
-                await self.emulator_manager.close(
-                    self.script_config.get("Emulator", "Index")
-                )
-            except Exception as e:
-                logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+            await close_emulator(self)
 
         user_logs_list = []
         if_six_star = False

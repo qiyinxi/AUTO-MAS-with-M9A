@@ -36,6 +36,7 @@ from app.models.emulator import DeviceBase, DeviceInfo
 from app.models.schema import WSTaskNoticeData
 from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.services import Notify
+from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.utils import LogMonitor, ProcessManager, get_logger, strptime
 from app.utils.constants import STARRAIL_PACKAGE_NAME, UTC4
@@ -249,10 +250,6 @@ class AutoProxyTask(TaskExecuteBase):
             logger.info(f"运行脚本任务: {self.src_exe_path}")
             self.wait_event.clear()
             t = datetime.now()
-            validate_src_installation(
-                self.src_root_path,
-                self.src_installation_id,
-            )
             await self.src_process_manager.open_process(
                 self.src_exe_path,
                 null_stream_to_pipe=True,
@@ -329,12 +326,15 @@ class AutoProxyTask(TaskExecuteBase):
                 if not cleanup_success:
                     await self._handle_process_cleanup_failure()
 
-                await Notify.push_plyer(
-                    "用户自动代理出现异常！",
-                    f"用户 {self.cur_user_item.name} 的自动代理出现一次异常",
-                    f"{self.cur_user_item.name}的自动代理出现异常",
-                    3,
-                )
+                try:
+                    await Notify.push_plyer(
+                        "用户自动代理出现异常！",
+                        f"用户 {self.cur_user_item.name} 的自动代理出现一次异常",
+                        f"{self.cur_user_item.name}的自动代理出现异常",
+                        3,
+                    )
+                except Exception:
+                    pass
                 if not cleanup_success:
                     return
 
@@ -392,12 +392,15 @@ class AutoProxyTask(TaskExecuteBase):
         if not cleanup_success:
             await self._handle_process_cleanup_failure()
 
-        await Notify.push_plyer(
-            "用户自动代理出现异常！",
-            f"用户 {self.cur_user_item.name} 自动代理时{error_message}",
-            f"{self.cur_user_item.name}的自动代理出现异常",
-            3,
-        )
+        try:
+            await Notify.push_plyer(
+                "用户自动代理出现异常！",
+                f"用户 {self.cur_user_item.name} 自动代理时{error_message}",
+                f"{self.cur_user_item.name}的自动代理出现异常",
+                3,
+            )
+        except Exception:
+            pass
         return cleanup_success
 
     async def kill_managed_process(self) -> bool:
@@ -416,13 +419,8 @@ class AutoProxyTask(TaskExecuteBase):
             listener_wait_timeout=2.0,
             expected_installation_id=self.src_installation_id,
         )
-        try:
-            logger.info("中止模拟器进程")
-            await self.emulator_manager.close(
-                self.script_config.get("Emulator", "Index")
-            )
-        except Exception as e:
-            logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+        logger.info("中止模拟器进程")
+        await close_emulator(self)
         return cleanup_success
 
     async def set_src(self, emulator_info: DeviceInfo) -> None:
@@ -628,15 +626,7 @@ class AutoProxyTask(TaskExecuteBase):
             await self._handle_process_cleanup_failure()
         if self.script_config.get("Run", "TaskTransitionMethod") == "ExitEmulator":
             logger.info("用户任务结束, 关闭模拟器")
-            try:
-                await asyncio.wait_for(
-                    self.emulator_manager.close(
-                        self.script_config.get("Emulator", "Index")
-                    ),
-                    timeout=_FINAL_CLEANUP_TIMEOUT_SECONDS,
-                )
-            except Exception as e:
-                logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+            await close_emulator(self, timeout=_FINAL_CLEANUP_TIMEOUT_SECONDS)
 
         del self.src_process_manager
         del self.src_log_monitor
