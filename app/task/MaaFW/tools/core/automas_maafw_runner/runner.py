@@ -21,9 +21,12 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, TextIO
@@ -61,9 +64,17 @@ from app.task.MaaFW.tools.core.automas_maafw_runtime_pool.host_environment impor
 try:
     from .models import MaaFWDeviceConfig
     from .run_plan import MaaFWRunPlan, MaaFWTaskRunPlan
+    from .shared_agent import (
+        SHARED_RUNTIME_KIND,
+        route_managed_python_agents_to_shared_runtime,
+    )
 except ImportError:
     from models import MaaFWDeviceConfig  # type: ignore[no-redef]
     from run_plan import MaaFWRunPlan, MaaFWTaskRunPlan  # type: ignore[no-redef]
+    from shared_agent import (  # type: ignore[no-redef]
+        SHARED_RUNTIME_KIND,
+        route_managed_python_agents_to_shared_runtime,
+    )
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 ENCODINGS = ("utf-8", "gbk", "shift_jis", "utf-16")
@@ -99,6 +110,7 @@ AGENT_CONNECT_TIMEOUT_MS = 1000
 ADB_READY_RETRY_COUNT = 180
 ADB_READY_RETRY_INTERVAL = 1.0
 ADB_COMMAND_TIMEOUT = 5
+NATIVE_RUNTIME_OVERLAY_MARKER = ".auto_mas_maafw_native_runtime.json"
 AGENT_ENV_PATH_DIRS = (
     (),
     ("maafw",),
@@ -196,6 +208,24 @@ def _format_enum_methods(enum_cls: Any, value: int) -> str:
 
 def _format_latency(seconds: float) -> str:
     return f"{seconds * 1000:.0f} ms"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_file_set(files: list[tuple[Path, Path]]) -> str:
+    digest = hashlib.sha256()
+    for source, relative_path in files:
+        digest.update(relative_path.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_sha256_file(source).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _ensure_maafw_client_library_mode(runtime_path: Path | None = None) -> None:
@@ -950,6 +980,7 @@ class MaaFWRunner:
 
     def _start_agents(self) -> None:
         self._load_embedded_agents()
+        self._prepare_managed_native_runtime()
         self.prepare_agent_python_envs()
 
         for agent_plan in self.plan.agents:
@@ -1003,6 +1034,238 @@ class MaaFWRunner:
 
             self.send_log(f"Agent 已启动: {command[0]}")
 
+    def _prepare_managed_native_runtime(self) -> None:
+        """Expose the selected shared MaaFW DLLs to a stripped Managed checkout.
+
+        Project Store payloads deliberately omit embedded runtimes.  Several
+        native Agents call ``WithLibDir(cwd/maafw)`` and therefore do not honor
+        PATH alone.  A Managed checkout is writable by design, so materialize
+        hardlinks (or copies on a different volume) into a private overlay and
+        record its exact ``MaaFramework.dll`` hash.  Ordinary projects and
+        checkouts that already carry their own runtime are left untouched.
+        """
+
+        if self.plan.managedSharedAgentDependenciesComplete is None:
+            return
+        if not any(
+            getattr(agent, "runtimeKind", None) == "project_binary"
+            for agent in self.plan.agents
+        ):
+            return
+
+        project_path = Path(self.plan.path).resolve()
+        source_bin = Path(maa_package.__file__).resolve().parent / "bin"
+        source_main = source_bin / "MaaFramework.dll"
+        if not source_main.is_file():
+            raise RuntimeError(
+                f"托管 MaaFW 原生 Agent 缺少共享运行时 MaaFramework.dll: {source_main}"
+            )
+
+        source_agent_binary = source_bin.parent.parent / "MaaAgentBinary"
+        if source_agent_binary.exists() and not source_agent_binary.is_dir():
+            raise RuntimeError(
+                f"托管 MaaFW native runtime 资产不是目录: {source_agent_binary}"
+            )
+
+        source_files: list[tuple[Path, Path]] = []
+        for source_file in sorted(
+            (item for item in source_bin.rglob("*") if item.is_file()),
+            key=lambda item: item.as_posix().casefold(),
+        ):
+            source_files.append((source_file, source_file.relative_to(source_bin)))
+        if source_agent_binary.is_dir():
+            for source_file in sorted(
+                (item for item in source_agent_binary.rglob("*") if item.is_file()),
+                key=lambda item: item.as_posix().casefold(),
+            ):
+                source_files.append(
+                    (
+                        source_file,
+                        Path("MaaAgentBinary")
+                        / source_file.relative_to(source_agent_binary),
+                    )
+                )
+        if not source_files:
+            raise RuntimeError(f"MaaFW native runtime 目录为空: {source_bin}")
+        asset_hash = _sha256_file_set(source_files)
+
+        target_dir = project_path / "maafw"
+        target_main = target_dir / "MaaFramework.dll"
+        marker_path = target_dir / NATIVE_RUNTIME_OVERLAY_MARKER
+
+        # A complete project release keeps its own native runtime and must win
+        # over the shared fallback.  The overlay is only for stripped payloads.
+        if target_main.is_file() and not marker_path.is_file():
+            self.send_log(f"[MaaFW Runtime] 使用项目自带 native runtime: {target_main}")
+            return
+
+        if target_dir.exists() and (not target_dir.is_dir() or target_dir.is_symlink()):
+            raise RuntimeError(
+                f"托管 MaaFW native runtime 目录不是普通目录: {target_dir}"
+            )
+        if marker_path.exists() and marker_path.is_symlink():
+            raise RuntimeError(
+                f"托管 MaaFW native runtime 标记不能是链接: {marker_path}"
+            )
+        if target_dir.is_dir() and not marker_path.exists():
+            unexpected = [child.name for child in target_dir.iterdir()]
+            if unexpected:
+                raise RuntimeError(
+                    "托管项目缺少 MaaFramework.dll，且 maafw 目录含有未标记文件；"
+                    f"拒绝覆盖: {target_dir} ({', '.join(unexpected[:8])})"
+                )
+
+        source_hash = _sha256_file(source_main)
+        if marker_path.is_file() and target_main.is_file():
+            try:
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"托管 MaaFW native runtime 标记损坏: {marker_path}"
+                ) from exc
+            target_files = [
+                (target_dir / relative_path, relative_path)
+                for _, relative_path in source_files
+            ]
+            expected_paths = {relative_path for _, relative_path in source_files}
+            actual_paths = {
+                item.relative_to(target_dir)
+                for item in target_dir.rglob("*")
+                if item.is_file() and item.name != NATIVE_RUNTIME_OVERLAY_MARKER
+            }
+            target_matches = (
+                all(
+                    path.is_file() and not path.is_symlink() for path, _ in target_files
+                )
+                and actual_paths == expected_paths
+                and _sha256_file_set(target_files) == asset_hash
+            )
+            if (
+                marker.get("schemaVersion") == 1
+                and marker.get("maafwSha256") == source_hash
+                and marker.get("assetSha256") == asset_hash
+                and target_matches
+            ):
+                self.send_log(
+                    "[MaaFW Runtime] 复用托管 checkout 的共享 native runtime: "
+                    f"{target_dir}"
+                )
+                return
+
+        # Managed checkouts may already live several levels below the
+        # configurable Project Runs root.  A full UUID here is needlessly
+        # expensive on Windows: the temporary path is only used while the
+        # overlay is assembled, but appending MaaAgentBinary/... can cross the
+        # legacy MAX_PATH boundary and fail with WinError 206.  Keep the
+        # staging name short while retaining enough entropy for the per-run
+        # project reservation to prevent collisions.
+        stage_dir = project_path / f".amrt-{uuid.uuid4().hex[:8]}"
+        backup_dir: Path | None = None
+        try:
+            stage_dir.mkdir(parents=False, exist_ok=False)
+            for source_file, relative_path in source_files:
+                destination = stage_dir / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(source_file, destination)
+                except OSError:
+                    shutil.copy2(source_file, destination)
+
+            marker = {
+                "schemaVersion": 1,
+                "source": "shared-runtime-pool",
+                "maafwVersion": str(
+                    self.plan.piEnv.get("PI_CLIENT_MAAFW_VERSION") or ""
+                ),
+                "maafwSha256": source_hash,
+                "assetSha256": asset_hash,
+                "files": [str(relative_path) for _, relative_path in source_files],
+            }
+            marker_payload = json.dumps(
+                marker,
+                ensure_ascii=False,
+                indent=2,
+            )
+            (stage_dir / NATIVE_RUNTIME_OVERLAY_MARKER).write_text(
+                marker_payload,
+                encoding="utf-8",
+            )
+
+            # ``Path.exists()`` is false for a dangling symlink.  Never let
+            # the publish path treat one as an absent directory: replacing a
+            # link would either fail late or target an unexpected location.
+            if target_dir.is_symlink():
+                raise RuntimeError(
+                    "托管 MaaFW native runtime 目标目录是符号链接；"
+                    "拒绝覆盖以保持脱壳目录身份不变。"
+                )
+            if not target_dir.exists():
+                stage_dir.replace(target_dir)
+                stage_dir = None
+            else:
+                # Publish the complete overlay with one directory swap.  The
+                # previous implementation deleted the old files before
+                # moving staged children one by one; an I/O/permission error
+                # in that window left a half-written ``maafw`` directory and
+                # made the next run consume an incomplete native runtime.
+                # Keep the backup name short for the same MAX_PATH reason as
+                # the staging name, and restore it if the publish fails.
+                backup_dir = project_path / f".amrb-{uuid.uuid4().hex[:8]}"
+                if backup_dir.exists() or backup_dir.is_symlink():
+                    raise RuntimeError(
+                        f"托管 MaaFW native runtime 回滚目录已存在: {backup_dir}"
+                    )
+                target_dir.replace(backup_dir)
+                try:
+                    stage_dir.replace(target_dir)
+                    stage_dir = None
+                except BaseException:
+                    # The target path should be absent after the first rename.
+                    # Do not overwrite a concurrently-created directory: leave
+                    # that path untouched and report rollback failure instead.
+                    if backup_dir.exists() and not target_dir.exists():
+                        backup_dir.replace(target_dir)
+                        backup_dir = None
+                    raise
+        except BaseException as exc:
+            rollback_error: BaseException | None = None
+            if backup_dir is not None and backup_dir.exists():
+                try:
+                    if target_dir.exists() or target_dir.is_symlink():
+                        # A concurrent writer won the target path.  Never
+                        # remove its contents while trying to recover ours.
+                        raise RuntimeError(
+                            f"目标 overlay 路径在回滚期间被占用: {target_dir}"
+                        )
+                    backup_dir.replace(target_dir)
+                    backup_dir = None
+                except BaseException as restore_exc:
+                    rollback_error = restore_exc
+            if rollback_error is not None:
+                raise RuntimeError(
+                    "准备托管 MaaFW native runtime overlay 失败，且旧 overlay 回滚未完成: "
+                    f"{target_dir}: {rollback_error}"
+                ) from exc
+            raise RuntimeError(
+                f"准备托管 MaaFW native runtime overlay 失败: {target_dir}: {exc}"
+            ) from exc
+        finally:
+            if stage_dir is not None and stage_dir.exists():
+                with suppress(Exception):
+                    shutil.rmtree(stage_dir)
+            if backup_dir is not None and backup_dir.exists():
+                # A successful swap leaves only the old generated overlay in
+                # this private backup.  Cleanup is best effort: the new
+                # overlay is already complete and should not be rolled back
+                # merely because Windows still holds an old DLL handle.
+                with suppress(Exception):
+                    shutil.rmtree(backup_dir)
+
+        self.send_log(
+            "[MaaFW Runtime] 已为托管 native Agent 准备共享 runtime overlay: "
+            f"{target_dir}"
+        )
+
     def prepare_agent_python_envs(self) -> None:
         """Prepare all MaaFW agent Python environments without starting agents."""
 
@@ -1016,6 +1279,20 @@ class MaaFWRunner:
                 "[Python环境] 所有 Agent 均为 embedded，跳过子进程 Python 环境准备"
             )
             return
+
+        shared_agents = route_managed_python_agents_to_shared_runtime(
+            self.plan.path,
+            process_agents,
+            python_executable=sys.executable,
+            dependencies_complete=(self.plan.managedSharedAgentDependenciesComplete),
+            managed_python_agent_indexes=(self.plan.managedPythonAgentIndexes),
+        )
+        if shared_agents:
+            shim_dir = write_agent_compat_shims(Path(sys.prefix))
+            self.send_log(
+                "[Python环境] 托管 Python Agent 复用当前共享 runtime: "
+                f"{sys.executable} (agents={len(shared_agents)}, shim={shim_dir})"
+            )
 
         self.send_log(f"[Python环境] 开始准备 {len(process_agents)} 个 Agent 环境")
         from app.task.MaaFW.tools.core.automas_maafw_agent_env.env import (
@@ -1222,6 +1499,13 @@ class MaaFWRunner:
                     )
                 except Exception as exc:
                     self.send_log(f"[Python环境] 写入 Agent 兼容层失败: {exc}")
+        elif getattr(agent_plan, "runtimeKind", None) == SHARED_RUNTIME_KIND:
+            try:
+                python_path_items.append(
+                    str(write_agent_compat_shims(Path(sys.prefix)))
+                )
+            except Exception as exc:
+                raise RuntimeError(f"写入共享 runtime Agent 兼容层失败: {exc}") from exc
         python_path_items.append(str(project_path))
         env["PYTHONPATH"] = os.pathsep.join(python_path_items)
         env["PYTHONIOENCODING"] = "utf-8"

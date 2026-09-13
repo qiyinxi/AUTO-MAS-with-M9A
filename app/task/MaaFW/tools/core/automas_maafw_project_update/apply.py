@@ -493,6 +493,76 @@ def build_package_plan(
     )
 
 
+def recover_update_operation(
+    operation: UpdateOperationStore,
+    *,
+    send_log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Recover a staged/applying operation after a process restart."""
+
+    try:
+        state = operation.read()
+    except Exception as exc:
+        try:
+            operation.mark_recovery_required(str(exc))
+        except Exception:
+            pass
+        raise UpdateApplyError(
+            f"MaaFW update journal recovery is required: {exc}",
+            unsafe_to_continue=True,
+        ) from exc
+    status = str(state.get("status") or "")
+    if status not in {"staged", "applying", "post_validating"}:
+        return state
+    raw_project = str(state.get("projectPath") or "").strip()
+    raw_state_root = str(state.get("stateRoot") or "").strip()
+    raw_work_dir = str(state.get("workDir") or "").strip()
+    if not raw_project or not raw_state_root or not raw_work_dir:
+        operation.mark_recovery_required("update journal has incomplete owned paths")
+        raise UpdateApplyError(
+            "MaaFW update journal has incomplete owned paths",
+            unsafe_to_continue=True,
+        )
+    root = Path(raw_project).expanduser().resolve(strict=False)
+    state_dir = Path(raw_state_root).expanduser().resolve(strict=False)
+    host_state_root = (
+        operation.root.resolve(strict=False).parent / PROJECT_STATE_DIR_NAME
+    ).resolve(strict=False)
+    expected_key = hashlib.sha256(str(root).casefold().encode("utf-8")).hexdigest()[:24]
+    if (
+        not state_dir.is_absolute()
+        or not state_dir.is_relative_to(host_state_root)
+        or state_dir.name != expected_key
+    ):
+        operation.mark_recovery_required(
+            "update journal state root is outside host state"
+        )
+        raise UpdateApplyError(
+            "MaaFW update journal state root is outside host state",
+            unsafe_to_continue=True,
+        )
+    try:
+        work_dir = _owned_state_path(Path(raw_work_dir), state_dir)
+    except UpdateApplyError as exc:
+        operation.mark_recovery_required(str(exc))
+        raise UpdateApplyError(str(exc), unsafe_to_continue=True) from exc
+    if not root.is_dir():
+        return operation.update(
+            "recovery_required", recoveryRequired=True, error="project path is missing"
+        )
+    try:
+        _rollback_from_state(root, state, state_dir=state_dir)
+    except Exception as exc:
+        operation.update(
+            "recovery_required", recoveryRequired=True, rollbackError=str(exc)[:500]
+        )
+        raise UpdateApplyError(str(exc), unsafe_to_continue=True) from exc
+    if send_log:
+        send_log(f"MaaFW update operation recovered: {operation.operation_id}")
+    _remove_owned_path(work_dir, state_dir)
+    return operation.update("rolled_back", recovered=True)
+
+
 def _validate_plan_base(
     project_path: Path,
     plan: PackagePlan,
@@ -991,4 +1061,5 @@ __all__ = [
     "UpdateApplyError",
     "apply_package_transaction",
     "build_package_plan",
+    "recover_update_operation",
 ]

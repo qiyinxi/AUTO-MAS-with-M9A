@@ -11,7 +11,10 @@ from typing import Any, Callable
 
 import psutil
 
-from app.task.MaaFW.tools.core.automas_maafw_agent_env import prepare_agent_envs
+from app.task.MaaFW.tools.core.automas_maafw_agent_env import (
+    prepare_agent_envs,
+    write_agent_compat_shims,
+)
 from app.task.MaaFW.tools.core.automas_maafw_agent_env.service import (
     MaaFWAgentEnvService,
 )
@@ -33,6 +36,7 @@ from .models import (
     MaaFWRunPlan,
 )
 from .run_plan import build_maafw_run_plan
+from .shared_agent import route_managed_python_agents_to_shared_runtime
 from .worker_registry import GLOBAL_MAAFW_WORKER_REGISTRY, MaaFWWorkerRegistry
 
 ProjectEnvironmentProgressCallback = Callable[[dict[str, Any]], None]
@@ -230,6 +234,8 @@ class MaaFWRunnerService:
         send_log: Callable[[str], None] | None = None,
         bootstrap_python: str | None = None,
         install_agent_dependencies: bool = True,
+        managed_shared_agent_dependencies_complete: bool | None = None,
+        managed_python_agent_indexes: list[int] | tuple[int, ...] | None = None,
         progress: ProjectEnvironmentProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
@@ -302,6 +308,21 @@ class MaaFWRunnerService:
                 interface,
                 managed_env_root=agent_env_root,
             )
+            shared_agents = route_managed_python_agents_to_shared_runtime(
+                project_path,
+                agent_plans,
+                python_executable=environment.python_executable,
+                dependencies_complete=(managed_shared_agent_dependencies_complete),
+                managed_python_agent_indexes=managed_python_agent_indexes,
+            )
+            if shared_agents:
+                shim_dir = write_agent_compat_shims(environment.venv_path)
+                if send_log is not None:
+                    send_log(
+                        "[Python环境] 托管 Python Agent 复用共享 runtime: "
+                        f"{environment.python_executable} "
+                        f"(agents={len(shared_agents)}, shim={shim_dir})"
+                    )
             agent_result = prepare_agent_envs(
                 project_path,
                 agent_plans,

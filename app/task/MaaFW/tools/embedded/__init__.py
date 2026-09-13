@@ -15,11 +15,13 @@ from .project_path import (
     try_reserve_project_path,
 )
 from .runtime_route import (
+    MaaFWManagedExecutionRoute,
     MaaFWRuntimePoolRoute,
     MaaFWRuntimeRouteError,
 )
 
 __all__ = [
+    "MaaFWManagedExecutionRoute",
     "MaaFWRuntimePoolRoute",
     "MaaFWRuntimeRouteError",
     "normalize_project_path",

@@ -32,6 +32,14 @@ RETRY_DELAY = 1.0
 HTTP_HEADERS = {"User-Agent": "AutoMasGui"}
 
 
+class DownloadPaused(RuntimeError):
+    """The operation requested a pause; its partial file remains reusable."""
+
+
+class DownloadCancelled(RuntimeError):
+    """The operation was cancelled while preserving its partial file."""
+
+
 @dataclass(frozen=True)
 class DownloadOutcome:
     artifact_id: str
@@ -338,6 +346,8 @@ async def download_resumable(
                     f"MaaFW update package downloaded: {outcome.size} bytes"
                 )
                 return outcome
+            except (DownloadPaused, DownloadCancelled):
+                raise
             except _RestartFromZero:
                 partial_path.unlink(missing_ok=True)
                 metadata = _read_json(metadata_path)
@@ -648,6 +658,8 @@ def _optional_int(value: Any) -> int | None:
 
 
 __all__ = [
+    "DownloadCancelled",
     "DownloadOutcome",
+    "DownloadPaused",
     "download_resumable",
 ]
