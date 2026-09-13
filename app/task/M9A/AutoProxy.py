@@ -36,6 +36,7 @@ from app.models.emulator import DeviceBase, DeviceInfo
 from app.models.schema import WSTaskNoticeData
 from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.services import Notify, System
+from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.utils import LogMonitor, ProcessManager, get_logger
 from app.utils.constants import UTC4
@@ -94,8 +95,6 @@ class AutoProxyTask(TaskExecuteBase):
         self.m9a_exe_path = self.m9a_root_path / "M9A.exe"
         self.m9a_tasks_path = self.m9a_config_path / "instances/default.json"
 
-        self.template_path = self.m9a_root_path / "config/instances/default.json"
-
         self.is_first_user_for_version_check = False
         self.is_virtual_update_user = False
         self.run_complete = False
@@ -148,8 +147,6 @@ class AutoProxyTask(TaskExecuteBase):
 
     async def main_task(self):
         """自动代理模式主逻辑"""
-        self.task_dict = {}
-
         # 初始化每日代理状态
         if not self.is_virtual_update_user:
             self.curdate = datetime.now(tz=UTC4).strftime("%Y-%m-%d")
@@ -206,7 +203,10 @@ class AutoProxyTask(TaskExecuteBase):
                     result_message = queue_error or "未配置任务队列或队列为空"
                     logger.warning(f"用户 {self.cur_user_uid} {result_message}")
                     self.cur_user_item.status = "异常"
-                    self.cur_user_item.result = result_message
+                    # UserItem.result 是只读 property（由 log_record 拼出），直接赋值会
+                    # 抛 AttributeError，把本该看到的提示换成一句 Python 报错。原因写进
+                    # 本轮的 LogRecord，result 自然带上它。
+                    self.cur_user_log.status = result_message
                     return
 
                 queue = self._filter_queue_for_run(queue)
@@ -254,12 +254,7 @@ class AutoProxyTask(TaskExecuteBase):
                 ]
                 self.cur_user_log.status = "模拟器启动失败"
 
-                try:
-                    await self.emulator_manager.close(
-                        self.script_config.get("Emulator", "Index")
-                    )
-                except Exception as e:
-                    logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                await close_emulator(self)
 
                 await Notify.push_plyer(
                     "用户自动代理出现异常！",
@@ -329,13 +324,8 @@ class AutoProxyTask(TaskExecuteBase):
                 await self.m9a_process_manager.kill()
                 self.m9a_started = False
                 if not self.is_virtual_update_user:
-                    try:
-                        await self.emulator_manager.close(
-                            self.script_config.get("Emulator", "Index")
-                        )
-                        self.emulator_opened = False
-                    except Exception as e:
-                        logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                    await close_emulator(self)
+                    self.emulator_opened = False
                 await System.kill_process(self.m9a_exe_path)
                 self.m9a_started = False
 
@@ -510,44 +500,6 @@ class AutoProxyTask(TaskExecuteBase):
         write_file(self.m9a_tasks_path, config)
         logger.info(f"已写入 M9A 配置：{self.m9a_tasks_path}")
 
-        # Debug 备份：保存到 data/script_id 目录，按 testN.json 递增，保留最近 5 个
-        debug_dir = Path("data") / self.script_info.script_id
-        debug_dir.mkdir(parents=True, exist_ok=True)
-
-        # 查找现有 test*.json 文件，获取下一个编号
-        existing_tests = list(debug_dir.glob("test*.json"))
-        test_numbers = []
-        for test_file in existing_tests:
-            match = re.search(r"test(\d+)\.json", test_file.name)
-            if match:
-                test_numbers.append(int(match.group(1)))
-
-        next_num = max(test_numbers) + 1 if test_numbers else 1
-        backup_path = debug_dir / f"test{next_num}.json"
-
-        # 保存备份
-        write_file(backup_path, config)
-        logger.info(f"Debug 备份已保存：{backup_path}")
-
-        # 清理旧备份，只保留最近 5 个
-        existing_tests = list(debug_dir.glob("test*.json"))
-        test_files_with_num = []
-        for test_file in existing_tests:
-            match = re.search(r"test(\d+)\.json", test_file.name)
-            if match:
-                test_files_with_num.append((int(match.group(1)), test_file))
-
-        # 按编号排序，删除最旧的
-        test_files_with_num.sort(key=lambda x: x[0])
-        if len(test_files_with_num) > 5:
-            files_to_delete = test_files_with_num[:-5]
-            for num, file_path in files_to_delete:
-                try:
-                    file_path.unlink()
-                    logger.debug(f"已删除旧备份文件：{file_path}")
-                except Exception as e:
-                    logger.warning(f"删除旧备份文件失败 {file_path}: {e}")
-
     @staticmethod
     def _extract_failed_task_names(log: str) -> set[str]:
         return {
@@ -644,10 +596,7 @@ class AutoProxyTask(TaskExecuteBase):
         elif "已放弃本次任务" in log:
             self.cur_user_log.status = "M9A 已放弃本次任务"
         elif not await self.m9a_process_manager.is_running():
-            if "任务已全部完成！" not in log and "All tasks completed" not in log:
-                self.cur_user_log.status = "M9A 进程已异常结束"
-            else:
-                self.cur_user_log.status = "M9A 进程已结束"
+            self.cur_user_log.status = "M9A 进程已异常结束"
         elif self.is_log_stalled(
             latest_time, minutes=self.script_config.get("Run", "RunTimeLimit")
         ):
@@ -797,12 +746,7 @@ class AutoProxyTask(TaskExecuteBase):
         if self.emulator_opened:
             # 关闭模拟器
             logger.info("用户任务结束，关闭模拟器")
-            try:
-                await self.emulator_manager.close(
-                    self.script_config.get("Emulator", "Index")
-                )
-            except Exception as e:
-                logger.warning(f"关闭模拟器失败: {e}")
+            await close_emulator(self)
 
         # 保存历史记录并合并统计信息
         user_logs_list = []
@@ -923,13 +867,13 @@ class AutoProxyTask(TaskExecuteBase):
     ) -> dict:
         config = None
 
-        if self.template_path.exists():
+        if self.m9a_tasks_path.exists():
             try:
-                config = read_file(self.template_path)
+                config = read_file(self.m9a_tasks_path)
                 config["Resource"] = resource
-                logger.info(f"使用配置模板：{self.template_path}")
+                logger.info(f"使用配置模板：{self.m9a_tasks_path}")
             except Exception as e:
-                logger.warning(f"读取模板 {self.template_path} 失败：{e}")
+                logger.warning(f"读取模板 {self.m9a_tasks_path} 失败：{e}")
 
         if config is None:
             logger.warning("无法读取配置模板，使用最小默认配置")
@@ -1057,9 +1001,9 @@ class AutoProxyTask(TaskExecuteBase):
     async def _build_virtual_config(self) -> dict:
 
         config = {}
-        if self.template_path.exists():
+        if self.m9a_tasks_path.exists():
             try:
-                config = read_file(self.template_path)
+                config = read_file(self.m9a_tasks_path)
             except Exception:
                 pass
 
@@ -1290,19 +1234,34 @@ class AutoProxyTask(TaskExecuteBase):
         emulator_manager,
     ) -> dict | None:
         try:
-            emulator_uid = uuid.UUID(emulator_id)
-            emulator_config = Config.EmulatorConfig[emulator_uid]
+            # 先问管理器这个索引到底对应哪台设备。一条配置可以纳管多个模拟器安装,
+            # 那种情况下持久化的类型不等于设备的真实类型, 直接读配置会漏掉专用能力。
+            emulator_type = ""
+            emulator_path = Path("")
+            native_index = emulator_index
 
-            emulator_type = emulator_config.get("Info", "Type")
-            emulator_path = Path(emulator_config.get("Info", "Path"))
+            resolve_device = getattr(emulator_manager, "resolve_device", None)
+            device_ref = resolve_device(emulator_index) if resolve_device else None
+            if device_ref is not None:
+                emulator_type = device_ref.emulator_type
+                emulator_path = Path(device_ref.manager_path)
+                native_index = device_ref.native_index
+            else:
+                emulator_uid = uuid.UUID(emulator_id)
+                emulator_config = Config.EmulatorConfig[emulator_uid]
+                emulator_type = emulator_config.get("Info", "Type")
+                emulator_path = Path(emulator_config.get("Info", "Path"))
 
             if emulator_type == "ldplayer":
                 return await self._build_ldplayer_config(
-                    emulator_info, emulator_path, emulator_index, emulator_manager
+                    emulator_path,
+                    emulator_index,
+                    native_index,
+                    emulator_manager,
                 )
             elif emulator_type == "mumu":
                 return self._build_mumu_config(
-                    emulator_info, emulator_path, emulator_index
+                    emulator_info, emulator_path, native_index
                 )
             else:
                 logger.info(f"不支持的模拟器类型: {emulator_type}，使用默认配置")
@@ -1313,9 +1272,9 @@ class AutoProxyTask(TaskExecuteBase):
 
     async def _build_ldplayer_config(
         self,
-        emulator_info: DeviceInfo,
         emulator_path: Path,
         emulator_index: str,
+        native_index: str,
         emulator_manager,
     ) -> dict:
         logger.info("构建雷电模拟器 AdbDevice 配置")
@@ -1335,7 +1294,8 @@ class AutoProxyTask(TaskExecuteBase):
         adb_path = emulator_root / "adb.exe"
 
         name = ld_player_device.title if ld_player_device else "雷电模拟器-LDPlayer"
-        idx = ld_player_device.idx if ld_player_device else int(emulator_index)
+        # 兜底必须用原生索引: ADB 序列号是按它算的, 拿设备号顶替会连到别的实例
+        idx = ld_player_device.idx if ld_player_device else int(native_index)
         pid = ld_player_device.pid if ld_player_device else 0
 
         ld_extras = {

@@ -18,6 +18,7 @@ from typing import Any
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from .host_environment import strip_host_python_environment
 
 logger = logging.getLogger("automas.maafw.runtime_pool.installer")
 
@@ -234,7 +235,9 @@ def is_package_index_offline() -> bool:
     return raw is not None and not raw.strip()
 
 
-def _resolve_python_mirror_candidates(*, explicit_mirror: str | None) -> list[str] | None:
+def _resolve_python_mirror_candidates(
+    *, explicit_mirror: str | None
+) -> list[str] | None:
     """解析 Python 解释器分发源的有序候选列表，供 ``uv python install`` 按序重试。
 
     优先级：调用方已解析出的显式 ``UV_PYTHON_INSTALL_MIRROR``（若有）最高，
@@ -723,6 +726,7 @@ def _create_environment_with_uv(
             bootstrap,
             "--no-python-downloads",
             "--no-project",
+            "--no-config",
             "--cache-dir",
             str(uv_cache_dir),
             "--link-mode",
@@ -888,6 +892,7 @@ def _find_pool_managed_python(
                 "--managed-python",
                 "--no-project",
                 "--no-python-downloads",
+                "--no-config",
                 "--resolve-links",
                 "--cache-dir",
                 str(cache_dir),
@@ -951,7 +956,9 @@ def _install_pool_managed_python(
     )
     base_env = _uv_environment(cache_dir, UV_LINK_MODE)
     base_env["UV_PYTHON_INSTALL_DIR"] = str(python_root)
-    explicit_mirror = str(base_env.get("UV_PYTHON_INSTALL_MIRROR") or "").strip() or None
+    explicit_mirror = (
+        str(base_env.get("UV_PYTHON_INSTALL_MIRROR") or "").strip() or None
+    )
     candidates = _resolve_python_mirror_candidates(explicit_mirror=explicit_mirror)
 
     command = [
@@ -963,6 +970,7 @@ def _install_pool_managed_python(
         str(python_root),
         "--no-bin",
         "--no-registry",
+        "--no-config",
         "--cache-dir",
         str(cache_dir),
         "--no-progress",
@@ -1154,6 +1162,8 @@ def _python_supports_venv(python: str) -> bool:
             text=True,
             encoding="utf-8",
             errors="replace",
+            # 探测与真正拉起解释器用同一份环境，宿主 PYTHONHOME / PYTHONWARNINGS 不参与判定。
+            env=_clean_process_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1275,6 +1285,9 @@ def _install_requirements_with_uv(
             "install",
             "--python",
             str(python_executable),
+            # 用户级 / 项目级 uv.toml（额外 [[index]]、offline、exclude-newer …）
+            # 不得参与池的解析，索引与镜像只由本文件的候选逻辑决定。
+            "--no-config",
             "--cache-dir",
             str(cache_dir),
             "--link-mode",
@@ -1343,6 +1356,7 @@ def _probe_python_identity(python_executable: Path) -> dict[str, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_clean_process_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(
@@ -1581,16 +1595,8 @@ def _run_with_source_rotation(
 
 
 def _clean_process_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    for name in (
-        "PYTHONHOME",
-        "PYTHONUSERBASE",
-        "PYTHONPATH",
-        "PIP_TARGET",
-        "PIP_PREFIX",
-        "PIP_USER",
-    ):
-        env.pop(name, None)
+    # 剔除名单与 worker / agent 各处共用（host_environment 模块），这里只补自己的要求。
+    env = strip_host_python_environment()
     env["PYTHONNOUSERSITE"] = "1"
     return env
 
@@ -1686,6 +1692,7 @@ def _resolved_requirements_with_uv(
                 "freeze",
                 "--python",
                 str(python_executable),
+                "--no-config",
                 "--cache-dir",
                 str(cache_dir),
             ],

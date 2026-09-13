@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, Literal
 
 import app.task as task
+from app.core.desktop_guard import ensure_desktop_available
 from app.models.config import CLASS_BOOK
 from app.models.schema import (
     TaskRuntimeSnapshot,
@@ -53,6 +54,7 @@ from app.runtime_tasks import RuntimeTasks
 from app.utils import LazyProxy, get_logger
 
 from .config import (
+    BAAHConfig,
     BetterGIConfig,
     Config,
     GeneralConfig,
@@ -64,6 +66,7 @@ from .config import (
     OkNteConfig,
     OkwwConfig,
     SrcConfig,
+    ZzzOdConfig,
 )
 from .queue_cycle import (
     CycleEntry,
@@ -214,16 +217,27 @@ class TaskInfo(TaskItem):
         )
         if self.current_index != -1:
             log = self.script_list[self.current_index].log
+            if log == self._last_pushed_log:
+                return
+            # 日志只在尾部追加时只推增量；首次推送或日志被重置/变短时整体替换。
             # 部分任务模式（MAA/SRC/General/M9A）无上限累积脚本日志，全量 JSON
-            # 序列化超大字符串会在 iterencode 阶段 MemoryError；在共享推送点做
+            # 序列化超大字符串会在 iterencode 阶段 MemoryError；整体替换时做
             # 防御性限长（保留最新日志），一处覆盖所有任务模式。
-            if len(log) > 200_000:
-                log = log[-200_000:]
+            if self._last_pushed_log and log.startswith(self._last_pushed_log):
+                payload = log[len(self._last_pushed_log) :]
+                append = True
+            else:
+                payload = log[-200_000:]
+                append = False
+            self._log_seq += 1
             await Publisher.send(
                 id=self.task_id,
                 type=protocol.TASK_LOG_UPDATED,
-                data=WSTaskLogUpdatedData(log=log),
+                data=WSTaskLogUpdatedData(
+                    log=payload, seq=self._log_seq, append=append
+                ),
             )
+            self._last_pushed_log = log
 
 
 class Task(TaskExecuteBase):
@@ -359,6 +373,10 @@ class Task(TaskExecuteBase):
             return task.HSRManager(script_item)
         if isinstance(script_config, BetterGIConfig):
             return task.BetterGIManager(script_item)
+        if isinstance(script_config, ZzzOdConfig):
+            return task.ZzzOdManager(script_item)
+        if isinstance(script_config, BAAHConfig):
+            return task.BAAHManager(script_item)
         if isinstance(script_config, MaaFWConfig):
             return task.MaaFWEmbeddedManager(script_item)
         return None
@@ -640,8 +658,8 @@ class Task(TaskExecuteBase):
                 "manual_task": "task_manual",
                 "startup_task": "task_startup",
             }.get(self.task_info.trigger_source, "task_manual")
-            self.task_info.game_sign_results = await MainTimer.try_game_sign_for_task(
-                source=sign_source
+            self.task_info.community_results = (
+                await MainTimer.try_community_for_task(source=sign_source)
             )
 
         await self.prepare()
@@ -669,7 +687,12 @@ class Task(TaskExecuteBase):
         for i in range(start_index):
             self.task_info.script_list[i].status = "跳过"
 
-        # 依次运行任务
+        # 依次运行任务。桌面保障是常驻守卫，这里只强制它立刻巡检一次：轮询有几秒窗口，
+        # 而任务一旦在幻影屏上起来，游戏就会把坏掉的窗口尺寸记进自己的配置。
+        await ensure_desktop_available()
+        await self._run_script_list(start_index)
+
+    async def _run_script_list(self, start_index: int) -> None:
         for self.task_info.current_index in range(
             start_index, len(self.task_info.script_list)
         ):
@@ -874,9 +897,6 @@ class _TaskManager:
 
         tasks: list[TaskRuntimeSnapshotItem] = []
         for task_uid, task_info in list(self.task_info.items()):
-            log = ""
-            if 0 <= task_info.current_index < len(task_info.script_list):
-                log = task_info.script_list[task_info.current_index].log
             handler = self.task_handler.get(task_uid)
             tasks.append(
                 TaskRuntimeSnapshotItem(
@@ -893,7 +913,9 @@ class _TaskManager:
                         WSTaskCyclePreviewData(**item)
                         for item in task_info.cycle_next_list
                     ],
-                    log=log,
+                    # 返回上次推送的日志而非当前日志, 保证与下一条增量推送衔接
+                    log=task_info._last_pushed_log[-200_000:],
+                    logSeq=task_info._log_seq,
                 )
             )
         return TaskRuntimeSnapshot(
@@ -965,6 +987,8 @@ class _TaskManager:
         resume_from_script_id: str | None = None,
         user_id: str | None = None,
         trigger_source: TaskTriggerSource = "manual_task",
+        view_only: bool = False,
+        instance_idx: int | None = None,
     ) -> uuid.UUID:
         """
         添加任务, 根据 id 值搜索实际指向的任务配置
@@ -975,6 +999,10 @@ class _TaskManager:
             new_task_info (dict): 新任务项信息. Defaults to {}.
             user_id (str): 单独运行的用户 ID; 仅脚本的自动代理任务可用。
             trigger_source: MAS 任务触发来源，API 手动启动默认 manual_task。
+            view_only: 配置查看会话（ScriptConfig 专用）：只读打开原生界面，
+                不注入基线也不回读字段，用于「查看历史备份」等预览场景。
+            instance_idx: 配置会话（ScriptConfig 专用）：直控指定会话窗口
+                打开的原生实例（临时切换活跃，会话结束还原）。
 
         Returns:
             uuid.UUID: 任务 UID
@@ -1078,6 +1106,8 @@ class _TaskManager:
                 resume_from_script_id=resume_from_script_id,
                 trigger_source=trigger_source,
                 is_cycle=is_cycle,
+                view_only=view_only and exec_mode == "ScriptConfig",
+                instance_idx=instance_idx if exec_mode == "ScriptConfig" else None,
             )
             self.task_handler[task_uid] = Task(
                 self.task_info[task_uid],

@@ -68,11 +68,18 @@ export default defineConfig(({ command }) => {
     define: {
       // 在编译时将版本号注入到环境变量中
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(versionJson.version),
+      // res/ 不进 Electron 产物，当前版本的更新日志也在编译期注入；只打当前这一段
+      'import.meta.env.VITE_APP_CHANGELOG': JSON.stringify(
+        versionJson.version_info?.[versionJson.version] ?? {}
+      ),
       // 渲染进程兜底端点用，正常仍以 Electron 下发的端点为准
       'import.meta.env.VITE_AUTO_MAS_HTTP_PORT': JSON.stringify(String(backendPort)),
     },
     // 开发服务器配置
     server: {
+      // 钉死 IPv4：localhost 解析随环境漂移（本机 vite 曾只绑 ::1，而 wait-on 经 Node 访问
+      // IPv6 回环被拒），host 需与 electron-dev 的 wait-on/VITE_DEV_SERVER_URL 同为 127.0.0.1
+      host: '127.0.0.1',
       port: DEV_SERVER_PORT,
       // 端口被占用时直接失败，避免静默换端口后 Electron 仍加载另一实例的页面
       strictPort: true,

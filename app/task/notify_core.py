@@ -31,13 +31,11 @@ from app.core import Config
 from app.core.notify import (
     DispatchResult,
     NotifyPayload,
+    dispatch_task_report,
     global_target,
     should_send_result,
 )
-from app.tools.game_sign_notify import (
-    dispatch_task_report,
-    get_task_game_sign_summary,
-)
+from app.tools.community_notify import get_task_community_summary
 
 
 async def push_proxy_result(
@@ -63,7 +61,7 @@ async def push_proxy_result(
         skip_debug_message: SendTaskResultTime 不满足时的 debug 文案，仅 M9A 传入。
     """
 
-    if not should_send_result(message):
+    if not should_send_result(message, task_info=task_info):
         if logger is not None and skip_debug_message:
             logger.debug(skip_debug_message)
         return DispatchResult()
@@ -79,7 +77,7 @@ async def push_proxy_result(
         f"未完成用户数: {message['uncompleted_count']}"
     )
     summary_text = (
-        get_task_game_sign_summary(task_info)
+        get_task_community_summary(task_info)
         if task_info is not None and message.get("game_sign_summary")
         else ""
     )
@@ -89,7 +87,8 @@ async def push_proxy_result(
             text=message_text,
             html=template.render(message),
             signature_sep=signature_sep,
-            system_title=message.get("system_title") or title.replace("报告", "已完成！"),
+            system_title=message.get("system_title")
+            or title.replace("报告", "已完成！"),
             system_message=counts,
             system_ticker=counts,
             system_timeout=10,

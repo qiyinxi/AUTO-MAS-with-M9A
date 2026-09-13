@@ -1,5 +1,6 @@
 import type { ScriptType } from '@/types/script'
 import generalIcon from '@/assets/AUTO-MAS.ico'
+import baahIcon from '@/assets/baah.png'
 import bettergiIcon from '@/assets/bettergi.ico'
 import maafwIcon from '@/assets/maafw.png'
 import hsrIcon from '@/assets/hsr.png'
@@ -9,8 +10,10 @@ import m9aIcon from '@/assets/M9A.png'
 import okNteIcon from '@/assets/ok-nte.ico'
 import okwwIcon from '@/assets/ok-ww.ico'
 import srcIcon from '@/assets/SRC.png'
+import zzzOdIcon from '@/assets/zzz-od.ico'
 
 const SCRIPT_ICON_BY_TYPE: Record<ScriptType, string> = {
+  BAAH: baahIcon,
   MAA: maaIcon,
   General: generalIcon,
   Okww: okwwIcon,
@@ -21,6 +24,7 @@ const SCRIPT_ICON_BY_TYPE: Record<ScriptType, string> = {
   MaaFW: maafwIcon,
   HSR: hsrIcon,
   BetterGI: bettergiIcon,
+  ZzzOd: zzzOdIcon,
 }
 
 /** Return the host-owned icon for current and legacy persisted script types. */
@@ -34,13 +38,6 @@ export const getScriptIcon = (value: unknown, preferredIcon?: string | null): st
     return SCRIPT_ICON_BY_TYPE[normalized as ScriptType]
   }
   return generalIcon
-}
-
-export const handleScriptIconError = (event: Event, value: unknown): void => {
-  const image = event.currentTarget as HTMLImageElement | null
-  if (!image || image.dataset.scriptIconFallbackApplied === 'true') return
-  image.dataset.scriptIconFallbackApplied = 'true'
-  image.src = getScriptIcon(value)
 }
 
 export const maafwScriptIcon = maafwIcon

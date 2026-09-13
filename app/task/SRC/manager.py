@@ -33,10 +33,7 @@ from app.models.config import SrcConfig, SrcUserConfig
 from app.models.ConfigBase import MultipleConfig
 from app.models.schema import WSTaskNoticeData
 from app.models.task import ScriptItem, TaskExecuteBase, UserItem
-from app.tools.game_sign_notify import (
-    append_task_game_sign_summary,
-    finalize_task_game_sign_notification,
-)
+from app.task.emulator_core import close_emulator
 from app.utils import ProcessManager, get_logger
 from app.utils.constants import TASK_MODE_ZH
 
@@ -610,11 +607,6 @@ class SrcManager(TaskExecuteBase):
             expected_script_id=self.script_info.script_id,
         )
 
-    def _read_config_snapshot_root(self) -> Path:
-        """读取已提交配置快照所属的 SRC 根目录。"""
-
-        return self._read_config_snapshot_state().src_root_path
-
     def _quarantine_config_snapshot(self, reason: str) -> None:
         """隔离不应自动恢复的快照，避免覆盖现场配置。"""
 
@@ -833,16 +825,8 @@ class SrcManager(TaskExecuteBase):
         if self.task_info.mode not in ["AutoProxy"]:
             return False
 
-        try:
-            await asyncio.wait_for(
-                self.emulator_manager.close(
-                    self.script_config.get("Emulator", "Index")
-                ),
-                timeout=_EMULATOR_CLOSE_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
+        if not await close_emulator(self, timeout=_EMULATOR_CLOSE_TIMEOUT_SECONDS):
             self.script_info.status = "异常"
-            logger.opt(exception=True).warning(f"关闭模拟器时出现异常: {e}")
 
         # 根配置保持锁定以阻止外部编辑；仅临时开放内部用户集合写回。
         await self.script_config.UserData.unlock()
@@ -860,10 +844,6 @@ class SrcManager(TaskExecuteBase):
         wait_count = sum(1 for u in self.script_info.user_list if u.status == "等待")
 
         title = f"{datetime.now().strftime('%m-%d')} | {self.script_info.name or '空白'}的{TASK_MODE_ZH[self.task_info.mode]}任务报告"
-        task_result = append_task_game_sign_summary(
-            self.task_info, self.script_info.result
-        )
-        has_game_sign_summary = task_result != self.script_info.result
         result = {
             "title": f"{TASK_MODE_ZH[self.task_info.mode]}任务报告",
             "script_name": self.script_info.name or "空白",
@@ -871,8 +851,7 @@ class SrcManager(TaskExecuteBase):
             "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "completed_count": over_count,
             "uncompleted_count": error_count + wait_count,
-            "result": task_result,
-            "game_sign_summary": has_game_sign_summary,
+            "result": self.script_info.result,
         }
 
         completion_title = (
@@ -882,7 +861,7 @@ class SrcManager(TaskExecuteBase):
         )
         result = {**result, "system_title": completion_title}
         try:
-            push_result = await asyncio.wait_for(
+            await asyncio.wait_for(
                 push_notification(
                     mode="代理结果",
                     title=title,
@@ -891,9 +870,6 @@ class SrcManager(TaskExecuteBase):
                     task_info=self.task_info,
                 ),
                 timeout=_NOTIFICATION_TIMEOUT_SECONDS,
-            )
-            finalize_task_game_sign_notification(
-                self.task_info, has_game_sign_summary, push_result
             )
         except Exception as e:
             await self._report_notification_error("推送代理结果", e)

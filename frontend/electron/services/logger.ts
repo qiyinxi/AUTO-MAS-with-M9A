@@ -30,7 +30,11 @@ function fileFormat(params: { data: unknown[]; level: string; message: { date: D
  * 控制台日志格式化函数
  * 格式：<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <custom-color>{module}</custom-color> | <level>{message}</level>
  */
-function consoleFormat(params: { data: unknown[]; level: string; message: { date: Date } }): string[] {
+function consoleFormat(params: {
+  data: unknown[]
+  level: string
+  message: { date: Date }
+}): string[] {
   const time = formatTime(params.message.date)
   const level = formatLevel(params.level)
   const module = params.data[0] && typeof params.data[0] === 'string' ? params.data[0] : 'unknown'
@@ -122,17 +126,6 @@ export function initializeLogger(): void {
 }
 
 /**
- * 保存原始 console 方法的引用
- */
-const originalConsole = {
-  log: console.log,
-  info: console.info,
-  warn: console.warn,
-  error: console.error,
-  debug: console.debug,
-}
-
-/**
  * Hook console 方法，将所有 console 调用重定向到 logger 系统
  */
 function hookConsole(): void {
@@ -182,17 +175,6 @@ function formatConsoleArgs(args: unknown[]): unknown[] {
 }
 
 /**
- * 恢复原始 console 方法（用于调试或特殊情况）
- */
-export function restoreConsole(): void {
-  console.log = originalConsole.log
-  console.info = originalConsole.info
-  console.warn = originalConsole.warn
-  console.error = originalConsole.error
-  console.debug = originalConsole.debug
-}
-
-/**
  * 创建日志记录器
  */
 export class Logger {
@@ -219,16 +201,8 @@ export class Logger {
     log.info(this.moduleName, message, ...args)
   }
 
-  verbose(message: string, ...args: unknown[]): void {
-    log.verbose(this.moduleName, message, ...args)
-  }
-
   debug(message: string, ...args: unknown[]): void {
     log.debug(this.moduleName, message, ...args)
-  }
-
-  silly(message: string, ...args: unknown[]): void {
-    log.silly(this.moduleName, message, ...args)
   }
 }
 

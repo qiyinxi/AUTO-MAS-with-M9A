@@ -33,7 +33,7 @@ jobs:
   build:
     name: 构建 Windows 版本
     runs-on: windows-latest
-    if: github.repository == 'AUTO-MAS-Project/AUTO-MAS' && (github.ref_name == 'main' || github.ref_name == 'dev')
+    if: github.repository == 'AUTO-MAS-Project/AUTO-MAS' && (github.ref_name == 'main' || github.ref_name == 'dev' || startsWith(github.ref_name, 'release/'))
     
     outputs:
       version_tag: ${{ steps.generate_version_info.outputs.version_tag }}
@@ -46,6 +46,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 读取 Runtime 版本
+        run: |
+          # 从本次构建所选分支读取独立版本文件，不再依赖默认分支中的工作流常量。
+          $runtimeVersionFile = Join-Path '${{ github.workspace }}' 'res\runtime-version.txt'
+          $runtimeVersion = (Get-Content -LiteralPath $runtimeVersionFile -Raw).Trim()
+          if ($runtimeVersion -notmatch '^v\d+(\.\d+)*([-+][0-9A-Za-z.-]+)?$') {
+            throw "Runtime 版本格式无效：$runtimeVersion"
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RUNTIME_VERSION=$runtimeVersion" -Encoding utf8
+          Write-Host "本次构建使用 Runtime $runtimeVersion"
+        shell: pwsh
+
       - name: 设置 Node.js 环境
         uses: actions/setup-node@v7.0.0
         with:
@@ -55,37 +67,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 版本与哈希的唯一来源是 res/runtime.json：它随发布分支进到用户的 repo/ 里，本体更新
-          # 后 Electron 按同一份钉扎把用户机器上的 Runtime 也换成这一版（见
-          # frontend/electron/services/runtimeBinaryService.ts）。所以这里不能另写一个版本号，
-          # 否则安装包捆绑的与用户升级后要求的会是两版，每次启动都白下载一遍。
-          # Runtime 有自己的发布节奏，本仓库依赖其新行为的改动必须等它先发布对应版本，
-          # 再手动把 res/runtime.json 提上去，不追 latest。
-          $pinPath = Join-Path "${{ github.workspace }}" 'res\runtime.json'
-          $pin = Get-Content -Raw -Path $pinPath -Encoding UTF8 | ConvertFrom-Json
-
-          $runtimeVersion = "$($pin.version)".Trim()
-          $pinnedHash = "$($pin.sha256)".Trim().ToUpperInvariant()
-          if ($runtimeVersion -cnotmatch '^v\d+(\.\d+)*([-+][0-9A-Za-z.-]+)?$') {
-            throw "res/runtime.json 的 version 非法：$runtimeVersion"
-          }
-          if ($pinnedHash -cnotmatch '^[0-9A-F]{64}$') {
-            throw "res/runtime.json 的 sha256 必须是 64 位十六进制：$($pin.sha256)"
-          }
-
           $runtimeDir = Join-Path "${{ github.workspace }}" 'runtime'
           New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
-          $exeName = "auto-mas-runtime-$runtimeVersion.exe"
+          $exeName = "auto-mas-runtime-$env:RUNTIME_VERSION.exe"
 
-          gh release download $runtimeVersion `
+          gh release download $env:RUNTIME_VERSION `
             -R AUTO-MAS-Project/AUTO-MAS-Runtime `
             -D $runtimeDir `
             -p $exeName `
             -p 'SHA256SUMS.txt' `
             --clobber
           if ($LASTEXITCODE -ne 0) {
-            throw "下载 Runtime $runtimeVersion 失败"
+            throw "下载 Runtime $env:RUNTIME_VERSION 失败"
           }
 
           Push-Location $runtimeDir
@@ -98,24 +92,18 @@ jobs:
             $expectedHash = ($sumsLine.Line -split '\s+')[0].ToUpperInvariant()
             $actualHash = (Get-FileHash -Path $exeName -Algorithm SHA256).Hash.ToUpperInvariant()
 
-            Write-Host "钉扎哈希: $pinnedHash"
             Write-Host "期望哈希: $expectedHash"
             Write-Host "实际哈希: $actualHash"
 
             if ($actualHash -ne $expectedHash) {
               throw "SHA-256 校验失败：$exeName 与 SHA256SUMS.txt 不匹配，可能下载损坏或被篡改"
             }
-            # 再与钉扎值对一次：上一条只证明下到的文件和该 Release 自己的清单一致，钉扎值抄错
-            # 版本时照样通过，而用户侧只认 res/runtime.json 里的这一个哈希。
-            if ($actualHash -ne $pinnedHash) {
-              throw "res/runtime.json 的 sha256 与 $exeName 的实际哈希不一致，请按该 Release 的 SHA256SUMS.txt 更新钉扎"
-            }
 
             # 校验通过后改成稳定文件名，Electron 侧固定按 auto-mas-runtime.exe 定位
             # （见 frontend/electron/services/runtime/launchConfig.ts）。
             Move-Item -Path $exeName -Destination 'auto-mas-runtime.exe' -Force
             Remove-Item 'SHA256SUMS.txt'
-            Write-Host "Runtime $runtimeVersion 校验通过：$runtimeDir\auto-mas-runtime.exe"
+            Write-Host "Runtime $env:RUNTIME_VERSION 校验通过：$runtimeDir\auto-mas-runtime.exe"
           } finally {
             Pop-Location
           }
@@ -174,49 +162,31 @@ jobs:
             wait-for-completion: true
             output-artifact-directory: 'frontend\dist\win-unpacked'
 
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+
+      # 守门：仓库版本号必须已经比最新 tag 新、changelog.d/ 必须已清空，否则说明发版 PR 还没合并，
+      # 或者合并之后又进了带碎片的改动。Release 正文由脚本渲染：首行 JSON 是老客户端的解析契约，
+      # 可见正文只写本版增量。
       - name: 生成版本信息
         id: generate_version_info
         run: |
-          $tempScript = "temp_version_script.js"
-          @'
-          const fs = require('fs');
-          const path = require('path');
-
-          let versionPath = '../res/version.json';
-          if (!fs.existsSync(versionPath)) {
-              versionPath = 'res/version.json';
-          }
-          const version = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
-
-          function versionInfoMarkdown(info) {
-              let md = '';
-              for (const [key, values] of Object.entries(info)) {
-                  md += `## ${key}\n`;
-                  for (const v of values) md += `- ${v}\n`;
-              }
-              return md;
-          }
-
-          const versionTag = version.version;
-          const isPrerelease = versionTag.includes('-beta');
-
-          const allVersionInfo = {};
-          for (const v_i of Object.values(version.version_info)) {
-              for (const [key, value] of Object.entries(v_i)) {
-                  if (!allVersionInfo[key]) allVersionInfo[key] = [];
-                  allVersionInfo[key].push(...value);
-              }
-          }
-          const changelog = `<!--${JSON.stringify(version.version_info, null, 0)}-->\n${versionInfoMarkdown(allVersionInfo)}`;
-
-          const outputPath = process.env.GITHUB_OUTPUT;
-          fs.appendFileSync(outputPath, `version_tag=${versionTag}\n`);
-          fs.appendFileSync(outputPath, `is_prerelease=${isPrerelease}\n`);
-          fs.appendFileSync(outputPath, `version_changelog<<EOF\n${changelog}\nEOF\n`);
-          '@ | Out-File -FilePath $tempScript -Encoding UTF8
-
-          node $tempScript
-          Remove-Item $tempScript
+          python scripts/changelog.py guard
+          if ($LASTEXITCODE -ne 0) { throw "发布守门未通过" }
+          $versionTag = (python scripts/changelog.py current).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $versionTag) { throw "读不到当前版本号" }
+          $notePath = Join-Path $env:RUNNER_TEMP 'release-note.md'
+          python scripts/changelog.py release-note --version $versionTag --output $notePath
+          if ($LASTEXITCODE -ne 0) { throw "渲染 Release 正文失败" }
+          $changelog = Get-Content -LiteralPath $notePath -Raw -Encoding utf8
+          $isPrerelease = if ($versionTag.Contains('-')) { 'true' } else { 'false' }
+          $delimiter = "EOF_$([guid]::NewGuid().ToString('N'))"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version_tag=$versionTag" -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "is_prerelease=$isPrerelease" -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version_changelog<<$delimiter`n$changelog`n$delimiter" -Encoding utf8
+          Write-Host "版本 $versionTag，预发布：$isPrerelease"
         shell: pwsh
 
       - name: 准备 Inno Setup
@@ -384,6 +354,26 @@ jobs:
           git tag "$TAG_NAME"
           git push origin "$TAG_NAME"
 
+      - name: 同步发行版分支到 CNB
+        # 同步失败不该阻断发版：本改动进入默认分支之前，dispatch 会因为默认分支上的
+        # sync-cnb.yml 还没有 workflow_dispatch 而被拒，那时这一步必然报错。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 上一步用 GITHUB_TOKEN 推分支和 tag，而 GITHUB_TOKEN 造成的 push / create
+          # 不会触发 sync-cnb.yml，CNB 上于是没有当版 release/vX.Y.Z 分支。Runtime 首次
+          # 克隆受管工作区按 [cnb, github] 顺序找这个分支，国内用户在 cnb 上找不到、又
+          # 连不上 github，初始化直接卡死（GIT_CLONE_FAILED）。
+          # workflow_dispatch 是该限制的明确例外，可以用 GITHUB_TOKEN 调起。
+          #
+          # 必须 dispatch 到发行版分支本身。sync-cnb 的 checkout 是 ref: github.ref，
+          # 而 git-sync 只把检出的那个 ref 连同全部 tag 推过去，不是整库镜像：
+          # v5.5.0-beta.3 发版当天 12:34（codex/sync-github-from-dev）与 12:48（main）
+          # 各跑过一次 sync 且都成功，CNB 上照样没有 release/v5.5.0-beta.3，直到有人
+          # 把提交推到该分支本身才同步过去。dispatch 到构建分支等于又推了一次 dev。
+          gh workflow run sync-cnb.yml --ref "release/${{ needs.build.outputs.version_tag }}"
+
       - name: 发布发行版
         uses: softprops/action-gh-release@v3.0.2
         with:
@@ -462,7 +452,7 @@ jobs:
     name: 发布 CNB 发行版
     runs-on: ubuntu-latest
     needs: build
-    if: github.repository == 'AUTO-MAS-Project/AUTO-MAS' && (github.ref_name == 'main' || github.ref_name == 'dev')
+    if: github.repository == 'AUTO-MAS-Project/AUTO-MAS' && (github.ref_name == 'main' || github.ref_name == 'dev' || startsWith(github.ref_name, 'release/'))
 
     steps:
       - name: 签出代码

@@ -18,8 +18,6 @@
 
 import asyncio
 import json
-import shlex
-import shutil
 import time
 import uuid
 from contextlib import suppress
@@ -40,6 +38,11 @@ from app.services.wuthering_waves import (
 )
 from app.services.wuthering_waves_updater import update_wuthering_waves
 from app.task.general.tools import execute_script_task
+from app.task.proxy_helpers import (
+    append_push_log,
+    push_dispatch_log,
+    split_args,
+)
 from app.utils import (
     ProcessInfo,
     ProcessManager,
@@ -49,7 +52,7 @@ from app.utils import (
 )
 from app.utils.constants import UTC4
 from app.utils.i18n import PoTranslator
-from app.utils.io import write_file
+from app.utils.io import replace_dir, write_file
 from app.utils.LogMonitor import LogMonitor
 
 from .push_log import (
@@ -93,11 +96,6 @@ _OKWW_UPDATE_METHOD = "AUTO_UPDATE"
 _OKWW_LOG_TIME_START = 1
 _OKWW_LOG_TIME_END = 23
 _OKWW_LOG_TIME_FORMAT = "%Y-%m-%d %H:%M:%S,%f"
-
-
-def _split_args(raw: object) -> list[str]:
-    value = str(raw or "").strip()
-    return shlex.split(value, posix=False) if value else []
 
 
 def _okww_config_mode(raw: object) -> str:
@@ -301,6 +299,11 @@ class AutoProxyTask(TaskExecuteBase):
                 paths=[self.script_log_path],
                 sink=self._append_push_log,
                 start_from_end=True,
+                # ok-script 框架跨零点把 ok-script.log 滚动为
+                # ok-script.YYYY-MM-DD.log（日期在中段），声明模板让轮转补偿命中旧文件
+                rotated_name=(
+                    f"{self.script_log_path.stem}.%Y-%m-%d{self.script_log_path.suffix}"
+                ),
             )
             # 前置翻译：ok-ww 自带 ok.po + AutoMAS 项目自带的补充 .po（补充优先）
             self.log_translator = (
@@ -368,26 +371,19 @@ class AutoProxyTask(TaskExecuteBase):
                 str(self.cur_user_uid),
                 config_mode,
             )
-            tmp_dst = self.script_config_path.with_name(
-                self.script_config_path.name + ".tmp"
-            )
-            shutil.rmtree(tmp_dst, ignore_errors=True)
-            shutil.copytree(mas_config_dir, tmp_dst, dirs_exist_ok=True)
-            shutil.rmtree(self.script_config_path, ignore_errors=True)
-            tmp_dst.rename(self.script_config_path)
+            replace_dir(mas_config_dir, self.script_config_path)
         self._apply_mas_overrides()
         logger.info("OK-WW 运行参数配置完成: 自动代理")
-
-    def _append_push_log(self, log_type: str, text: str, ts: float) -> None:
-        """sink：把 log_box 采集结果写入当前用户的推送日志（供调度器聚合到报告）"""
-        self.cur_user_item.push_log.append((log_type, text, ts))
 
     async def _push_dispatch_log(self, line: str) -> None:
         """向调度台追加流程日志（赋值 script_info.log 会触发 WebSocket 推送）。"""
 
-        prev = self.script_info.log
-        self.script_info.log = f"{prev}\n{line}" if prev else line
-        await asyncio.sleep(0)
+        await push_dispatch_log(self.script_info, line)
+
+    def _append_push_log(self, log_type: str, text: str, ts: float) -> None:
+        """sink：把 log_box 采集结果写入当前用户的推送日志（供调度器聚合到报告）"""
+
+        append_push_log(self.cur_user_item, log_type, text, ts)
 
     async def handle_pre_okww_error(
         self, error_message: str, e: Exception | None = None
@@ -408,16 +404,12 @@ class AutoProxyTask(TaskExecuteBase):
             await Publisher.send(
                 id=self.task_info.task_id,
                 type=protocol.TASK_NOTICE,
-                data=WSTaskNoticeData(
-                    level="error", message=f"{error_message}: {e}"
-                ),
+                data=WSTaskNoticeData(level="error", message=f"{error_message}: {e}"),
             )
         self.cur_user_log.content = [f"{error_message}, 无日志记录"]
         self.cur_user_log.status = error_message
 
-        await self.kill_managed_process(
-            kill_game=self._game_management_enabled()
-        )
+        await self.kill_managed_process(kill_game=self._game_management_enabled())
 
         try:
             await Notify.push_plyer(
@@ -495,7 +487,7 @@ class AutoProxyTask(TaskExecuteBase):
 
             await self.game_manager.open_process(
                 self.game_process_path,
-                *_split_args(self.script_config.get("Game", "Arguments")),
+                *split_args(self.script_config.get("Game", "Arguments")),
             )
             wait_time = max(int(self.script_config.get("Game", "WaitTime")), 0)
             if wait_time:
@@ -585,14 +577,10 @@ class AutoProxyTask(TaskExecuteBase):
             ):
                 account_id = (self.cur_user_config.get("Info", "Id") or "").strip()
                 if not account_id:
-                    await self._push_dispatch_log(
-                        "未配置账号，跳过账号切换"
-                    )
+                    await self._push_dispatch_log("未配置账号，跳过账号切换")
                 else:
                     try:
-                        await self._push_dispatch_log(
-                            "正在强制切换鸣潮登录账号..."
-                        )
+                        await self._push_dispatch_log("正在强制切换鸣潮登录账号...")
                         # 账号切换在后台线程内同步执行，on_log 契约是同步回调；
                         # _push_dispatch_log 是 async 方法，须经 run_coroutine_threadsafe
                         # 调度回事件循环，否则进度不会推送到调度台且产生未等待协程告警。
@@ -603,9 +591,7 @@ class AutoProxyTask(TaskExecuteBase):
                                 self._push_dispatch_log(line), switch_loop
                             )
 
-                        await async_switch_account(
-                            account_id, on_log=_push_switch_log
-                        )
+                        await async_switch_account(account_id, on_log=_push_switch_log)
                         await self._push_dispatch_log(
                             f"鸣潮账号切换成功：****{account_id[-4:]}"
                         )
@@ -735,7 +721,9 @@ class AutoProxyTask(TaskExecuteBase):
             if self.log_translator is not None:
                 self.log_translator.clear()
         except Exception:
-            logger.opt(exception=True).warning("OK-WW log_box 收尾推送失败（okww_resolve/翻译清理）")
+            logger.opt(exception=True).warning(
+                "OK-WW log_box 收尾推送失败（okww_resolve/翻译清理）"
+            )
             # 采集失败状态显式写入报告，避免节点详情缺失却仍呈现为正常结果
             self.cur_user_item.push_log.append(
                 (LogType.NORMAL, "⚠️ 节点采集失败", time.time())
@@ -929,8 +917,9 @@ class AutoProxyTask(TaskExecuteBase):
             return
         deadline = time.monotonic() + _GAME_EXIT_WAIT_SECONDS
         while time.monotonic() < deadline:
-            # 按进程存活判断（不依赖窗口）：窗口销毁后进程可能仍存活片刻
-            if not is_process_alive(_WUWA_CLIENT_PROCESS):
+            # 按进程存活判断（不依赖窗口）：窗口销毁后进程可能仍存活片刻。
+            # 全进程扫描是同步 IO，放到线程里免得每秒卡一次事件循环
+            if not await asyncio.to_thread(is_process_alive, _WUWA_CLIENT_PROCESS):
                 logger.info("鸣潮客户端进程已完全退出，继续下一用户")
                 return
             await asyncio.sleep(1)

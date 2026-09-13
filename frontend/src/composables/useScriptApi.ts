@@ -9,6 +9,7 @@ import {
   type MaaFWAgentEnvPrepareOut,
   ScriptCreateIn,
   type ScriptReorderIn,
+  type ZzzOdUserConfig,
   HsrService,
   MaaFwService,
   Service,
@@ -45,6 +46,8 @@ const SCRIPT_CREATE_TYPE_BY_SCRIPT_TYPE: Record<ScriptType, ScriptCreateIn.type>
   OkNte: ScriptCreateIn.type.OK_NTE,
   HSR: ScriptCreateIn.type.HSR,
   BetterGI: ScriptCreateIn.type.BETTER_GI,
+  ZzzOd: ScriptCreateIn.type.ZZZ_OD,
+  BAAH: ScriptCreateIn.type.BAAH,
   General: ScriptCreateIn.type.GENERAL,
 }
 
@@ -58,6 +61,8 @@ const SCRIPT_TYPE_BY_CONFIG_TYPE: Record<string, ScriptType> = {
   MaaFWConfig: 'MaaFW',
   HSRConfig: 'HSR',
   BetterGIConfig: 'BetterGI',
+  ZzzOdConfig: 'ZzzOd',
+  BAAHConfig: 'BAAH',
 }
 
 const resolveScriptType = (configType: string): ScriptType => {
@@ -69,9 +74,7 @@ const normalizeMaaEndOptionArray = <T extends string>(
   fallback: readonly T[]
 ): T[] => {
   if (!Array.isArray(value)) return [...fallback]
-  return value.filter(
-    (item): item is T => typeof item === 'string' && fallback.includes(item as T)
-  )
+  return value.filter((item): item is T => typeof item === 'string' && fallback.includes(item as T))
 }
 
 export function useScriptApi() {
@@ -119,9 +122,7 @@ export function useScriptApi() {
   }
 
   // 获取脚本列表（可选择是否管理 loading 状态，避免嵌套调用时提前结束 loading）
-  const getScripts = async (
-    manageLoading: boolean = true
-  ): Promise<ScriptDetail[]> => {
+  const getScripts = async (manageLoading: boolean = true): Promise<ScriptDetail[]> => {
     if (manageLoading) {
       loading.value = true
       error.value = null
@@ -269,6 +270,10 @@ export function useScriptApi() {
                           maaUserData.Task?.IfMall !== undefined ? maaUserData.Task.IfMall : true,
                         IfAward:
                           maaUserData.Task?.IfAward !== undefined ? maaUserData.Task.IfAward : true,
+                        IfSwitchTheme:
+                          maaUserData.Task?.IfSwitchTheme !== undefined
+                            ? maaUserData.Task.IfSwitchTheme
+                            : false,
                         IfRoguelike:
                           maaUserData.Task?.IfRoguelike !== undefined
                             ? maaUserData.Task.IfRoguelike
@@ -332,7 +337,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           maaUserData.Data?.LastProxyDate !== undefined
                             ? maaUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           maaUserData.Data?.ProxyTimes !== undefined
                             ? maaUserData.Data.ProxyTimes
@@ -432,7 +437,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           srcUserData.Data?.LastProxyDate !== undefined
                             ? srcUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           srcUserData.Data?.ProxyTimes !== undefined
                             ? srcUserData.Data.ProxyTimes
@@ -514,7 +519,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           generalUserData.Data?.LastProxyDate !== undefined
                             ? generalUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           generalUserData.Data?.ProxyTimes !== undefined
                             ? generalUserData.Data.ProxyTimes
@@ -586,6 +591,23 @@ export function useScriptApi() {
                           maaEndUserData.Task?.AutoEssenceSpecifiedLocation != null
                             ? maaEndUserData.Task.AutoEssenceSpecifiedLocation
                             : '',
+                        AutoEssenceMenu:
+                          maaEndUserData.Task?.AutoEssenceMenu === 'Random' ||
+                          maaEndUserData.Task?.AutoEssenceMenu === 'Target'
+                            ? maaEndUserData.Task.AutoEssenceMenu
+                            : 'Location',
+                        AutoEssenceTargetWeapons: Array.isArray(
+                          maaEndUserData.Task?.AutoEssenceTargetWeapons
+                        )
+                          ? Array.from(
+                              new Set(
+                                maaEndUserData.Task.AutoEssenceTargetWeapons.filter(
+                                  (item): item is string =>
+                                    typeof item === 'string' && item.length > 0
+                                )
+                              )
+                            )
+                          : [],
                         IfSanity:
                           maaEndUserData.Task?.IfSanity != null
                             ? maaEndUserData.Task.IfSanity
@@ -709,7 +731,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           maaEndUserData.Data?.LastProxyDate !== undefined
                             ? maaEndUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           maaEndUserData.Data?.ProxyTimes !== undefined
                             ? maaEndUserData.Data.ProxyTimes
@@ -791,7 +813,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           m9aUserData.Data?.LastProxyDate !== undefined
                             ? m9aUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         LastPsychubeDate:
                           m9aUserData.Data?.LastPsychubeDate !== undefined
                             ? m9aUserData.Data.LastPsychubeDate
@@ -832,9 +854,7 @@ export function useScriptApi() {
                             ? okwwUserData.Info.Password
                             : '',
                         Mode:
-                          okwwUserData.Info?.Mode !== undefined
-                            ? okwwUserData.Info.Mode
-                            : '脚本',
+                          okwwUserData.Info?.Mode !== undefined ? okwwUserData.Info.Mode : '脚本',
                         IfQuickConfig: isOkwwUser
                           ? okwwUserData.Info?.IfQuickConfig !== undefined
                             ? okwwUserData.Info.IfQuickConfig
@@ -910,7 +930,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           okwwUserData.Data?.LastProxyDate !== undefined
                             ? okwwUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           okwwUserData.Data?.ProxyTimes !== undefined
                             ? okwwUserData.Data.ProxyTimes
@@ -921,7 +941,7 @@ export function useScriptApi() {
                             : '未知',
                       },
                     }
-                  } else if (String(userIndex.type) === 'MaaFWUserConfig' && userData) {
+                  } else if (userIndex.type === 'MaaFWUserConfig' && userData) {
                     const maafwUserData = userData as unknown as LooseUserConfig
                     return {
                       id: userIndex.uid,
@@ -936,10 +956,9 @@ export function useScriptApi() {
                       Task: maafwUserData.Task ?? {},
                       Notify: maafwUserData.Notify ?? {},
                       Data: {
-                        LastProxyDate: maafwUserData.Data?.LastProxyDate ?? '',
+                        LastProxyDate: maafwUserData.Data?.LastProxyDate ?? '2000-01-01',
                         ProxyTimes: maafwUserData.Data?.ProxyTimes ?? 0,
-                        IfPassCheck: maafwUserData.Data?.IfPassCheck ?? false,
-                        LastSklandDate: '',
+                        IfPassCheck: maafwUserData.Data?.IfPassCheck ?? true,
                       },
                     } as unknown as User
                   } else if (userIndex.type === 'HSRUserConfig' && userData) {
@@ -1036,7 +1055,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           hsrUserData.Data?.LastProxyDate !== undefined
                             ? hsrUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           hsrUserData.Data?.ProxyTimes !== undefined
                             ? hsrUserData.Data.ProxyTimes
@@ -1131,7 +1150,7 @@ export function useScriptApi() {
                         LastProxyDate:
                           bettergiUserData.Data?.LastProxyDate !== undefined
                             ? bettergiUserData.Data.LastProxyDate
-                            : '',
+                            : '2000-01-01',
                         ProxyTimes:
                           bettergiUserData.Data?.ProxyTimes !== undefined
                             ? bettergiUserData.Data.ProxyTimes
@@ -1140,6 +1159,194 @@ export function useScriptApi() {
                           bettergiUserData.Data?.LastProxyStatus !== undefined
                             ? bettergiUserData.Data.LastProxyStatus
                             : '未知',
+                      },
+                    }
+                  } else if (userIndex.type === 'ZzzOdUserConfig' && userData) {
+                    const zzzodUserData = userData as unknown as ZzzOdUserConfig
+                    return {
+                      id: userIndex.uid,
+                      name: zzzodUserData.Info?.Name || `用户${userIndex.uid}`,
+                      Info: {
+                        Name:
+                          zzzodUserData.Info?.Name !== undefined
+                            ? zzzodUserData.Info.Name
+                            : `用户${userIndex.uid}`,
+                        Status:
+                          zzzodUserData.Info?.Status !== undefined
+                            ? zzzodUserData.Info.Status
+                            : true,
+                        Mode:
+                          zzzodUserData.Info?.Mode !== undefined
+                            ? zzzodUserData.Info.Mode
+                            : '用户',
+                        RemainedDay:
+                          zzzodUserData.Info?.RemainedDay !== undefined
+                            ? zzzodUserData.Info.RemainedDay
+                            : -1,
+                        IfScriptBeforeTask:
+                          zzzodUserData.Info?.IfScriptBeforeTask !== undefined
+                            ? zzzodUserData.Info.IfScriptBeforeTask
+                            : false,
+                        ScriptBeforeTask:
+                          zzzodUserData.Info?.ScriptBeforeTask !== undefined
+                            ? zzzodUserData.Info.ScriptBeforeTask
+                            : '',
+                        IfScriptAfterTask:
+                          zzzodUserData.Info?.IfScriptAfterTask !== undefined
+                            ? zzzodUserData.Info.IfScriptAfterTask
+                            : false,
+                        ScriptAfterTask:
+                          zzzodUserData.Info?.ScriptAfterTask !== undefined
+                            ? zzzodUserData.Info.ScriptAfterTask
+                            : '',
+                        Notes:
+                          zzzodUserData.Info?.Notes !== undefined
+                            ? zzzodUserData.Info.Notes
+                            : '',
+                        Tag:
+                          zzzodUserData.Info?.Tag !== undefined
+                            ? zzzodUserData.Info.Tag
+                            : null,
+                      },
+                      Game: {
+                        GameRegion:
+                          zzzodUserData.Game?.GameRegion !== undefined
+                            ? zzzodUserData.Game.GameRegion
+                            : 'cn',
+                        GamePath:
+                          zzzodUserData.Game?.GamePath !== undefined
+                            ? zzzodUserData.Game.GamePath
+                            : '',
+                        GameLanguage:
+                          zzzodUserData.Game?.GameLanguage !== undefined
+                            ? zzzodUserData.Game.GameLanguage
+                            : 'cn',
+                        Account:
+                          zzzodUserData.Game?.Account !== undefined
+                            ? zzzodUserData.Game.Account
+                            : '',
+                        Password:
+                          zzzodUserData.Game?.Password !== undefined
+                            ? zzzodUserData.Game.Password
+                            : '',
+                        BilibiliAccountName:
+                          zzzodUserData.Game?.BilibiliAccountName !== undefined
+                            ? zzzodUserData.Game.BilibiliAccountName
+                            : '',
+                      },
+                      OneDragon: {
+                        AppList:
+                          zzzodUserData.OneDragon?.AppList !== undefined
+                            ? zzzodUserData.OneDragon.AppList
+                            : '[]',
+                      },
+                      Notify: {
+                        Enabled:
+                          zzzodUserData.Notify?.Enabled !== undefined
+                            ? zzzodUserData.Notify.Enabled
+                            : false,
+                        PushLogMode:
+                          zzzodUserData.Notify?.PushLogMode !== undefined
+                            ? zzzodUserData.Notify.PushLogMode
+                            : '汇总',
+                        IfSendStatistic:
+                          zzzodUserData.Notify?.IfSendStatistic !== undefined
+                            ? zzzodUserData.Notify.IfSendStatistic
+                            : false,
+                        IfSendMail:
+                          zzzodUserData.Notify?.IfSendMail !== undefined
+                            ? zzzodUserData.Notify.IfSendMail
+                            : false,
+                        ToAddress:
+                          zzzodUserData.Notify?.ToAddress !== undefined
+                            ? zzzodUserData.Notify.ToAddress
+                            : '',
+                        IfServerChan:
+                          zzzodUserData.Notify?.IfServerChan !== undefined
+                            ? zzzodUserData.Notify.IfServerChan
+                            : false,
+                        ServerChanKey:
+                          zzzodUserData.Notify?.ServerChanKey !== undefined
+                            ? zzzodUserData.Notify.ServerChanKey
+                            : '',
+                      },
+                      Data: {
+                        LastProxyDate:
+                          zzzodUserData.Data?.LastProxyDate !== undefined
+                            ? zzzodUserData.Data.LastProxyDate
+                            : '2000-01-01',
+                        ProxyTimes:
+                          zzzodUserData.Data?.ProxyTimes !== undefined
+                            ? zzzodUserData.Data.ProxyTimes
+                            : 0,
+                        LastProxyStatus:
+                          zzzodUserData.Data?.LastProxyStatus !== undefined
+                            ? zzzodUserData.Data.LastProxyStatus
+                            : '未知',
+                      },
+                    }
+                  } else if (userIndex.type === 'BAAHUserConfig' && userData) {
+                    const baahUserData = userData as unknown as LooseUserConfig
+                    return {
+                      id: userIndex.uid,
+                      name: baahUserData.Info?.Name || `用户${userIndex.uid}`,
+                      Info: {
+                        Name:
+                          baahUserData.Info?.Name !== undefined
+                            ? baahUserData.Info.Name
+                            : `用户${userIndex.uid}`,
+                        Status:
+                          baahUserData.Info?.Status !== undefined
+                            ? baahUserData.Info.Status
+                            : true,
+                        RemainedDay:
+                          baahUserData.Info?.RemainedDay !== undefined
+                            ? baahUserData.Info.RemainedDay
+                            : -1,
+                        ConfigName:
+                          baahUserData.Info?.ConfigName !== undefined
+                            ? baahUserData.Info.ConfigName
+                            : '',
+                        Notes:
+                          baahUserData.Info?.Notes !== undefined ? baahUserData.Info.Notes : '',
+                        Tag:
+                          baahUserData.Info?.Tag !== undefined ? baahUserData.Info.Tag : null,
+                      },
+                      Notify: {
+                        Enabled:
+                          baahUserData.Notify?.Enabled !== undefined
+                            ? baahUserData.Notify.Enabled
+                            : false,
+                        IfSendStatistic:
+                          baahUserData.Notify?.IfSendStatistic !== undefined
+                            ? baahUserData.Notify.IfSendStatistic
+                            : false,
+                        IfSendMail:
+                          baahUserData.Notify?.IfSendMail !== undefined
+                            ? baahUserData.Notify.IfSendMail
+                            : false,
+                        ToAddress:
+                          baahUserData.Notify?.ToAddress !== undefined
+                            ? baahUserData.Notify.ToAddress
+                            : '',
+                        IfServerChan:
+                          baahUserData.Notify?.IfServerChan !== undefined
+                            ? baahUserData.Notify.IfServerChan
+                            : false,
+                        ServerChanKey:
+                          baahUserData.Notify?.ServerChanKey !== undefined
+                            ? baahUserData.Notify.ServerChanKey
+                            : '',
+                      },
+                      Data: {
+                        LastProxyDate:
+                          baahUserData.Data?.LastProxyDate !== undefined
+                            ? baahUserData.Data.LastProxyDate
+                            : '',
+                        ProxyTimes:
+                          baahUserData.Data?.ProxyTimes !== undefined
+                            ? baahUserData.Data.ProxyTimes
+                            : 0,
                       },
                     }
                   }
@@ -1258,12 +1465,14 @@ export function useScriptApi() {
 
   const prepareMaaFWAgentEnv = async (
     path: string,
-    scriptId?: string
+    scriptId?: string,
+    force = false
   ): Promise<MaaFWAgentEnvPrepareOut | null> => {
     try {
       return await MaaFwService.prepareMaafwAgentEnvApiScriptsMaafwAgentEnvPreparePost({
         path,
         scriptId,
+        force,
       })
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)

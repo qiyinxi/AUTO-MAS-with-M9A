@@ -53,6 +53,7 @@ logger = get_logger("更新服务")
 # 延迟加载 Config，避免 app.services 初始化期间触发 app.core 循环导入
 Config = LazyProxy("app.core", "Config")
 
+
 @dataclass(frozen=True)
 class _DownloadJob:
     """下载任务启动时冻结的版本、来源与 URL。"""
@@ -62,6 +63,25 @@ class _DownloadJob:
     mirror_chyan_download_url: Optional[str]
     download_url: Optional[str]
 
+
+def select_newer_version_info(
+    version_info: Dict[str, Dict[str, List[str]]], current_version: str
+) -> Dict[str, Dict[str, List[str]]]:
+    """挑出比当前版本新的版本段，按版本号降序排列，保留每段的分类归属。
+
+    版本号用 packaging 比较而不是字符串比较，否则 beta.10 会排到 beta.2 前面。
+    """
+
+    current = version.parse(current_version)
+    newer = [
+        (version.parse(ver), ver, info)
+        for ver, info in version_info.items()
+        if version.parse(ver) > current
+    ]
+    newer.sort(key=lambda item: item[0], reverse=True)
+    return {ver: info for _, ver, info in newer}
+
+
 class _UpdateHandler:
     def __init__(self) -> None:
         self.is_locked: bool = False
@@ -70,7 +90,11 @@ class _UpdateHandler:
         self.remote_version: Optional[str] = None
         self.current_version: Optional[str] = None
         self.last_check_time: Optional[datetime] = None
-        self.update_version_info: Optional[Dict[str, List[str]]] = None
+        self.update_version_info: Optional[Dict[str, Dict[str, List[str]]]] = None
+        # 非强制检查的结果缓存: (当前版本, 检查结果, 检查时间)
+        self._check_cache: Optional[
+            tuple[str, tuple[bool, str, Dict[str, Dict[str, List[str]]]], datetime]
+        ] = None
         self.mirror_chyan_download_url: Optional[str] = None
         self._download_task_job: Optional[_DownloadJob] = None
         self._download_snapshot = UpdateDownloadSnapshot()
@@ -345,25 +369,19 @@ class _UpdateHandler:
 
     async def check_update(
         self, current_version: str, if_force: bool = False
-    ) -> tuple[bool, str, Dict[str, List[str]]]:
+    ) -> tuple[bool, str, Dict[str, Dict[str, List[str]]]]:
 
         self.current_version = current_version
 
-        if (
-            not if_force
-            and self.remote_version is not None
-            and self.last_check_time is not None
-            and self.update_version_info is not None
-            and self.last_check_time > datetime.now() - timedelta(hours=4)
-        ):
-            logger.info("四小时内已进行过一次检查, 直接使用缓存的版本更新信息")
-            return (
-                bool(
-                    version.parse(self.remote_version) > version.parse(current_version)
-                ),
-                self.remote_version,
-                self.update_version_info,
-            )
+        # 标题栏每 10 分钟轮询一次, 非强制检查一小时内直接复用上次结果
+        if not if_force and self._check_cache is not None:
+            cached_version, cached_result, checked_at = self._check_cache
+            if (
+                cached_version == current_version
+                and checked_at > datetime.now() - timedelta(hours=1)
+            ):
+                logger.info("一小时内已进行过一次检查, 直接使用缓存的版本更新信息")
+                return cached_result
 
         logger.info("开始检查更新")
 
@@ -387,21 +405,17 @@ class _UpdateHandler:
                 )
             )
 
-            self.update_version_info = {}
-            for v_i in [
-                info
-                for ver, info in version_info_json.items()
-                if version.parse(ver) > version.parse(current_version)
-            ]:
-                for key, value in v_i.items():
-                    if key not in self.update_version_info:
-                        self.update_version_info[key] = []
-                    self.update_version_info[key] += value
+            self.update_version_info = select_newer_version_info(
+                version_info_json, current_version
+            )
 
-            return True, self.remote_version, self.update_version_info
+            result = (True, self.remote_version, self.update_version_info)
 
         else:
-            return False, current_version, {}
+            result = (False, current_version, {})
+
+        self._check_cache = (current_version, result, self.last_check_time)
+        return result
 
     async def download_update(self, *, job: Optional[_DownloadJob] = None) -> None:
 
@@ -593,7 +607,7 @@ class _UpdateHandler:
 
         try:
             with zipfile.ZipFile(update_package, "r") as zip_ref:
-                zip_ref.extractall(Path.cwd())
+                await asyncio.to_thread(zip_ref.extractall, Path.cwd())
         except Exception as e:
             logger.error(f"解压失败, {type(e).__name__}: {e}")
             await Publisher.send(

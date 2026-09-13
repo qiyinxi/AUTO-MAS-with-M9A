@@ -32,7 +32,7 @@ $frontendPackageFile = Join-Path $frontendRoot "package.json"
 $backendConfigFile = Join-Path $repoRoot "app\core\config.py"
 $pyprojectFile = Join-Path $repoRoot "pyproject.toml"
 $uvLockFile = Join-Path $repoRoot "uv.lock"
-$runtimePinFile = Join-Path $repoRoot "res\runtime.json"
+$runtimeVersionFile = Join-Path $repoRoot "res\runtime-version.txt"
 
 foreach ($requiredFile in @(
         $versionFile,
@@ -40,7 +40,7 @@ foreach ($requiredFile in @(
         $backendConfigFile,
         $pyprojectFile,
         $uvLockFile,
-        $runtimePinFile
+        $runtimeVersionFile
     )) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "缺少打包所需文件：$requiredFile"
@@ -54,61 +54,28 @@ if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
     throw "未找到 Yarn，请先执行：corepack prepare yarn@4.9.1 --activate"
 }
 
-# 第一步：确认所有版本来源一致，避免打出版本信息互相冲突的安装包。
+# 版本一致性由 scripts/changelog.py 判定，这里需要一个可用的 Python。
+$venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$pythonExe = if (Test-Path -LiteralPath $venvPython) { $venvPython } else { "python" }
+if (-not (Get-Command $pythonExe -ErrorAction SilentlyContinue)) {
+    throw "未找到 Python，请先安装项目要求的 Python 3.12 环境，或在仓库根创建 .venv。"
+}
+
+# 第一步：确认版本信息与 CHANGELOG.md 一致，避免打出版本信息互相冲突的安装包。
+# 版本号的唯一手写来源是 CHANGELOG.md，res/version.json 等五处都由 scripts/changelog.py
+# 生成；这里只调用它，不重复实现规则。
+& $pythonExe (Join-Path $repoRoot "scripts\changelog.py") check
+if ($LASTEXITCODE -ne 0) {
+    throw "版本信息与 CHANGELOG.md 不一致，请先运行：python scripts/changelog.py sync"
+}
+
 $versionConfig = Get-Content -LiteralPath $versionFile -Raw | ConvertFrom-Json
-$frontendPackage = Get-Content -LiteralPath $frontendPackageFile -Raw | ConvertFrom-Json
 $appVersion = [string]$versionConfig.version
-
-if ($appVersion -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-    throw "res/version.json 中的版本格式无效：$appVersion"
-}
-if ([string]$frontendPackage.version -ne $appVersion) {
-    throw "frontend/package.json 版本不一致：$($frontendPackage.version)，预期 $appVersion"
-}
-
-$backendConfigText = Get-Content -LiteralPath $backendConfigFile -Raw
-$backendVersionMatch = [regex]::Match(
-    $backendConfigText,
-    '(?m)^\s*VERSION\s*=\s*"(?<version>v[^"]+)"'
-)
-if (-not $backendVersionMatch.Success -or $backendVersionMatch.Groups['version'].Value -ne $appVersion) {
-    throw "app/core/config.py 版本与 $appVersion 不一致。"
-}
-
 $pythonVersion = $appVersion.Substring(1)
-# Python 元数据兼容原始版本写法与规范化写法（如 5.5.0-beta.3 和 5.5.0b3）。
-$expectedLockVersion = $pythonVersion `
-    -replace '-alpha\.', 'a' `
-    -replace '-beta\.', 'b' `
-    -replace '-rc\.', 'rc'
-$pyprojectText = Get-Content -LiteralPath $pyprojectFile -Raw
-$pyprojectVersionMatch = [regex]::Match(
-    $pyprojectText,
-    '(?m)^version\s*=\s*"(?<version>[^"]+)"'
-)
-if (-not $pyprojectVersionMatch.Success -or @($pythonVersion, $expectedLockVersion) -notcontains $pyprojectVersionMatch.Groups['version'].Value) {
-    throw "pyproject.toml 版本与 $pythonVersion 不一致。"
-}
 
-$uvLockText = Get-Content -LiteralPath $uvLockFile -Raw
-$uvVersionMatch = [regex]::Match(
-    $uvLockText,
-    '(?ms)^\[\[package\]\]\r?\nname = "auto-mas"\r?\nversion = "(?<version>[^"]+)"'
-)
-if (-not $uvVersionMatch.Success -or $uvVersionMatch.Groups['version'].Value -ne $expectedLockVersion) {
-    throw "uv.lock 中 auto-mas 的版本与 $expectedLockVersion 不一致，请先运行 uv lock。"
-}
-
-# Runtime 版本与哈希的唯一来源是 res/runtime.json，发布 CI 与桌面端读的都是它
-# （见 frontend/electron/services/runtimeBinaryService.ts）。
-$runtimePin = Get-Content -LiteralPath $runtimePinFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$runtimeVersion = "$($runtimePin.version)".Trim()
-$pinnedRuntimeHash = "$($runtimePin.sha256)".Trim().ToUpperInvariant()
-if ($runtimeVersion -cnotmatch '^v\d+(\.\d+)*([-+][0-9A-Za-z.-]+)?$') {
-    throw "res/runtime.json 的 version 非法：$runtimeVersion"
-}
-if ($pinnedRuntimeHash -cnotmatch '^[0-9A-F]{64}$') {
-    throw "res/runtime.json 的 sha256 必须是 64 位十六进制：$($runtimePin.sha256)"
+$runtimeVersion = (Get-Content -LiteralPath $runtimeVersionFile -Raw).Trim()
+if ($runtimeVersion -notmatch '^v\d+(\.\d+)*([-+][0-9A-Za-z.-]+)?$') {
+    throw "Runtime 版本格式无效：$runtimeVersion"
 }
 
 Write-Host "应用版本：$appVersion"
@@ -140,9 +107,6 @@ try {
         $localRuntime = (Resolve-Path -LiteralPath $LocalRuntimePath -ErrorAction Stop).Path
         $expectedRuntimeHash = (Get-FileHash -LiteralPath $localRuntime -Algorithm SHA256).Hash
         Copy-Item -LiteralPath $localRuntime -Destination $runtimePath
-        # 桌面端按 repo/res/runtime.json 的钉扎核对 exe 自报版本，本地构建的 Runtime 对不上就会
-        # 在首次 managed 启动时被发布版覆盖；安装包不带钉扎文件，这里改不了它，只能提醒。
-        Write-Warning "本地 Runtime 与 res/runtime.json 钉扎的 $runtimeVersion 不同：运行打出来的包之前必须设置 AUTO_MAS_RUNTIME_EXE=$localRuntime，否则桌面端会在首次启动时把它换成 $runtimeVersion（见 scripts/README.md）。"
     } else {
         Write-Host "正在下载 Runtime……"
         Invoke-WebRequest -Uri "$releaseBaseUrl/$runtimeAssetName" -OutFile $runtimePath
@@ -157,11 +121,6 @@ try {
         }
 
         $expectedRuntimeHash = ($checksumLine.Line -split '\s+')[0].ToUpperInvariant()
-        # 再与钉扎值对一次：上一行只证明下到的文件与该 Release 的清单一致，钉扎值抄错版本
-        # 时照样通过，而装机后的桌面端只认 res/runtime.json 里的这一个哈希。
-        if ($expectedRuntimeHash -ne $pinnedRuntimeHash) {
-            throw "res/runtime.json 的 sha256 与 $runtimeAssetName 的发布清单不一致，请按该 Release 的 SHA256SUMS.txt 更新钉扎。"
-        }
     }
     $actualRuntimeHash = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($actualRuntimeHash -ne $expectedRuntimeHash) {
@@ -299,9 +258,6 @@ try {
     Write-Host "解压运行：$(Join-Path $outputUnpacked 'AUTO-MAS.exe')"
     Write-Host "安装包 SHA-256：$installerHash"
     Write-Host "Runtime SHA-256：$expectedRuntimeHash"
-    if ($LocalRuntimePath) {
-        Write-Warning "运行前请先设置 AUTO_MAS_RUNTIME_EXE=$localRuntime，否则本地 Runtime 会在首次启动时被换成钉扎的 $runtimeVersion。"
-    }
 } finally {
     foreach ($name in $savedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")

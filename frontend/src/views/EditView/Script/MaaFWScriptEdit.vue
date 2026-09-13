@@ -73,7 +73,12 @@
               已就绪的 Agent：{{ envAgents.map(a => a.runtimeKind || '未知').join('、') }}
             </template>
             <template v-if="envFailed" #description>
-              运行环境没准备好，后面几步配了也跑不起来。请检查网络与项目路径后重试。
+              <div>运行环境没准备好，后面几步配了也跑不起来。请检查网络与项目路径后重试。</div>
+              <div v-if="envFailureLogs.length" class="env-log-box">
+                <div v-for="(line, index) in envFailureLogs" :key="index" class="env-log-line">
+                  {{ line }}
+                </div>
+              </div>
             </template>
             <template v-if="envFailed" #action>
               <a-button size="small" :loading="envPreparing" @click="retryAgentEnvPrepare">
@@ -176,6 +181,7 @@ import { ArrowLeftOutlined, LoadingOutlined } from '@ant-design/icons-vue'
 import { subscribe, unsubscribe } from '@/composables/useWebSocket'
 import { WS_MAAFW_ENV_PREPARE_PROGRESS } from '@/services/websocket/types'
 import { useScriptApi } from '@/composables/useScriptApi'
+import { useSaveQueue } from '@/composables/useSaveQueue'
 import { useMaaFWUpdateApi, type MaaFWUpdateResult } from '@/composables/useMaaFWUpdateApi'
 import {
   getDefaultMaaFWScriptConfig,
@@ -233,11 +239,12 @@ const stepItems = [
 // 失败时（离线、镜像不通、解释器坏）后面每一步都是白填。失败不是死路，
 // 提示条里有「重试」。
 const canLeaveCurrentStep = computed(
-  () => currentStep.value !== 0 || (previewData.value !== null && envReady.value),
+  () => currentStep.value !== 0 || (previewData.value !== null && envReady.value)
 )
 const pageLoading = ref(false)
 const isInitializing = ref(true)
-const isSaving = ref(false)
+// 保存串行队列：连续改动按序写回，不再被布尔互斥丢掉
+const { enqueue } = useSaveQueue()
 
 const formRef = ref<FormInstance>()
 const previewLoading = ref(false)
@@ -269,16 +276,18 @@ const rules = {
 }
 
 const handleChange = async (category: keyof MaaFWScriptConfig, key: string, value: unknown) => {
-  if (isInitializing.value || isSaving.value) return
-  isSaving.value = true
-  try {
-    const success = await updateScript(scriptId, { [category]: { [key]: value } })
-    if (success) logger.info(`配置已保存: ${String(category)}.${key}`)
-  } catch (error) {
-    logger.error(`保存失败: ${error instanceof Error ? error.message : String(error)}`)
-  } finally {
-    isSaving.value = false
-  }
+  if (isInitializing.value) return
+  await enqueue(
+    async () => {
+      try {
+        const success = await updateScript(scriptId, { [category]: { [key]: value } })
+        if (success) logger.info(`配置已保存: ${String(category)}.${key}`)
+      } catch (error) {
+        logger.error(`保存失败: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+    `${String(category)}.${key}`
+  )
 }
 
 const {
@@ -458,6 +467,9 @@ const envFailed = ref(false)
 const envMessage = ref('')
 const envPercent = ref<number | null>(null)
 const envLogs = ref<string[]>([])
+// 失败时只摊开末尾这些行：前面多是「创建隔离 venv」之类的流水，真正的报错
+// （比如 pip 的 stderr）总在最后。整份日志仍在 envLogs 里。
+const envFailureLogs = computed(() => envLogs.value.slice(-12))
 const envAgents = ref<{ runtimeKind?: string | null; executable: string }[]>([])
 let envSubscriptionId: string | null = null
 
@@ -491,12 +503,13 @@ onBeforeUnmount(() => {
 
 const envPreparedPath = ref('')
 
-const runAgentEnvPrepare = async (targetPath?: string) => {
+const runAgentEnvPrepare = async (targetPath?: string, force = false) => {
   const path = (targetPath ?? maafwConfig.Info.Path).trim()
   if (!path) return
   if (envPreparing.value) return
-  // 同一个项目已经备好过就不重复跑；换了目录才重新准备
-  if (envReady.value && envPreparedPath.value === path) return
+  // 同一个项目已经备好过就不重复跑；换了目录才重新准备。
+  // 这层只挡住本次停留在页面上的重复调用；跨页面进出由后端比项目指纹来挡。
+  if (!force && envReady.value && envPreparedPath.value === path) return
   ensureEnvSubscription()
   envPreparing.value = true
   envReady.value = false
@@ -505,10 +518,13 @@ const runAgentEnvPrepare = async (targetPath?: string) => {
   envLogs.value = []
   envMessage.value = '正在准备运行环境，首次需要下载 MaaFramework，可能要几分钟'
   try {
-    const response = await prepareMaaFWAgentEnv(path, scriptId)
+    const response = await prepareMaaFWAgentEnv(path, scriptId, force)
     if (!response || response.code !== 200 || !response.data) {
       envFailed.value = true
       envMessage.value = response?.message || 'MFW 运行环境准备失败'
+      // 失败响应里同样带着逐行日志，而且这才是最需要它的时候：原先这里直接
+      // return，把唯一一份失败原因扔了，用户只剩一句「准备失败」。
+      if (response?.data?.logs?.length) envLogs.value = response.data.logs
       message.error(envMessage.value)
       return
     }
@@ -529,10 +545,11 @@ const runAgentEnvPrepare = async (targetPath?: string) => {
   }
 }
 
-// 重试要清掉「这个路径已经备好过」的记忆，否则 runAgentEnvPrepare 会直接跳过。
+// 重试要清掉「这个路径已经备好过」的记忆，并让后端也别吃指纹缓存：用户点重试
+// 就是因为环境实际不好使，而指纹只看项目文件动没动，看不出 venv 内部坏了。
 const retryAgentEnvPrepare = async () => {
   envPreparedPath.value = ''
-  await runAgentEnvPrepare()
+  await runAgentEnvPrepare(undefined, true)
 }
 
 const selectMaaFWPath = async () => {

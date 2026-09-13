@@ -28,13 +28,10 @@ from app.models.config import OkwwConfig, OkwwUserConfig
 from app.models.ConfigBase import MultipleConfig
 from app.models.schema import WSTaskNoticeData
 from app.models.task import ScriptItem, TaskExecuteBase, UserItem
-from app.tools.game_sign_notify import (
-    append_task_game_sign_summary,
-    finalize_task_game_sign_notification,
-)
 from app.tools.push_log import build_user_result_text
 from app.utils import ProcessManager, get_logger
 from app.utils.constants import TASK_MODE_ZH
+from app.utils.io import force_rmtree, replace_dir
 
 from .AutoProxy import (
     _OKWW_REL_APP_JSON,
@@ -197,7 +194,7 @@ class OkwwManager(TaskExecuteBase):
                 Path(self.script_config.get("Info", "RootPath")) / _OKWW_REL_CONFIG_DIR
             )
             self.temp_path = Path.cwd() / f"data/{self.script_info.script_id}/Temp"
-            shutil.rmtree(self.temp_path, ignore_errors=True)
+            force_rmtree(self.temp_path)
             self.temp_path.mkdir(parents=True, exist_ok=True)
             if self.script_config_path.exists():
                 self.had_original_script_config = True
@@ -217,20 +214,14 @@ class OkwwManager(TaskExecuteBase):
             logger.info(
                 f"清理任务期写入的 OK-WW 脚本配置目录: {self.script_config_path}"
             )
-            shutil.rmtree(self.script_config_path, ignore_errors=True)
+            force_rmtree(self.script_config_path)
         else:
             logger.info(f"复原 OK-WW 脚本配置文件: {self.temp_path}")
-            tmp_dst = self.script_config_path.with_name(
-                self.script_config_path.name + ".tmp"
-            )
-            shutil.rmtree(tmp_dst, ignore_errors=True)
-            shutil.copytree(self.temp_path, tmp_dst, dirs_exist_ok=True)
-            shutil.rmtree(self.script_config_path, ignore_errors=True)
-            tmp_dst.rename(self.script_config_path)
+            replace_dir(self.temp_path, self.script_config_path)
 
     def _cleanup_script_config_temp(self) -> None:
         if self.temp_path:
-            shutil.rmtree(self.temp_path, ignore_errors=True)
+            force_rmtree(self.temp_path)
 
     async def main_task(self):
         self.check_result = await self.check()
@@ -367,10 +358,6 @@ class OkwwManager(TaskExecuteBase):
                 user_result_text = build_user_result_text(
                     self.script_info.user_list, has_uncompleted
                 )
-                task_result = append_task_game_sign_summary(
-                    self.task_info, user_result_text
-                )
-                has_game_sign_summary = task_result != user_result_text
                 result = {
                     "title": f"{task_mode}任务报告",
                     "script_name": self.script_info.name or "空白",
@@ -378,20 +365,16 @@ class OkwwManager(TaskExecuteBase):
                     "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "completed_count": over_count,
                     "uncompleted_count": error_count + wait_count,
-                    "result": task_result,
-                    "game_sign_summary": has_game_sign_summary,
+                    "result": user_result_text,
                 }
 
                 try:
-                    push_result = await push_notification(
+                    await push_notification(
                         mode="代理结果",
                         title=title,
                         message=result,
                         user_config=None,
                         task_info=self.task_info,
-                    )
-                    finalize_task_game_sign_notification(
-                        self.task_info, has_game_sign_summary, push_result
                     )
                 except Exception as e:
                     logger.opt(exception=True).warning(f"推送代理结果时出现异常: {e}")

@@ -1,11 +1,12 @@
 # 本地打包
 
-使用 PowerShell 7。后台更新需要桌面和 Runtime 同时使用新代码；当前钉扎的旧 Runtime
-版本尚未包含该能力，发布前须先发布新 Runtime，再更新 `res/runtime.json` 的 `version`
-与 `sha256`（哈希取自该 Release 的 `SHA256SUMS.txt`，两者必须同时改，否则构建会失败）。
-该文件是 Runtime 版本的唯一来源：发布 CI、本地打包脚本和装机后的桌面端读的都是它，
-桌面端还会在本体更新后按它把用户机器上的 Runtime 换成同一版。
-CI 会拒绝缺少后台更新协议的二进制，防止生成无法正常启动的安装包。
+使用 PowerShell 7。随桌面安装包分发的 Runtime 版本独立记录在
+`res/runtime-version.txt`。Runtime 有自己的发布节奏，因此这里钉死具体版本、不追 `latest`；
+需要升级时，先发布并完成联调，再在要构建的分支更新该文件。CI 会从本次构建所选分支读取版本，
+并拒绝缺少后台更新协议的二进制，防止生成无法正常启动的安装包。
+bump 该文件后，已装用户在下次本体更新后的首次启动会自动换到这一版（桌面端按
+`<app-root>/repo/res/runtime-version.txt` 校对并替换 Runtime，哈希取自该 Release 的
+`SHA256SUMS.txt`）。
 
 本地验证可直接使用本次源码构建的 Runtime，不必等待 Release：
 
@@ -27,10 +28,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Runtime verification failed' }
 `-SkipInstall` 仅适用于前端依赖已经安装的环境；脚本不会发布或上传安装包。
 
 **运行 `-LocalRuntimePath` 打出来的包时必须设置 `AUTO_MAS_RUNTIME_EXE`。** 桌面端每次
-managed 启动都会拿 `<app-root>/repo/res/runtime.json` 的钉扎去核对 exe 自报的版本，本地
-构建的 Runtime 自报 `dev`，与钉扎不一致就会被下载的发布版原地覆盖——之后跑的就不是你
-要验证的那一份了。`repo/` 是 Runtime 从发布分支克隆的，安装包不带 `res/runtime.json`，
-所以打包脚本改不了这份钉扎；唯一的逃生口是让桌面端认出这是开发者自带的 Runtime：
+managed 启动都会拿 `<app-root>/repo/res/runtime-version.txt` 的钉扎去核对 exe 自报的版本，
+本地构建的 Runtime 自报 `dev`，与钉扎不一致就会被下载的发布版原地覆盖——之后跑的就不是
+你要验证的那一份了。`repo/` 是 Runtime 从发布分支克隆的，安装包不带
+`res/runtime-version.txt`，所以打包脚本改不了这份钉扎；唯一的逃生口是让桌面端认出这是
+开发者自带的 Runtime：
 
 ```powershell
 $env:AUTO_MAS_RUNTIME_EXE = 'D:/Github/AUTO-MAS-Runtime/bin/auto-mas-runtime.exe'

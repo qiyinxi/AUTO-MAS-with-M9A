@@ -21,13 +21,14 @@
 #   Contact: DLmaster_361@163.com
 
 
-
 from fastapi import APIRouter, Body
 
 from app.core import Config
 from app.models.schema import *
+from app.utils import get_logger
 
 router = APIRouter(prefix="/api/info", tags=["信息获取"])
+logger = get_logger("信息获取 API")
 
 
 @router.post(
@@ -42,6 +43,9 @@ async def get_git_version() -> VersionOut:
     try:
         is_latest, commit_hash, commit_time = await Config.get_git_version()
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_git_version失败: {type(e).__name__}: {e}"
+        )
         return VersionOut(
             code=500,
             status="error",
@@ -76,6 +80,9 @@ async def get_stage_combox(
             else []
         )
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_stage_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -95,6 +102,9 @@ async def get_script_combox() -> ComboBoxOut:
         raw_data = await Config.get_script_combox()
         data = [ComboBoxItem(**item) for item in raw_data] if raw_data else []
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_script_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -114,6 +124,9 @@ async def get_task_combox() -> ComboBoxOut:
         raw_data = await Config.get_task_combox()
         data = [ComboBoxItem(**item) for item in raw_data] if raw_data else []
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_task_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -133,6 +146,9 @@ async def get_plan_combox(plan: PlanComboxIn = Body(...)) -> ComboBoxOut:
         raw_data = await Config.get_plan_combox(plan.consumer)
         data = [ComboBoxItem(**item) for item in raw_data] if raw_data else []
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_plan_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -152,6 +168,9 @@ async def get_emulator_combox() -> ComboBoxOut:
         raw_data = await Config.get_emulator_combox()
         data = [ComboBoxItem(**item) for item in raw_data] if raw_data else []
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_emulator_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -172,6 +191,9 @@ async def get_emulator_devices_combox(
         raw_data = await Config.get_emulator_devices_combox(emulator.emulatorId)
         data = [ComboBoxItem(**item) for item in raw_data] if raw_data else []
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_emulator_devices_combox失败: {type(e).__name__}: {e}"
+        )
         return ComboBoxOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data=[]
         )
@@ -190,6 +212,9 @@ async def get_notice_info() -> NoticeOut:
     try:
         if_need_show, data = await Config.get_notice()
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_notice_info失败: {type(e).__name__}: {e}"
+        )
         return NoticeOut(
             code=500,
             status="error",
@@ -212,6 +237,9 @@ async def confirm_notice() -> OutBase:
     try:
         await Config.set("Data", "IfShowNotice", False)
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"confirm_notice失败: {type(e).__name__}: {e}"
+        )
         return OutBase(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}"
         )
@@ -244,6 +272,9 @@ async def get_web_config() -> InfoOut:
     try:
         data = await Config.get_web_config()
     except Exception as e:
+        logger.opt(exception=True).warning(
+            f"get_web_config失败: {type(e).__name__}: {e}"
+        )
         return InfoOut(
             code=500, status="error", message=f"{type(e).__name__}: {str(e)}", data={}
         )
@@ -272,6 +303,7 @@ async def get_overview() -> InfoOut:
         }
         proxy = await Config.get_proxy_overview()
     except Exception as e:
+        logger.opt(exception=True).warning(f"get_overview失败: {type(e).__name__}: {e}")
         return InfoOut(
             code=500,
             status="error",
