@@ -140,10 +140,7 @@
               <a-spin size="large" :tip="t('scripts.create.templateLoading')" />
             </div>
             <template v-else-if="templates.length">
-              <a-radio-group
-                v-model:value="selectedTemplateKey"
-                class="entity-list template-list"
-              >
+              <a-radio-group v-model:value="selectedTemplateKey" class="entity-list template-list">
                 <label
                   v-for="template in templates"
                   :key="template.configKey"
@@ -160,8 +157,7 @@
                         {{ template.ownerUsername || t('scripts.template.unknownAuthor') }}</span
                       >
                       <span
-                        ><ClockCircleOutlined />
-                        {{ formatPublishedAt(template.publishedAt) }}</span
+                        ><ClockCircleOutlined /> {{ formatPublishedAt(template.publishedAt) }}</span
                       >
                     </span>
                     <span class="template-description">{{

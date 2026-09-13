@@ -73,8 +73,7 @@ export function useShareApi() {
 
   const pollShareAuth = () => runAuthCall(() => Service.pollShareAuthApiShareAuthPollPost())
 
-  const cancelShareAuth = () =>
-    runAuthCall(() => Service.cancelShareAuthApiShareAuthCancelPost())
+  const cancelShareAuth = () => runAuthCall(() => Service.cancelShareAuthApiShareAuthCancelPost())
 
   // 分享前检查：返回自动脱敏后仍然可疑的配置项，由用户确认
   const inspectShare = async (

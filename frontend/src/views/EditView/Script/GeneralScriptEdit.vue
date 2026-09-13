@@ -2126,25 +2126,28 @@ const stopSharePolling = () => {
 // 按配置中心给的间隔轮询授权结果，弹窗关闭或拿到终态就停
 const startSharePolling = (interval: number) => {
   stopSharePolling()
-  sharePollTimer = setTimeout(async () => {
-    sharePollTimer = null
-    if (!uploadModalVisible.value) return
+  sharePollTimer = setTimeout(
+    async () => {
+      sharePollTimer = null
+      if (!uploadModalVisible.value) return
 
-    const status = await pollShareAuth()
-    if (!status) {
-      startSharePolling(interval)
-      return
-    }
+      const status = await pollShareAuth()
+      if (!status) {
+        startSharePolling(interval)
+        return
+      }
 
-    shareAuth.value = status
-    if (status.status === 'pending') {
-      startSharePolling(status.interval || interval)
-      return
-    }
-    if (status.status === 'authorized') {
-      message.success(t('edit.share.authorized', { name: status.displayName || status.username }))
-    }
-  }, Math.max(interval, 1) * 1000)
+      shareAuth.value = status
+      if (status.status === 'pending') {
+        startSharePolling(status.interval || interval)
+        return
+      }
+      if (status.status === 'authorized') {
+        message.success(t('edit.share.authorized', { name: status.displayName || status.username }))
+      }
+    },
+    Math.max(interval, 1) * 1000
+  )
 }
 
 const openShareVerificationPage = () => {
