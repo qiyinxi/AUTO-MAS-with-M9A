@@ -170,13 +170,12 @@
         </a-row>
       </PipelineRow>
 
-      <!-- 库存保持：日常流程中的独立任务，计划模式下后端强制关闭 -->
+      <!-- 库存保持：日常流程中的独立任务，固定与计划表模式下均可启用 -->
       <PipelineRow
         :name="t('edit.maaDepot')"
         :summary="depotSummary"
-        :checked="!isPlanMode && formData.Task.IfDepotMaintain"
-        :disabled="loading || isPlanMode"
-        :has-detail="!isPlanMode"
+        :checked="formData.Task.IfDepotMaintain"
+        :disabled="loading"
         @change="emitSave('Task.IfDepotMaintain', $event)"
       >
         <DepotMaintainPlanEditor
@@ -186,6 +185,10 @@
           :item-options="depotItemOptions"
           :item-options-loading="depotItemOptionsLoading"
           :item-options-error="depotItemOptionsError"
+          :stage-candidates="depotStageCandidates"
+          :stage-candidates-loading="depotStageCandidatesLoading"
+          :inventory="depotInventory"
+          :load-stage-candidates="loadDepotStageCandidates"
           @save="emitSave"
         />
       </PipelineRow>
@@ -306,6 +309,16 @@
         :has-detail="false"
         @change="emitSave('Task.IfRoguelike', $event)"
       />
+
+      <!-- 更换主题：主题名称在 MAA 中配置，MAS 仅提供调度开关并透传；排在任务队列最后 -->
+      <PipelineRow
+        :name="t('edit.maaSwitchTheme')"
+        :summary="formData.Task.IfSwitchTheme ? t('edit.maaSwitchThemeHint') : ''"
+        :checked="formData.Task.IfSwitchTheme"
+        :disabled="loading"
+        :has-detail="false"
+        @change="emitSave('Task.IfSwitchTheme', $event)"
+      />
     </div>
   </div>
 </template>
@@ -335,7 +348,6 @@ const formData = defineModel<any>('formData', { required: true })
 
 const props = defineProps<{
   loading: boolean
-  isPlanMode: boolean
   stageOptions: any[]
   activityStageOptions: Array<{ label: string; value: number }>
   activityStageLoading: boolean
@@ -344,6 +356,14 @@ const props = defineProps<{
   depotItemOptions: SelectOption[]
   depotItemOptionsLoading: boolean
   depotItemOptionsError: string
+  /** 按物品缓存的关卡候选（含每理智效率，来自一图流数据层；[] 表示已加载但无候选） */
+  depotStageCandidates: Record<string, SelectOption[]>
+  /** 正在加载候选的物品 ID 列表 */
+  depotStageCandidatesLoading: string[]
+  /** 仓库库存映射（itemId → 数量，安装级） */
+  depotInventory: Record<string, number>
+  /** 按需加载某物品的关卡候选（父级负责请求与缓存） */
+  loadDepotStageCandidates: (itemId: string) => Promise<void>
   fightSummary: string
   isEdit: boolean
   infrastructureImporting: boolean
@@ -420,7 +440,6 @@ const infrastSummary = computed(() => {
 
 const depotSummary = computed(() =>
   summarizeDepot(
-    props.isPlanMode,
     formData.value.Task.IfDepotMaintain,
     formData.value.Task.DepotMaintainPlans
   )

@@ -47,6 +47,8 @@ from jinja2 import Environment, FileSystemLoader
 from app.models.config import (
     CLASS_BOOK,
     PLAN_BOOK,
+    BAAHConfig,
+    BAAHUserConfig,
     BetterGIConfig,
     BetterGIUserConfig,
     EmulatorConfig,
@@ -91,7 +93,7 @@ from app.utils.constants import (
     UTC4,
     UTC8,
 )
-from app.utils.io import write_file
+from app.utils.io import force_rmtree, write_file
 from app.utils.paths import SOURCE_ROOT
 from app.utils.platform import IS_WINDOWS
 
@@ -252,7 +254,7 @@ def _parse_maa_drop_statistics(logs: list[str]) -> dict[str, dict[str, int]]:
 
 
 class AppConfig(GlobalConfig):
-    VERSION = "v5.5.0-beta.3"
+    VERSION = "v5.5.0-beta.6"
 
     def __init__(self) -> None:
         super().__init__()
@@ -295,6 +297,8 @@ class AppConfig(GlobalConfig):
         # 正在循环运行的队列，供配置改动前的安全检查使用
         self.running_cycle_queue_ids: set[uuid.UUID] = set()
         self._stage_refresh_task: Optional[asyncio.Task] = None
+        # MAA item_index.json 解析缓存: 路径 -> (mtime_ns, 物品选项)
+        self._maa_depot_items_cache: dict[Path, tuple[int, list[dict[str, str]]]] = {}
         self._game_sign_result_date = ""
         self._community_account_add_lock = asyncio.Lock()
 
@@ -778,6 +782,7 @@ class AppConfig(GlobalConfig):
             "HSR",
             "BetterGI",
             "ZzzOd",
+            "BAAH",
         ],
         script_id: str | None = None,
     ) -> tuple[
@@ -792,7 +797,8 @@ class AppConfig(GlobalConfig):
         | OkNteConfig
         | HSRConfig
         | BetterGIConfig
-        | ZzzOdConfig,
+        | ZzzOdConfig
+        | BAAHConfig,
     ]:
         """添加脚本配置"""
 
@@ -906,53 +912,6 @@ class AppConfig(GlobalConfig):
         logger.info(f"重新排序脚本: {index_list}")
 
         await self.ScriptConfig.setOrder([uuid.UUID(_) for _ in index_list])
-
-    async def import_script_from_file(self, script_id: str, jsonFile: str) -> None:
-        """从文件加载脚本配置"""
-
-        logger.info(f"从文件加载脚本配置: {script_id} - {jsonFile}")
-        uid = uuid.UUID(script_id)
-        file_path = Path(jsonFile)
-
-        if uid not in self.ScriptConfig:
-            logger.error(f"{script_id} 不存在")
-            raise KeyError(f"脚本 {script_id} 不存在")
-        if not isinstance(self.ScriptConfig[uid], GeneralConfig):
-            logger.error(f"{script_id} 不是通用脚本配置")
-            raise TypeError(f"脚本 {script_id} 不是通用脚本配置")
-        if not Path(file_path).exists():
-            logger.error(f"文件不存在: {file_path}")
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
-        data = json.loads(file_path.read_text(encoding="utf-8"))
-        await self.ScriptConfig[uid].load(data)
-
-        logger.success(f"{script_id} 配置加载成功")
-
-    async def export_script_to_file(self, script_id: str, jsonFile: str):
-        """导出脚本配置到文件"""
-
-        logger.info(f"导出配置到文件: {script_id} - {jsonFile}")
-
-        uid = uuid.UUID(script_id)
-        file_path = Path(jsonFile)
-
-        if uid not in self.ScriptConfig:
-            logger.error(f"{script_id} 不存在")
-            raise KeyError(f"脚本 {script_id} 不存在")
-        if not isinstance(self.ScriptConfig[uid], GeneralConfig):
-            logger.error(f"{script_id} 不是通用脚本配置")
-            raise TypeError(f"脚本 {script_id} 不是通用脚本配置")
-
-        temp = await self.ScriptConfig[uid].toDict(if_decrypt=False)
-        temp.pop("SubConfigsInfo", None)
-        temp = await self.remove_privacy_info(temp, Path(file_path).stem)
-
-        file_path.write_text(
-            json.dumps(temp, ensure_ascii=False, indent=4), encoding="utf-8"
-        )
-
-        logger.success(f"{script_id} 配置导出成功")
 
     async def import_script_from_share(
         self, script_id: str, config_key: str, version_no: Optional[int]
@@ -1180,7 +1139,8 @@ class AppConfig(GlobalConfig):
         | OkNteUserConfig
         | HSRUserConfig
         | BetterGIUserConfig
-        | ZzzOdUserConfig,
+        | ZzzOdUserConfig
+        | BAAHUserConfig,
     ]:
         """添加用户配置"""
 
@@ -1221,6 +1181,8 @@ class AppConfig(GlobalConfig):
             uid, config = await script_config.UserData.add(BetterGIUserConfig)
         elif isinstance(script_config, ZzzOdConfig):
             uid, config = await script_config.UserData.add(ZzzOdUserConfig)
+        elif isinstance(script_config, BAAHConfig):
+            uid, config = await script_config.UserData.add(BAAHUserConfig)
         else:
             raise TypeError(f"不支持的脚本配置类型: {type(script_config)}")
 
@@ -1283,10 +1245,10 @@ class AppConfig(GlobalConfig):
         try:
             shutil.copytree(source_config_dir, temporary_path)
             target_config_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.rmtree(target_config_dir, ignore_errors=True)
+            force_rmtree(target_config_dir)
             temporary_path.rename(target_config_dir)
         finally:
-            shutil.rmtree(temporary_path, ignore_errors=True)
+            force_rmtree(temporary_path)
 
         logger.info(f"已从 OK-WW 脚本默认配置初始化用户配置: {script_id} - {owner}")
         return target_config_dir
@@ -1778,111 +1740,17 @@ class AppConfig(GlobalConfig):
 
         return self._zzzod_root(self._zzzod_script_config(script_id))
 
-    async def list_zzzod_backups(
-        self, script_id: str, user_id: str, target: str
-    ) -> list[dict]:
-        """列出配置备份（时间倒序）。target=onedragon 原生配置 / mas 用户槽。"""
-
-        service = self.zzzod_restore_service(script_id, user_id)
-        return [{"time": ts} for ts in await service.list(target)]
-
-    def zzzod_restore_service(
-        self, script_id: str, user_id: str
-    ) -> "ConfigRestoreService":
-        """构建 ZzzOd 配置恢复服务（双目标：mas 在前、onedragon 在后）。
-
-        供其他专项参考：配置恢复的「列表/预览/恢复」统一走
-        :class:`app.utils.config_restore.ConfigRestoreService`，各专项只提供
-        ``ConfigRestoreTarget`` 回调（闭包捕获脚本/用户上下文）。脚本名
-        「一条龙」用于文案参数化。
-        """
-
-        from app.utils.config_restore import ConfigRestoreService, ConfigRestoreTarget
-
-        async def list_mas():
-            from app.task.ZzzOd.tools import list_mas_backups
-
-            _, _, user_cfg, _ = self._zzzod_user(script_id, user_id)
-            slot = int(user_cfg.get("Info", "SlotIdx") or -1)
-            if slot <= 0:
-                return []
-            return list_mas_backups(script_id, slot)
-
-        async def list_onedragon():
-            from app.task.ZzzOd.tools import list_onedragon_backups
-
-            return list_onedragon_backups(script_id)
-
-        async def preview_mas(ts: str) -> dict:
-            return await self.get_zzzod_backup_preview(
-                script_id, user_id, ts, target="mas"
-            )
-
-        async def preview_onedragon(ts: str) -> dict:
-            return await self.get_zzzod_backup_preview(
-                script_id, user_id, ts, target="onedragon"
-            )
-
-        async def restore_mas(ts: str) -> object:
-            return await self.restore_zzzod_backup(
-                script_id, user_id, ts, target="mas"
-            )
-
-        async def restore_onedragon(ts: str) -> object:
-            return await self.restore_zzzod_backup(
-                script_id, user_id, ts, target="onedragon"
-            )
-
-        async def snapshot_mas() -> dict:
-            return await self.ensure_zzzod_mas_backup(script_id, user_id)
-
-        async def snapshot_onedragon() -> dict:
-            return self.ensure_zzzod_direct_backup(script_id)
-
-        return ConfigRestoreService(
-            script_name="一条龙",
-            targets=[
-                ConfigRestoreTarget(
-                    key="mas",
-                    list_backups=list_mas,
-                    preview=preview_mas,
-                    restore=restore_mas,
-                    snapshot=snapshot_mas,
-                ),
-                ConfigRestoreTarget(
-                    key="onedragon",
-                    list_backups=list_onedragon,
-                    preview=preview_onedragon,
-                    restore=restore_onedragon,
-                    snapshot=snapshot_onedragon,
-                ),
-            ],
-        )
-
-    async def ensure_zzzod_backup(
-        self, script_id: str, user_id: str, target: str
-    ) -> dict:
-        """按需归档目标池当前配置（指纹去重，无变化自动跳过）。
-
-        编辑界面三时机的 ZzzOd 入口：进入编辑页归档 onedragon（MAS 操作前
-        原始态）、退出编辑页归档 mas（用户侧终态）、运行前两者都归档
-        （:meth:`ZzzOd.AutoProxyTask._prepare_injection`）。
-        """
-
-        service = self.zzzod_restore_service(script_id, user_id)
-        return await service.ensure(target)
-
     async def ensure_zzzod_mas_backup(
         self, script_id: str, user_id: str
     ) -> dict:
         """确保 MAS 用户绑定槽有当前状态的备份（指纹去重，无变化跳过）。
 
-        供编辑界面退出时机调用（MAS 侧配置终态）。用户尚未绑定槽或槽目录
-        为空时跳过（没有可恢复的内容），返回 ``created=False``。
+        供编辑界面退出时机调用（MAS 侧配置终态）。用户尚未绑定槽时跳过
+        （没有可恢复的内容），返回 ``created=False``。
         """
 
         from app.task.ZzzOd.tools import (
-            archive_mas_backup,
+            archive_mas_config_backup,
             collect_mas_user_info,
             instance_dir,
             list_mas_backups,
@@ -1891,13 +1759,16 @@ class AppConfig(GlobalConfig):
         _, _, user_cfg, _ = self._zzzod_user(script_id, user_id)
         slot = int(user_cfg.get("Info", "SlotIdx") or -1)
         slot_dir = instance_dir(self._zzzod_script_root(script_id), slot)
-        if slot <= 0 or not slot_dir.is_dir() or not any(slot_dir.iterdir()):
+        if slot <= 0 or not slot_dir.is_dir():
             return {"created": False, "time": ""}
 
-        dest = archive_mas_backup(
+        # 统一入口：归档前物化本页账号+编排进槽（账号/编排只存在 UserData，
+        # 槽要注入才带；不物化会漏、恢复会把本页字段清空），见文档 §3.1 陷阱
+        dest = archive_mas_config_backup(
             script_id,
             slot,
             slot_dir,
+            user_cfg,
             meta=collect_mas_user_info(user_cfg),
         )
         times = list_mas_backups(script_id, slot)
@@ -1923,19 +1794,52 @@ class AppConfig(GlobalConfig):
             MAS_USER_INFO_FILE,
             collect_mas_user_info,
             get_mas_backup_dir,
+            get_onedragon_backup_dir,
             instance_dir,
+            materialize_user_fields,
             normalize_app_group_entries,
             read_app_group,
             read_game_account,
             restore_mas_backup,
             restore_onedragon_backup,
         )
+        from app.utils.config_archive import dir_files
         from app.utils.io import read_file
 
         _, root, user_cfg, uid = self._zzzod_user(script_id, user_id)
 
         if target == "onedragon":
-            restore_onedragon_backup(script_id, ts, root)
+            # 恢复守卫：备份内的原生实例 idx 若已被任一 MAS 用户绑定为配置槽
+            # （任何脚本、含本用户——恢复会整目录替换槽目录），中止并点名，
+            # 避免把绑定槽内容覆盖成原生实例；原生注册表不在此列，恢复本就
+            # 是把原生世界拉回该时点（恢复前已强制存底）
+            backup_dir = get_onedragon_backup_dir(root, ts)
+            if backup_dir is None:
+                raise ValueError(f"备份不存在: {ts}")
+            backup_idxs = {
+                int(rel.split("/", 1)[0])
+                for rel in dir_files(backup_dir)
+                if "/" in rel and rel.split("/", 1)[0].isdigit()
+            }
+            for bound_script in self.ScriptConfig.values():
+                if not isinstance(bound_script, ZzzOdConfig):
+                    continue
+                for bound_uid, bound_cfg in bound_script.UserData.items():
+                    bound_slot = int(bound_cfg.get("Info", "SlotIdx") or -1)
+                    if bound_slot not in backup_idxs:
+                        continue
+                    if bound_uid == uid:
+                        who = "本用户"
+                    else:
+                        who = (
+                            f"脚本「{str(bound_script.get('Info', 'Name') or '未知脚本')}」"
+                            f"的用户「{str(bound_cfg.get('Info', 'Name') or '未知用户')}」"
+                        )
+                    raise ValueError(
+                        f"备份含原生实例 {bound_slot:02d}，已被{who}绑定为配置槽，"
+                        "恢复会覆盖其内容，已中止"
+                    )
+            restore_onedragon_backup(root, ts)
             logger.info(f"ZZZ-OD 用户 {uid} 已把备份 {ts} 恢复到一条龙原生配置")
             return -1
 
@@ -1950,16 +1854,20 @@ class AppConfig(GlobalConfig):
                 f"目标槽 {slot:02d} 当前已被「{occupant}」占用，"
                 "为避免覆盖他人配置已中止恢复，请先处理占用后再试"
             )
+        # 恢复前先物化本页账号+编排进槽，再走 restore_mas_backup 内部「强制
+        # 归档当前」——这份「恢复前存底」才能回到本页配置状态（否则缺账号，
+        # 误恢复想找回时会把本页账号清空）
+        slot_dir = instance_dir(root, slot)
+        materialize_user_fields(slot_dir, user_cfg)
         restore_mas_backup(
             script_id,
             slot,
             ts,
-            root / "config" / f"{slot:02d}",
+            slot_dir,
             meta=collect_mas_user_info(user_cfg),
         )
 
         # 恢复后的槽内容 = 该时点的 MAS 配置；把 MAS 管理的字段全量回填本页
-        slot_dir = instance_dir(root, slot)
         account = read_game_account(slot_dir)
         # 任务编排整表回填（含未启用项原位保留顺序，运行侧只消费启用项）
         all_apps = normalize_app_group_entries(read_app_group(slot_dir))
@@ -2008,6 +1916,8 @@ class AppConfig(GlobalConfig):
         任务编排只取来源实例当前启用的应用（对齐 _group.yml 缺席=不加入）。
         实例级配置随导入对齐来源实例写入绑定槽：notify.yml（应用通知，
         zzz-od 默认开启，不搬会让「来源关着」变开着）、team.yml（预备编队）、
+        game.yml（按键配置：键盘/手柄按键、后台模式、输入方式、HDR、启动
+        参数、分辨率等，MAS 不托管、注入不触碰，只能靠导入对齐）、
         one_dragon/ 全部 per-app 配置（体力计划/咖啡店/随便观等任务级 yml）。
         """
 
@@ -2016,7 +1926,7 @@ class AppConfig(GlobalConfig):
             ensure_user_slot,
         )
         from app.task.ZzzOd.tools import (
-            archive_mas_backup,
+            archive_mas_config_backup,
             collect_mas_user_info,
             instance_dir,
             normalize_app_group_entries,
@@ -2029,10 +1939,13 @@ class AppConfig(GlobalConfig):
         if slot > 0:
             slot_dir = root / "config" / f"{slot:02d}"
             if slot_dir.is_dir():
-                archive_mas_backup(
+                # 覆盖前存底走统一入口（先物化再快照）：不物化的「导入前」
+                # 备份缺账号，恢复它会把本页账号清空
+                archive_mas_config_backup(
                     script_id,
                     slot,
                     slot_dir,
+                    user_cfg,
                     force=True,
                     meta=collect_mas_user_info(user_cfg),
                 )
@@ -2074,6 +1987,9 @@ class AppConfig(GlobalConfig):
         # 实例级持久配置对齐来源实例：
         # - notify.yml（应用通知）在实例根
         # - team.yml（预备编队：名称 + 绑定配队方案 + 成员）在实例根
+        # - game.yml（GameConfig 按键配置：键盘/手柄按键、后台模式、输入方式、
+        #   HDR、启动参数、分辨率）在实例根——MAS 不托管该文件，注入运行也
+        #   不触碰，导入不对齐会导致按键配置永远停留在 zzz-od 默认值
         # - one_dragon/ 全部 per-app 配置（charge_plan.yml 体力计划、coffee.yml
         #   咖啡店、suibian_temple.yml 随便观等）随导入整目录对齐
         # _group.yml 例外：任务编排走上面的 AppList 整表语义（含未启用项），不整搬。
@@ -2099,6 +2015,7 @@ class AppConfig(GlobalConfig):
 
         _align_yml(("notify.yml",))
         _align_yml(("team.yml",))
+        _align_yml(("game.yml",))
 
         source_one_dragon = source_dir / "one_dragon"
         target_one_dragon = target_dir / "one_dragon"
@@ -2119,7 +2036,7 @@ class AppConfig(GlobalConfig):
         logger.info(
             f"ZZZ-OD 用户 {uid} 已从实例 {int(instance_idx):02d} 导入配置"
             f"(账号字段 {imported_accounts} 项, 任务 {len(all_apps)} 项, "
-            f"应用通知/体力计划已对齐槽 {slot:02d})"
+            f"应用通知/按键配置/体力计划已对齐槽 {slot:02d})"
         )
         return {
             "instanceIdx": int(instance_idx),
@@ -2166,14 +2083,48 @@ class AppConfig(GlobalConfig):
                 return str(item.get("name") or f"原生实例 {slot:02d}")
         return None
 
+    @staticmethod
+    def _preview_account_fields(account: dict) -> list[dict]:
+        """备份预览用的账号字段列表；密码一律掩码、不返回明文。
+
+        预览是纯展示（恢复直接回写备份文件内容，不经此值），密码明文没有
+        理由出现在响应里；其余字段缺失时合并默认值（无值前端兜底 ``—``）。
+        mas 与 onedragon 两个预览分支共用。
+        """
+
+        from app.task.ZzzOd.tools.zzz_od_config import DEFAULT_GAME_ACCOUNT
+
+        return [
+            {
+                "key": key,
+                "value": (
+                    "••••••••"
+                    if key == "password" and account.get(key)
+                    else str(
+                        account[key]
+                        if account.get(key) is not None
+                        else DEFAULT_GAME_ACCOUNT.get(key, "")
+                    )
+                ),
+            }
+            for key in (
+                "game_region",
+                "game_path",
+                "game_language",
+                "account",
+                "password",
+                "bilibili_account_name",
+            )
+        ]
+
     def get_zzzod_backup_preview(
         self, script_id: str, user_id: str, ts: str, target: str
     ) -> dict:
         """读取指定备份的配置摘要（纯读不恢复），供「预览配置」快速展示。
 
         - target="mas"：基本信息卡信息字段（用户名/启用/模式/启动器/剩余天数/
-          备注/节点详情推送，来自备份内信息快照）+ 账号字段（缺失合并默认值）
-          + 任务编排（应用目录并入中文名）；
+          备注/节点详情推送，来自备份内信息快照）+ 账号字段（缺失合并默认值，
+          密码掩码）+ 任务编排（应用目录并入中文名）；
         - target="onedragon"：备份内 one_dragon.yml 注册表的实例列表。
         """
 
@@ -2185,16 +2136,13 @@ class AppConfig(GlobalConfig):
             read_app_group,
             read_game_account,
         )
-        from app.task.ZzzOd.tools.zzz_od_config import (
-            DEFAULT_GAME_ACCOUNT,
-        )
         from app.utils.io import read_file
 
         # 脚本安装根目录（onedragon/mas 两条分支都要用：实例名书、槽目录）
         root = self._zzzod_root(self._zzzod_script_config(script_id))
 
         if target == "onedragon":
-            backup = get_onedragon_backup_dir(script_id, ts)
+            backup = get_onedragon_backup_dir(root, ts)
             if backup is None:
                 raise ValueError(f"备份不存在: {ts}")
             data = read_file(backup / "one_dragon.yml") or {}
@@ -2211,24 +2159,7 @@ class AppConfig(GlobalConfig):
                 # 目录名不带零填充，与一条龙原生实例目录同构）
                 backup_idx_dir = backup / str(idx)
                 account = read_game_account(backup_idx_dir)
-                account_fields = [
-                    {
-                        "key": key,
-                        "value": str(
-                            account[key]
-                            if account.get(key) is not None
-                            else DEFAULT_GAME_ACCOUNT.get(key, "")
-                        ),
-                    }
-                    for key in (
-                        "game_region",
-                        "game_path",
-                        "game_language",
-                        "account",
-                        "password",
-                        "bilibili_account_name",
-                    )
-                ]
+                account_fields = self._preview_account_fields(account)
                 task_fields = []
                 for task in read_app_group(backup_idx_dir):
                     app_id = str(task.get("app_id") or "").strip()
@@ -2283,26 +2214,8 @@ class AppConfig(GlobalConfig):
                 continue
             info_fields.append({"key": key, "value": str(info[field])})
 
-        keys = (
-            "game_region",
-            "game_path",
-            "game_language",
-            "account",
-            "password",
-            "bilibili_account_name",
-        )
         account = read_game_account(backup)
-        account_fields = [
-            {
-                "key": key,
-                "value": str(
-                    account[key]
-                    if account.get(key) is not None
-                    else DEFAULT_GAME_ACCOUNT.get(key, "")
-                ),
-            }
-            for key in keys
-        ]
+        account_fields = self._preview_account_fields(account)
 
         name_book = {
             str(item.get("app_id")): str(item.get("app_name") or "")
@@ -2452,8 +2365,8 @@ class AppConfig(GlobalConfig):
             list_onedragon_backups,
         )
 
-        dest = archive_onedragon_backup(script_id, root)
-        times = list_onedragon_backups(script_id)
+        dest = archive_onedragon_backup(root)
+        times = list_onedragon_backups(root)
         return {
             "created": dest is not None,
             "time": times[0] if times else "",
@@ -2476,6 +2389,77 @@ class AppConfig(GlobalConfig):
             "original_available": "原始" in available,
             "integrated_available": "集成" in available,
         }
+
+    # ════════════ 配置恢复（基座统一分发，池声明见各专项 tools/restore_service） ════════════
+
+    def restore_service(self, script_id: str, user_id: str) -> "ConfigRestoreService":
+        """按脚本类型分发到专项恢复池，绑定上下文构建运行时服务。
+
+        专项只声明池表（普通函数，显式收 :class:`RestoreContext`），本方法
+        与下方四个通用门面方法就是全部接线——新专项接入不再改 HTTP 层
+        与 schema，只在分发链加一个分支。
+        """
+
+        from app.utils.config_restore import RestoreContext, build_restore_service
+
+        script_config = self.ScriptConfig[uuid.UUID(script_id)]
+        if isinstance(script_config, ZzzOdConfig):
+            from app.task.ZzzOd.tools.restore_service import (
+                RESTORE_POOLS,
+                RESTORE_SCRIPT_NAME,
+            )
+        elif isinstance(script_config, OkNteConfig):
+            from app.task.OkNte.tools.restore_service import (
+                RESTORE_POOLS,
+                RESTORE_SCRIPT_NAME,
+            )
+        else:
+            raise ValueError("该专项暂不支持配置恢复")
+        return build_restore_service(
+            RestoreContext(
+                config=self,
+                script_config=script_config,
+                script_id=script_id,
+                user_id=user_id,
+            ),
+            RESTORE_SCRIPT_NAME,
+            RESTORE_POOLS,
+        )
+
+    async def list_config_backups(
+        self, script_id: str, user_id: str, target: str
+    ) -> list[dict]:
+        """列出配置备份（时间倒序）。target 取值由专项池定义。"""
+
+        service = self.restore_service(script_id, user_id)
+        return [{"time": ts} for ts in await service.list(target)]
+
+    async def ensure_config_backup(
+        self, script_id: str, user_id: str, target: str
+    ) -> dict:
+        """按需归档目标池当前配置（指纹去重，无变化自动跳过）。
+
+        编辑界面三时机的统一入口：进入/退出编辑页（前端触发）、运行前
+        （各专项任务流程调用专项归档函数，不经本方法）。
+        """
+
+        return await self.restore_service(script_id, user_id).ensure(target)
+
+    async def restore_config_backup(
+        self, script_id: str, user_id: str, ts: str, target: str
+    ) -> dict:
+        """把指定备份恢复到目标位置（恢复前存底由专项池函数自理）。"""
+
+        await self.restore_service(script_id, user_id).restore(target, ts)
+        return {"target": target}
+
+    async def get_config_backup_preview(
+        self, script_id: str, user_id: str, ts: str, target: str
+    ) -> dict:
+        """读取指定备份的配置摘要（纯读不恢复）；载荷结构由专项定义。"""
+
+        payload = await self.restore_service(script_id, user_id).preview(target, ts)
+        return {"time": ts, "target": target, "data": payload}
 
     async def update_user(
         self, script_id: str, user_id: str, data: Dict[str, Dict[str, Any]]
@@ -2633,8 +2617,14 @@ class AppConfig(GlobalConfig):
                 f"未找到 MAA 物品资源: {item_index_path}，请更新 MAA 后重试"
             )
 
+        # 220 KB 的物品表每次打开用户编辑页都要解析, 按文件 mtime 缓存
+        mtime_ns = item_index_path.stat().st_mtime_ns
+        cached = self._maa_depot_items_cache.get(item_index_path)
+        if cached is not None and cached[0] == mtime_ns:
+            return cached[1]
+
         items = json.loads(item_index_path.read_text(encoding="utf-8"))
-        return [
+        options = [
             {"label": item.get("name") or item_id, "value": item_id}
             for item_id, item in sorted(
                 (
@@ -2646,6 +2636,51 @@ class AppConfig(GlobalConfig):
                 ),
                 key=lambda entry: int(entry[0]),
             )
+        ]
+        self._maa_depot_items_cache[item_index_path] = (mtime_ns, options)
+        return options
+
+    async def get_maa_depot_stage_candidates(
+        self, script_id: str, item_id: str
+    ) -> list[dict[str, str]]:
+        """获取掉落指定材料的关卡候选（按单件期望理智升序，即 xx 理智/件）。
+
+        编排逻辑在 task 域（cultivate.service）；本方法只做脚本解析与转发，
+        保持既有对外契约不变。
+        """
+
+        script_config = self.ScriptConfig[uuid.UUID(script_id)]
+        if not isinstance(script_config, MaaConfig):
+            raise TypeError(f"脚本 {script_id} 不是 MAA 脚本")
+
+        # 惰性导入：避免 core 层在模块加载期依赖 task 域
+        from app.task.MAA.tools.cultivate import depot_cultivate_service
+
+        return await depot_cultivate_service.stage_candidates(
+            config_path=self.config_path,
+            item_id=item_id,
+            proxy=self.proxy,
+        )
+
+    async def get_maa_depot_inventory(self, script_id: str) -> list[dict[str, str]]:
+        """获取 MAA 仓库库存（安装级 DepotData；label=数量，value=物品ID）。"""
+
+        script_config = self.ScriptConfig[uuid.UUID(script_id)]
+        if not isinstance(script_config, MaaConfig):
+            raise TypeError(f"脚本 {script_id} 不是 MAA 脚本")
+
+        from app.task.MAA.tools.cultivate import depot_cultivate_service
+
+        data_dir = Path(script_config.get("Info", "Path")) / "data"
+        inventory = await depot_cultivate_service.inventory(maa_data_dir=data_dir)
+        if inventory is None:
+            raise FileNotFoundError(
+                f"未找到 MAA 仓库数据: {data_dir / 'DepotData.json'}，"
+                "请先在 MAA 中执行一次仓库识别"
+            )
+        return [
+            {"label": str(count), "value": item_id}
+            for item_id, count in sorted(inventory.items())
         ]
 
     async def add_plan(
@@ -2788,13 +2823,6 @@ class AppConfig(GlobalConfig):
 
         await self.EmulatorConfig.remove(emulator_uid)
 
-    async def reorder_emulator(self, index_list: list[str]) -> None:
-        """重新排序模拟器"""
-
-        logger.info(f"重新排序模拟器: {index_list}")
-
-        await self.EmulatorConfig.setOrder(list(map(uuid.UUID, index_list)))
-
     async def add_queue(self) -> tuple[uuid.UUID, QueueConfig]:
         """添加调度队列"""
 
@@ -2839,13 +2867,6 @@ class AppConfig(GlobalConfig):
         self._ensure_cycle_safe(queue_uid, "删除")
 
         await self.QueueConfig.remove(queue_uid)
-
-    async def reorder_queue(self, index_list: list[str]) -> None:
-        """重新排序调度队列"""
-
-        logger.info(f"重新排序调度队列: {index_list}")
-
-        await self.QueueConfig.setOrder(list(map(uuid.UUID, index_list)))
 
     async def get_time_set(
         self, queue_id: str, time_set_id: Optional[str]
@@ -3050,13 +3071,6 @@ class AppConfig(GlobalConfig):
         except Exception as e:
             logger.warning(f"广播游戏社区结果失败: {e}")
 
-    async def update_game_sign_results(
-        self, formatted: dict[str, Any], *, replace: bool = False
-    ) -> None:
-        """兼容旧调用方，转发到社区结果更新入口。"""
-
-        await self.update_community_results(formatted, replace=replace)
-
     async def update_tools(self, data: Dict[str, Dict[str, Any]]) -> None:
         """更新工具设置"""
 
@@ -3095,18 +3109,6 @@ class AppConfig(GlobalConfig):
             )
             await config.set("GameSignAccount", "Name", account_name)
             return uid, config
-
-    async def get_game_sign_account(
-        self, account_id: str, *, if_decrypt: bool = True
-    ) -> Dict[str, Any]:
-        """获取游戏社区账号组详情"""
-
-        logger.debug(f"获取游戏社区账号组: {account_id}")
-
-        account_uid = uuid.UUID(account_id)
-        return await self.ToolsConfig.GameSign_Accounts[account_uid].toDict(
-            if_decrypt=if_decrypt
-        )
 
     def _clear_game_sign_account_results(self, account_id: str) -> None:
         """清除指定游戏社区账号的结果。"""
@@ -3317,28 +3319,6 @@ class AppConfig(GlobalConfig):
                 self.ScriptConfig[script_uid]
                 .UserData[user_uid]
                 .Notify_CustomWebhooks.remove(webhook_uid)
-            )
-
-    async def reorder_webhook(
-        self, script_id: Optional[str], user_id: Optional[str], index_list: list[str]
-    ) -> None:
-        """重新排序 webhook"""
-
-        if script_id is None and user_id is None:
-            logger.info(f"重新排序全局 webhook: {index_list}")
-
-            await self.Notify_CustomWebhooks.setOrder(list(map(uuid.UUID, index_list)))
-
-        else:
-            logger.info(f"重新排序 webhook: {script_id} - {user_id} - {index_list}")
-
-            script_uid = uuid.UUID(script_id)
-            user_uid = uuid.UUID(user_id)
-
-            await (
-                self.ScriptConfig[script_uid]
-                .UserData[user_uid]
-                .Notify_CustomWebhooks.setOrder(list(map(uuid.UUID, index_list)))
             )
 
     @property
@@ -4323,6 +4303,47 @@ class AppConfig(GlobalConfig):
                 deleted_count += 1
         if deleted_count:
             logger.success(f"清理完成: {deleted_count} 个过期诊断文件")
+
+    async def clean_maafw_native_debug_logs(self) -> None:
+        """清掉 MFW 项目里过期的 MaaFramework 原生日志备份。
+
+        MaaFramework 把 ``debug/maafw.log`` 写到一定大小就整体挪成
+        ``debug/maafw.bak.<时间戳>.log`` 再开新的，但从不回收旧的——一个每天跑
+        的项目几天就能堆出几百 MB。每次运行的完整内容已经另存进历史记录的
+        ``*.maafw.log``，所以这里只删备份，正在写的 ``maafw.log`` 不动。
+        保留时长沿用历史记录的保留天数设置。
+        """
+
+        if self.get("Function", "HistoryRetentionTime") == 0:
+            logger.info("原生日志永久保留, 跳过 MFW 原生日志备份清理")
+            return
+
+        from app.models.config import MaaFWConfig
+
+        cutoff = time.time() - self.get("Function", "HistoryRetentionTime") * 86400
+        deleted_count = 0
+        for script_config in self.ScriptConfig.values():
+            if not isinstance(script_config, MaaFWConfig):
+                continue
+            project_path = str(script_config.get("Info", "Path") or "").strip()
+            if not project_path:
+                continue
+            debug_folder = Path(project_path) / "debug"
+            if not debug_folder.is_dir():
+                continue
+            # 备份文件名由 MaaFramework 决定，与 runner_task 里
+            # _iter_rotated_native_debug_logs 认的是同一套。
+            for file in debug_folder.glob("maafw.bak.*.log"):
+                try:
+                    if file.stat().st_mtime >= cutoff:
+                        continue
+                    file.unlink()
+                except OSError as exc:
+                    logger.warning(f"MFW 原生日志备份清理失败: {file} - {exc}")
+                    continue
+                deleted_count += 1
+        if deleted_count:
+            logger.success(f"清理完成: {deleted_count} 个过期 MFW 原生日志备份")
 
     async def clean_old_history(self):
         """删除超过用户设定天数的历史记录文件（基于目录日期）"""

@@ -47,7 +47,7 @@ from .AutoProxy import (
     parse_user_apps,
 )
 from .tools import (
-    archive_mas_backup,
+    archive_mas_config_backup,
     archive_onedragon_backup,
     collect_mas_user_info,
     find_active_instance,
@@ -121,8 +121,10 @@ class ScriptConfigTask(TaskExecuteBase):
             restore_instance_view(self.root_path)  # 闪退自愈
             # 归档点：一条龙原生配置快照——必须在 ensure_user_slot（可能注册
             # 新槽）与合成视图写入之前，捕获未被本次会话触碰的原生状态
-            with suppress(Exception):
-                archive_onedragon_backup(self.script_info.script_id, self.root_path)
+            try:
+                archive_onedragon_backup(self.root_path)
+            except Exception as e:
+                logger.opt(exception=True).warning(f"归档 zzz-od 原生配置快照失败: {e}")
             used = collect_used_slot_idxs(exclude_uids={self._target_uid})
             slot = await ensure_user_slot(self.root_path, self.cur_user_config, used)
             self._session_slot = slot
@@ -137,12 +139,15 @@ class ScriptConfigTask(TaskExecuteBase):
                     f"只读预览，不注入不回读)"
                 )
             else:
-                # MAS 用户槽快照（含配队等全部内容），供配置恢复
+                # MAS 用户槽快照（含配队等全部内容），供配置恢复——统一入口
+                # 会先物化本页账号+编排进槽（它们只存在 UserData，槽要会话
+                # 注入才带上；直接快照会漏掉，恢复会把本页字段清空）
                 if instance_dir(self.root_path, slot).is_dir():
-                    archive_mas_backup(
+                    archive_mas_config_backup(
                         self.script_info.script_id,
                         slot,
                         instance_dir(self.root_path, slot),
+                        self.cur_user_config,
                         meta=collect_mas_user_info(self.cur_user_config),
                     )
                 inject_user_fields(
@@ -214,9 +219,7 @@ class ScriptConfigTask(TaskExecuteBase):
         if str(account.get("password") or "").strip():
             await cfg.set("Game", "Password", str(account.get("password")))
         all_apps = normalize_app_group_entries(read_app_group(slot_dir))
-        await cfg.set(
-            "OneDragon", "AppList", json.dumps(all_apps, ensure_ascii=False)
-        )
+        await cfg.set("OneDragon", "AppList", json.dumps(all_apps, ensure_ascii=False))
         logger.info(
             f"绑定槽 {slot:02d} 会话改动已回读用户配置 (任务 {len(all_apps)} 项)"
         )
@@ -237,20 +240,39 @@ class ScriptConfigTask(TaskExecuteBase):
     async def final_task(self) -> None:
         self.wait_event.set()
         # 进程清掉前先回读：GUI 内的任务编排/账号改动写回 MAS 字段（查看会话跳过）
+        readback_failed = False
         if self._session_slot is not None and not self.view_only:
-            with suppress(Exception):
+            try:
                 await self._readback_user_fields(self._session_slot)
+            except Exception as e:
+                readback_failed = True
+                logger.opt(exception=True).warning(f"回读 zzz-od 会话改动失败: {e}")
         await self._kill_processes()
         # GUI 已退出，恢复原生注册表与会话前的原生活跃实例
-        with suppress(Exception):
+        try:
             restore_instance_view(self.root_path)
+        except Exception as e:
+            logger.opt(exception=True).warning(f"恢复 zzz-od 原生注册表失败: {e}")
         self._restore_native_active()
-        if not self.crashed:
-            if self.view_only:
-                logger.success("zzz-od 原生查看结束（只读，不回读字段）")
-            else:
-                logger.success("zzz-od 原生配置已由 GUI 保存")
-            self.cur_user_item.status = "完成"
+        if self.crashed:
+            return
+        if readback_failed:
+            # GUI 改动没能写回 MAS 字段：两侧已不一致，不能报成功
+            self.cur_user_item.status = "异常"
+            await Publisher.send(
+                id=self.task_info.task_id,
+                type=protocol.TASK_NOTICE,
+                data=WSTaskNoticeData(
+                    level="error",
+                    message="zzz-od 会话改动回读失败，MAS 用户字段未更新，请重新打开配置检查",
+                ),
+            )
+            return
+        if self.view_only:
+            logger.success("zzz-od 原生查看结束（只读，不回读字段）")
+        else:
+            logger.success("zzz-od 原生配置已由 GUI 保存")
+        self.cur_user_item.status = "完成"
 
     async def on_crash(self, e: Exception) -> None:
         self.crashed = True
@@ -264,7 +286,9 @@ class ScriptConfigTask(TaskExecuteBase):
         await Publisher.send(
             id=self.task_info.task_id,
             type=protocol.TASK_NOTICE,
-            data=WSTaskNoticeData(level="error", message=f"zzz-od 设置任务出现异常: {e}"),
+            data=WSTaskNoticeData(
+                level="error", message=f"zzz-od 设置任务出现异常: {e}"
+            ),
         )
 
     async def _kill_processes(self) -> None:

@@ -36,7 +36,10 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.io import read_file, write_file
+from app.utils.io import read_file, replace_dir, write_file
+from app.utils.logger import get_logger
+
+logger = get_logger("绝区零一条龙配置")
 
 # zzz-od game_account.yml 的 game_region 取值 → 中文展示
 ZZZOD_GAME_REGION_LABELS = {
@@ -85,6 +88,11 @@ DEFAULT_GAME_ACCOUNT: dict[str, Any] = {
 
 # 实例目录内的运行态目录：不属于配置包，注入/回读时排除、注入前清理
 _RUN_RECORD_DIR = "app_run_record"
+
+# 运行记录里的脏字节：一条龙用 non-atomic 写落盘，进程被杀/断电会在文件里留下
+# NUL 填充；YAML 解析器遇到 NUL 直接抛 ReaderError。读侧只取 run_status，
+# 丢掉这些不可见字符即可，不因一个坏文件让整个任务崩掉
+_INVALID_YAML_CHARS = dict.fromkeys(range(0x20), None)
 
 # 进程内读-改-写串行锁：write_file 只保证单次写原子，读-改-写整体在此串行，
 # 避免切实例 / 写任务编排 / 写账号并发交错丢更新
@@ -454,6 +462,36 @@ def write_game_account(config_dir: Path, patch: dict) -> dict:
         return data
 
 
+def user_field_patch(user_config) -> dict[str, Any]:
+    """MAS 用户字段 → ``game_account.yml`` patch（仅非空字段，其余保留槽值）。
+
+    与 :func:`write_game_account` 配套：注入/物化共用同一份「本页配置为事实源」
+    的转换，字段缺省不落盘、槽内既有值保持。
+    """
+
+    patch: dict[str, Any] = {}
+    for yaml_key, section, field in (
+        ("game_region", "Game", "GameRegion"),
+        ("game_path", "Game", "GamePath"),
+        ("game_language", "Game", "GameLanguage"),
+        ("account", "Game", "Account"),
+        ("password", "Game", "Password"),
+        ("bilibili_account_name", "Game", "BilibiliAccountName"),
+        ("platform", "Game", "Platform"),
+    ):
+        value = str(user_config.get(section, field) or "").strip()
+        if value:
+            patch[yaml_key] = value
+    # 布尔字段原样写入（YAML 布尔而非字符串）：MAS 字段是事实源，False 也下发
+    patch["use_custom_win_title"] = bool(
+        user_config.get("Game", "UseCustomWinTitle")
+    )
+    title = str(user_config.get("Game", "CustomWinTitle") or "").strip()
+    if title:
+        patch["custom_win_title"] = title
+    return patch
+
+
 def normalize_app_group_entries(items: list) -> list[dict]:
     """把任务编排条目归一化为 ``{"app_id": str, "enabled": bool}``（剔空）。
 
@@ -595,7 +633,11 @@ def snapshot_run_records(root: Path, idx: int) -> dict[str, int]:
     if not record_dir.is_dir():
         return result
     for path in sorted(record_dir.glob("*.yml")):
-        data = read_file(path) or {}
+        try:
+            data = read_file(path, format=".sanitized.yaml") or {}
+        except Exception as exc:  # noqa: BLE001 - 单个坏记录不应中断整个任务
+            logger.warning(f"运行记录读取失败，按未跑处理：{path.name}：{exc}")
+            data = {}
         try:
             result[path.stem] = int(data.get("run_status", 0) or 0)
         except (TypeError, ValueError):
@@ -637,17 +679,10 @@ def clear_run_records(root: Path, idx: int) -> None:
 
 
 def _atomic_copytree(source: Path, target: Path) -> None:
-    """目录整体原子替换（tmp + rename），覆盖目标已有内容。"""
+    """目录整体替换, 覆盖目标已有内容（先清后拷, 不再走 tmp + rename）。"""
 
-    temporary = target.with_name(f".{target.name}.{id(source)}.tmp")
-    try:
-        shutil.rmtree(temporary, ignore_errors=True)
-        shutil.copytree(source, temporary)
-        shutil.rmtree(target, ignore_errors=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary.rename(target)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    replace_dir(source, target)
 
 
 def backup_instance(root: Path, idx: int, backup_dir: Path) -> None:

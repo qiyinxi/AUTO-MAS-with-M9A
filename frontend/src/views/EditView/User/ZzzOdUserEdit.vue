@@ -997,8 +997,6 @@ import draggable from 'vuedraggable'
 import { useZzzOdTaskBoard, type ZzzOdTaskCard } from '@/composables/useZzzOdTaskBoard'
 import {
   Service,
-  ZzzOdBackupEnsureIn,
-  ZzzOdBackupRestoreIn,
   type ZzzOdInstanceOut,
   type ZzzOdNativeAccountField,
   type ZzzOdNativeConfigOut,
@@ -1145,9 +1143,11 @@ const gameLanguageLabels: Record<string, string> = Object.fromEntries(
 )
 
 // 用户名失焦：同脚本内禁止重名（绑定槽名与统计都依赖名字区分）
+// 上次查重并写回过的用户名；值没变时不再重复拉全部用户查重
+let lastCheckedUserName = ''
 const handleNameBlur = async () => {
   const name = formData.userName.trim()
-  if (!name) return
+  if (!name || name === lastCheckedUserName) return
   try {
     const resp = await getUsers(scriptId)
     const duplicate = Object.entries(resp?.data ?? {}).some(
@@ -1163,6 +1163,7 @@ const handleNameBlur = async () => {
   } catch (e) {
     logger.warn(e instanceof Error ? e.message : String(e))
   }
+  lastCheckedUserName = name
   await saveField('Info.Name', formData.userName)
 }
 
@@ -1253,14 +1254,12 @@ const handleConfigModeChange = async (value: boolean | string) => {
   }
 }
 
-/** 直控/用户共用的按需归档入口（ensureZzzodBackupApi 三时机，指纹去重）。
+/** 直控/用户共用的按需归档入口（通用 /backup/ensure 三时机，指纹去重）。
  * onedragon=一条龙原生配置当前状态；mas=绑定槽 MAS 终态（未绑定槽跳过） */
-const ensurePoolBackup = async (
-  target: ZzzOdBackupEnsureIn['target']
-): Promise<void> => {
+const ensurePoolBackup = async (target: string): Promise<void> => {
   if (!userId.value) return
   try {
-    const resp = await Service.ensureZzzodBackupApiApiScriptsZzzodBackupEnsurePost({
+    const resp = await Service.ensureConfigBackupApiApiScriptsBackupEnsurePost({
       scriptId,
       userId: userId.value,
       target,
@@ -1274,14 +1273,11 @@ const ensurePoolBackup = async (
 }
 
 /** 一条龙原生配置按需归档（进入直控/用户编辑页、退出直控时调用） */
-const ensureDirectBackup = () => ensurePoolBackup(ZzzOdBackupEnsureIn.target.ONEDRAGON)
+const ensureDirectBackup = () => ensurePoolBackup('onedragon')
 
 /** 用户模式退出时机：归档绑定槽 MAS 终态 + 一条龙原生配置终态（编辑会话包络） */
 const ensureUserExitBackups = () =>
-  Promise.all([
-    ensurePoolBackup(ZzzOdBackupEnsureIn.target.MAS),
-    ensurePoolBackup(ZzzOdBackupEnsureIn.target.ONEDRAGON),
-  ])
+  Promise.all([ensurePoolBackup('mas'), ensurePoolBackup('onedragon')])
 
 /** 进入直控的公共初始化（模式切换与页面加载共用）：
  * 补「改动前」备份 → 默认选第一个实例 → 加载所选实例原生配置 */
@@ -2016,7 +2012,8 @@ const previewFieldLabels: Record<string, string> = {
 const formatPreviewValue = (key: string, raw: string): string => {
   switch (key) {
     case 'status':
-      return raw === 'true' ? t('edit.yes') : t('edit.no')
+      // 后端传 str(bool)（"True"/"False"），大小写与 YAML 表示不定，统一小写比较
+      return raw.toLowerCase() === 'true' ? t('edit.yes') : t('edit.no')
     case 'mode':
       return raw === '用户'
         ? t('edit.zzzodModeUser')
@@ -2050,27 +2047,27 @@ const formatPreviewValue = (key: string, raw: string): string => {
   }
 }
 
-// 组件调用后端：list/preview/restore（脚本/用户上下文在此闭包捕获）
+// 组件调用后端：通用 /backup/* 端点（脚本/用户上下文在此闭包捕获）
 const restoreApi = {
   list: async (target: string) =>
-    Service.listZzzodBackupsApiApiScriptsZzzodBackupsGet(
+    Service.listConfigBackupsApiApiScriptsBackupListGet(
       scriptId,
       userId.value,
       target
     ),
   preview: async (target: string, time: string) =>
-    Service.getZzzodBackupPreviewApiApiScriptsZzzodBackupPreviewGet(
+    Service.getConfigBackupPreviewApiApiScriptsBackupPreviewGet(
       scriptId,
       userId.value,
       time,
       target
     ),
   restore: async (target: string, time: string) =>
-    Service.restoreZzzodBackupApiApiScriptsZzzodBackupRestorePost({
+    Service.restoreConfigBackupApiApiScriptsBackupRestorePost({
       scriptId,
       userId: userId.value,
       time,
-      target: target as ZzzOdBackupRestoreIn['target'],
+      target,
     }),
 }
 
@@ -2109,12 +2106,17 @@ const handleRestoreView = (target: string, item: { time: string }) => {
     cancelText: t('edit.cancel'),
     onOk: async () => {
       try {
-        await Service.restoreZzzodBackupApiApiScriptsZzzodBackupRestorePost({
+        const resp = await Service.restoreConfigBackupApiApiScriptsBackupRestorePost({
           scriptId,
           userId: userId.value,
           time: item.time,
-          target: target as ZzzOdBackupRestoreIn['target'],
+          target,
         })
+        // 后端失败走 HTTP 200 + body code=400，须显式检查返回体：槽绑定守卫等
+        // 抛错若被吞掉，会照常关弹窗并打开查看会话，显示的是没被恢复的当前配置
+        if (resp.code !== 200) {
+          throw new Error(resp.message || t('edit.configRestoreFailed'))
+        }
         restoreOpen.value = false
         if (isMas) {
           // MAS 备份预览：只读会话打开一条龙，合成视图下看到的是 MAS 实例
@@ -2294,6 +2296,7 @@ const loadUserData = async () => {
   applyUserData(data as ZzzOdUserConfig)
   await nextTick()
   formData.userName = formData.Info.Name || ''
+  lastCheckedUserName = formData.userName.trim()
 }
 
 const loadUser = async () => {
@@ -2316,9 +2319,8 @@ const loadUser = async () => {
 onMounted(async () => {
   if (await loadScriptInfo()) {
     await loadUser()
-    await loadInstances()
-    await loadLaunchers()
-    await loadCatalog()
+    // 三个请求互不依赖，并行发出
+    await Promise.all([loadInstances(), loadLaunchers(), loadCatalog()])
     // 已是直控模式的用户：公共初始化（备份 + 默认实例 + 加载原生配置）
     if (formData.Info.Mode === '直控') {
       await enterDirectMode()

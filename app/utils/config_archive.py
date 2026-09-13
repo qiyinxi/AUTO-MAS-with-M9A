@@ -27,12 +27,14 @@
 为 ZzzOd 的 ``app.task.ZzzOd.tools.backup_archive``。
 """
 
+import hashlib
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from app.utils import get_logger
+from app.utils.io import force_rmtree
 
 logger = get_logger("配置归档")
 
@@ -43,6 +45,18 @@ _TIME_FORMAT = "%Y%m%d-%H%M%S"
 
 _TS_PATTERN = re.compile(r"^\d{8}-\d{6}(?:-\d+)?$")
 """归档目录名白名单：仅接受本模块生成的时间戳命名（含同秒顺延序号后缀）"""
+
+
+def config_root_key(config_path: str | Path) -> str:
+    """物理配置根的稳定身份指纹。
+
+    规范化绝对路径（盘符小写、去尾斜杠）的短哈希——同一份物理配置无论被哪
+    个脚本实例引用都归同一个池，跨脚本共享原生备份、不随脚本删除；不同路径
+    天然分桶，互不干扰（同路径必然同格式，格式差异不会混池）。
+    """
+
+    norm = str(Path(config_path).resolve()).casefold().rstrip("\\/")
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:12]
 
 
 def list_times(root: Path) -> list[str]:
@@ -98,8 +112,6 @@ def file_set_hash(files: dict[str, Path]) -> str:
     Returns:
         十六进制 SHA-256 摘要。
     """
-
-    import hashlib
 
     digest = hashlib.sha256()
     for rel in sorted(files):
@@ -264,5 +276,7 @@ def restore_dir(store_root: Path, ts: str, target: Path) -> None:
     target = Path(target)
     # 先清再拷，copytree 加 dirs_exist_ok=True：目标残留目录被占用时
     # 不再「部分已删、备份一个没拷回」；与 #564 写法保持一致。
-    shutil.rmtree(target, ignore_errors=True)
+    # 删除走 force_rmtree：目标带只读文件（如脚本自带的 .git 对象）时
+    # 普通 rmtree 删不掉，残留会让随后的 copytree 覆盖失败。
+    force_rmtree(target)
     shutil.copytree(backup_dir, target, dirs_exist_ok=True)

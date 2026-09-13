@@ -38,6 +38,7 @@ from app.models.emulator import DeviceBase, DeviceInfo
 from app.models.schema import WSTaskNoticeData
 from app.models.task import LogRecord, ScriptItem, TaskExecuteBase
 from app.services import Notify, System
+from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.utils import LogMonitor, ProcessManager, get_logger
 from app.utils.constants import (
@@ -79,6 +80,10 @@ _ANNIHILATION_PROGRESS_RE = re.compile(
     r"(?:剿灭模式|剿滅模式|Annihilation(?: Mode| weekly limit)|殲滅作戦|섬멸 모드)\s*[:：]\s*(\d+)\s*/\s*(\d+)",
     re.IGNORECASE,
 )
+_MAA_SANITY_RECOGNITION_RE = re.compile(r"理智\s*[:：]\s*\d+\s*/\s*\d+")
+# MAA 走到能看到理智的界面（进到副本门口）后，gui.log 才会出现无时间戳的
+# 「理智: X/Y」识别行（v6.17.5 国服实测，繁服同字）；其余界面语言样本未核实，
+# 命中不到时一律视为未进入战斗流程。
 _MAA_SANITY_COMPLETION_MARKERS = (
     "完成任务: 理智作战",
     "完成任务: 活动关优先",
@@ -146,12 +151,26 @@ def _parse_annihilation_weekly_progress(log: str) -> tuple[int, int] | None:
 
 
 def _has_completed_annihilation_week(log: str) -> bool:
-    """判断剿灭日志是否表明本周额度已完成。"""
+    """判断剿灭日志是否表明本周额度已完成。
+
+    MAA 剿灭结束都会打印「完成任务: 剿灭作战」，以理智识别行区分战斗流程：
+
+    - 无理智识别行：MAA 未进到副本门口，完成即周内剿灭在代理开始前已完成；
+    - 有理智识别行但无进度行：进到门口却因理智不足没有开战，未达标；
+    - 有进度行但 current < total：开战了但理智不足没能打满进度，未达标；
+    - 进度 current >= total：本周剿灭已完成。
+
+    未达标时不记周完成标记，宁可下次代理重试。
+    """
+
+    if "完成任务: 剿灭作战" not in log:
+        return False
+
+    if not _MAA_SANITY_RECOGNITION_RE.search(log):
+        return True
 
     progress = _parse_annihilation_weekly_progress(log)
-    return "完成任务: 剿灭作战" in log and (
-        progress is None or progress[0] >= progress[1]
-    )
+    return progress is not None and progress[0] >= progress[1]
 
 
 def _has_completed_sanity_task(log_records: list[LogRecord]) -> bool:
@@ -631,8 +650,6 @@ class AutoProxyTask(TaskExecuteBase):
                     task: self.cur_user_config.get("Task", f"If{task}")
                     for task in MAA_TASKS
                 }
-                if self.cur_user_config.get("Info", "StageMode") != "Fixed":
-                    self.task_dict["DepotMaintain"] = False
             elif self.mode == "Annihilation":
                 self.task_dict = {
                     task: bool(task in ("StartUp", "Fight")) for task in MAA_TASKS
@@ -680,12 +697,7 @@ class AutoProxyTask(TaskExecuteBase):
                     ]
                     self.cur_user_log.status = "模拟器启动失败"
 
-                    try:
-                        await self.emulator_manager.close(
-                            self.script_config.get("Emulator", "Index")
-                        )
-                    except Exception as e:
-                        logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                    await close_emulator(self)
 
                     await Notify.push_plyer(
                         "用户自动代理出现异常！",
@@ -742,12 +754,7 @@ class AutoProxyTask(TaskExecuteBase):
                     )
 
                     await self.maa_process_manager.kill()
-                    try:
-                        await self.emulator_manager.close(
-                            self.script_config.get("Emulator", "Index")
-                        )
-                    except Exception as e:
-                        logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+                    await close_emulator(self)
                     await System.kill_process(self.maa_exe_path)
 
                     # 绿票商店每月顺手买一次，失败不重试也不惊动用户，月份没写回下次调度自会再来
@@ -807,14 +814,17 @@ class AutoProxyTask(TaskExecuteBase):
         gui_set = read_file(self.maa_set_path / "gui.json")
         gui_new_set = read_file(self.maa_set_path / "gui.new.json")
 
-        # 多配置使用默认配置
+        # 多配置使用默认配置（gui.new.json 的方案列表可能与 gui.json 不一致，缺失当前方案时保留其自有 Default）
         if gui_set["Current"] != "Default":
             gui_set["Configurations"]["Default"] = gui_set["Configurations"][
                 gui_set["Current"]
             ]
-            gui_new_set["Configurations"]["Default"] = gui_new_set["Configurations"][
-                gui_set["Current"]
-            ]
+            gui_new_configurations = gui_new_set.setdefault("Configurations", {})
+            if gui_set["Current"] in gui_new_configurations:
+                gui_new_configurations["Default"] = gui_new_configurations[
+                    gui_set["Current"]
+                ]
+            gui_new_configurations.setdefault("Default", {})
             gui_set["Current"] = "Default"
 
         # 各配置部分的引用
@@ -834,10 +844,10 @@ class AutoProxyTask(TaskExecuteBase):
         if self.mode == "Routine" and self.cur_user_config.get(
             "Task", "IfActivityFirst"
         ):
+            # 活动关卡信息已在 MaaManager.prepare 里刷新过一次, 这里直接用缓存
             stage_info = await Config.get_stage_info(
                 "Info",
                 server=self.cur_user_config.get("Info", "Server"),
-                refresh=True,
             )
             activity_stage = _resolve_activity_stage(
                 stage_info.get("Activity", []),
@@ -846,8 +856,12 @@ class AutoProxyTask(TaskExecuteBase):
 
         # 优先按任务名称匹配，确保多个 Fight 任务各自继承原生高级配置。
         for en_task, zh_task in zip(MAA_TASKS, MAA_TASKS_ZH):
-            # 默认关闭时不写入新任务，兼容尚未支持库存保持的 MAA 版本
-            if en_task == "DepotMaintain" and not self.task_dict[en_task]:
+            # 默认关闭时不写入新任务，兼容尚未支持该任务类型的 MAA 版本
+            # （库存保持、更换主题；更换主题需 MAA v6.17.3+，旧版无法反序列化未知任务类型）
+            if (
+                en_task in ("DepotMaintain", "SwitchTheme")
+                and not self.task_dict[en_task]
+            ):
                 continue
 
             task_set[en_task] = _find_task_source(
@@ -1258,12 +1272,7 @@ class AutoProxyTask(TaskExecuteBase):
             type=protocol.TASK_NOTICE,
             data=WSTaskNoticeData(level="error", message=result.message),
         )
-        try:
-            await self.emulator_manager.close(
-                self.script_config.get("Emulator", "Index")
-            )
-        except Exception as e:
-            logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+        await close_emulator(self)
 
         await Notify.push_plyer(
             "游戏需要手动更新！",
@@ -1324,15 +1333,6 @@ class AutoProxyTask(TaskExecuteBase):
                 if f"完成任务: {zh_task}" in log or f"{zh_task} 任务跳过" in log:
                     self.task_dict[en_task] = False
 
-            if self.mode == "Routine" and (
-                "任务出错: 理智作战" in log
-                or any(
-                    f"理智作战: {task_name} 添加任务失败" in log
-                    for task_name in ("活动关优先", "理智作战", "剩余理智")
-                )
-            ):
-                self.task_dict["Fight"] = True
-
             if any(self.task_dict.values()):
                 self.cur_user_log.status = "MAA 部分任务执行失败"
             else:
@@ -1381,12 +1381,7 @@ class AutoProxyTask(TaskExecuteBase):
         await agree_bilibili(self.maa_tasks_path, False)
         if self.script_config.get("Run", "TaskTransitionMethod") == "ExitEmulator":
             logger.info("用户任务结束, 关闭模拟器")
-            try:
-                await self.emulator_manager.close(
-                    self.script_config.get("Emulator", "Index")
-                )
-            except Exception as e:
-                logger.opt(exception=True).warning(f"关闭模拟器失败: {e}")
+            await close_emulator(self)
 
         user_logs_list = []
         if_six_star = False
