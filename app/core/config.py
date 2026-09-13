@@ -4017,7 +4017,9 @@ class AppConfig(GlobalConfig):
             if not isinstance(result_value, str):
                 return False
             value = re.sub(r"^\[[^\]]+\]\s*", "", result_value)
-            if value == "Success!":
+            if value in ("Success!", "今日任务均已完成"):
+                # 「今日任务均已完成」= zzz-od 直控/按记录跳过场景的历史存量文案,
+                # 运行时已向 Success! 归一, 此处仅为兼容旧历史数据保留成功判定
                 return True
             if result_key == "hsr_result" and result_value in hsr_success_results:
                 return True

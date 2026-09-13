@@ -44,7 +44,10 @@ from .tools import decode_bytes
 logger = get_logger("路径迁移")
 
 # YAML 解析器拒绝的控制字符(除 \t \n \r): 映射为 None 即 translate 时丢弃
-_INVALID_YAML_CHARS = dict.fromkeys([*range(0x20), 0x7F])
+# \t \n \r 是 YAML 结构换行/缩进, 删除会把健康的多行文档压成一行导致解析失败
+_INVALID_YAML_CHARS = dict.fromkeys(
+    c for c in [*range(0x20), 0x7F] if c not in (0x09, 0x0A, 0x0D)
+)
 
 # 格式后缀 -> (dump: (dict, encoding)->bytes, load: bytes->dict)
 # 若要扩展格式, 直接改此表

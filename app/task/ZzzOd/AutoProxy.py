@@ -411,6 +411,8 @@ class AutoProxyTask(TaskExecuteBase):
         self._multi_uids: set[str] = set()
         self._multi_judged: set[int] = set()
         self._multi_ran = False
+        # 本轮判定为完成但部分任务执行失败的节点展示名（写入 script_info.log/通知）
+        self._partial_failed_apps: list[str] = []
         self.run_book = False
         # app_id → 中文名（用于结果与推送日志展示）
         self._app_name_book: dict[str, str] = {}
@@ -929,7 +931,8 @@ class AutoProxyTask(TaskExecuteBase):
                     self._judge_final(records_before, records_after, log)
 
                 if self.run_book:
-                    # 终态成功（判定器设置）：含「Success!」与「今日任务均已完成」
+                    # 终态成功（判定器设置）：统一为框架成功契约「Success!」
+                    # （直控跳过场景的可读说明已由判定器写入 script_info.log）
                     if (
                         self._launcher_label is not None
                         and self._launcher_mode == "自动"
@@ -938,7 +941,7 @@ class AutoProxyTask(TaskExecuteBase):
                         await self.cur_user_config.set(
                             "Data", "LauncherLastGood", self._launcher_label
                         )
-                    self.script_info.log = "检测到 ZZZ-OD 已完成任务"
+                    self.script_info.log = self.script_info.log or "检测到 ZZZ-OD 已完成任务"
                     if self.cur_user_config.get("Info", "IfScriptAfterTask"):
                         await execute_script_task(
                             Path(self.cur_user_config.get("Info", "ScriptAfterTask")),
@@ -1020,21 +1023,29 @@ class AutoProxyTask(TaskExecuteBase):
         else:
             diffs = diff_run_records(records_before, records_after)
             failed_apps = _failed_apps(diffs)
-            # 节点失败只记录不重跑（次日 zzz-od 按运行记录自行重试）
+            # 节点失败只记录不重跑（次日 zzz-od 按运行记录自行重试），本轮仍判
+            # 完成；结果向框架成功契约 Success! 归一，失败节点进 script_info.log
+            # 供任务详情与通知展示（历史层保持只认 Success! 的干净契约）
             if failed_apps:
-                failed_names = "、".join(
+                self._partial_failed_apps = [
                     self._app_display_name(app_id) for app_id in failed_apps
-                )
-                log_status = f"ZZZ-OD 部分任务执行失败: {failed_names}"
+                ]
+                log_status = "Success!"
                 user_status = "完成"
+                self.script_info.log = (
+                    "部分任务执行失败: " + "、".join(self._partial_failed_apps)
+                )
             elif any(new == RUN_STATUS_SUCCESS for _, _, new in diffs):
                 log_status = "Success!"
                 user_status = "完成"
+                self.script_info.log = "检测到 ZZZ-OD 已完成任务"
             elif self._launch_evidence(log, False) or _ZZZOD_ONE_DRAGON_SUCCESS in log:
                 # 记录无变化但有一条龙运行证据（应用层日志/成功标志）：
-                # 直控态=今日任务均已完成（zzz-od 启动后按记录跳过全部任务）
-                log_status = "今日任务均已完成"
+                # 直控态=今日任务均已完成（zzz-od 启动后按记录跳过全部任务）。
+                # 结果向框架成功契约 Success! 归一，可读说明放到 script_info.log
+                log_status = "Success!"
                 user_status = "完成"
+                self.script_info.log = "今日任务均已完成"
             else:
                 # 记录无变化且无任何启动证据：启动器未能真正拉起一条龙
                 # （缺依赖早退等），判失败走重试/启动器切换，不得报成功
@@ -1042,8 +1053,9 @@ class AutoProxyTask(TaskExecuteBase):
                 user_status = "异常"
 
         self.cur_user_log.status = log_status
-        # 以 run_book 向 main_task 通信终态：「今日任务均已完成」也视为成功
-        # （否则会空跑满重试次数并以失败落库）；展示文本保留给 result 行
+        # 以 run_book 向 main_task 通信终态：判定为完成的路径统一归一为
+        # Success!（部分节点失败/直控跳过也视为成功，否则会空跑满重试次数
+        # 并以失败落库）；具体说明已写入 script_info.log 供详情展示
         self.run_book = user_status == "完成"
         if user_status is not None:
             self.cur_user_item.status = user_status
@@ -1168,6 +1180,7 @@ class AutoProxyTask(TaskExecuteBase):
                 self.cur_user_item.status = "异常"
         elif all_ok:
             self.cur_user_log.status = "Success!"
+            self.script_info.log = "检测到 ZZZ-OD 已完成任务"
         else:
             failed_users = "、".join(
                 user_item.name
@@ -1340,9 +1353,17 @@ class AutoProxyTask(TaskExecuteBase):
                 start_time = getattr(self, "user_start_time", datetime.now())
                 statistics["start_time"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
                 statistics["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                statistics["user_result"] = (
-                    "代理任务全部完成" if self.run_book else self.cur_user_item.result
-                )
+                if not self.run_book:
+                    user_result = self.cur_user_item.result
+                elif self._partial_failed_apps:
+                    # 判定完成但部分节点失败：结果保持成功，明细告知用户
+                    user_result = (
+                        "部分任务未完成，将于次日重试: "
+                        + "、".join(self._partial_failed_apps)
+                    )
+                else:
+                    user_result = "代理任务全部完成"
+                statistics["user_result"] = user_result
                 success_symbol = "√" if self.run_book else "X"
                 await push_notification(
                     "统计信息",
