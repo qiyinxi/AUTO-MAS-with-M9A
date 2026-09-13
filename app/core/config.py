@@ -1839,6 +1839,8 @@ class AppConfig(GlobalConfig):
         任务编排只取来源实例当前启用的应用（对齐 _group.yml 缺席=不加入）。
         实例级配置随导入对齐来源实例写入绑定槽：notify.yml（应用通知，
         zzz-od 默认开启，不搬会让「来源关着」变开着）、team.yml（预备编队）、
+        game.yml（按键配置：键盘/手柄按键、后台模式、输入方式、HDR、启动
+        参数、分辨率等，MAS 不托管、注入不触碰，只能靠导入对齐）、
         one_dragon/ 全部 per-app 配置（体力计划/咖啡店/随便观等任务级 yml）。
         """
 
@@ -1908,6 +1910,9 @@ class AppConfig(GlobalConfig):
         # 实例级持久配置对齐来源实例：
         # - notify.yml（应用通知）在实例根
         # - team.yml（预备编队：名称 + 绑定配队方案 + 成员）在实例根
+        # - game.yml（GameConfig 按键配置：键盘/手柄按键、后台模式、输入方式、
+        #   HDR、启动参数、分辨率）在实例根——MAS 不托管该文件，注入运行也
+        #   不触碰，导入不对齐会导致按键配置永远停留在 zzz-od 默认值
         # - one_dragon/ 全部 per-app 配置（charge_plan.yml 体力计划、coffee.yml
         #   咖啡店、suibian_temple.yml 随便观等）随导入整目录对齐
         # _group.yml 例外：任务编排走上面的 AppList 整表语义（含未启用项），不整搬。
@@ -1933,6 +1938,7 @@ class AppConfig(GlobalConfig):
 
         _align_yml(("notify.yml",))
         _align_yml(("team.yml",))
+        _align_yml(("game.yml",))
 
         source_one_dragon = source_dir / "one_dragon"
         target_one_dragon = target_dir / "one_dragon"
@@ -1953,7 +1959,7 @@ class AppConfig(GlobalConfig):
         logger.info(
             f"ZZZ-OD 用户 {uid} 已从实例 {int(instance_idx):02d} 导入配置"
             f"(账号字段 {imported_accounts} 项, 任务 {len(all_apps)} 项, "
-            f"应用通知/体力计划已对齐槽 {slot:02d})"
+            f"应用通知/按键配置/体力计划已对齐槽 {slot:02d})"
         )
         return {
             "instanceIdx": int(instance_idx),
