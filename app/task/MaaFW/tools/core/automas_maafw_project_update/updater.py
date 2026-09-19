@@ -317,6 +317,7 @@ async def update_maafw_project_if_needed(
     precheck_gate: Callable[[str], Awaitable[str | None]] | None = None,
     project_lock_already_held: bool = False,
     project_lock_timeout: float | None = None,
+    projection: bool = False,
 ) -> MaaFWProjectUpdateResult:
     """检查并按需应用项目更新。
 
@@ -552,6 +553,7 @@ async def update_maafw_project_if_needed(
             post_validate=post_validate,
             project_lock_already_held=project_lock_already_held,
             project_lock_timeout=project_lock_timeout,
+            projection=projection,
         )
     except Exception as exc:
         detail = _sanitize_log_message(str(exc))
@@ -918,6 +920,7 @@ async def apply_maafw_project_update(
     script_id: str | None = None,
     project_lock_already_held: bool = False,
     project_lock_timeout: float | None = None,
+    projection: bool = False,
 ) -> dict[str, Any]:
     send_update_log = send_log or (lambda _: None)
     download_url = str(candidate.download_url or "").strip()
@@ -982,6 +985,7 @@ async def apply_maafw_project_update(
             post_validate=post_validate,
             project_lock_already_held=project_lock_already_held,
             project_lock_timeout=project_lock_timeout,
+            projection=projection,
             send_log=send_update_log,
             progress=lambda stage, payload: _report_progress(
                 progress,
