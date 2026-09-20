@@ -95,7 +95,7 @@
               t('edit.checkUpdates2')
             }}</a-button>
             <a-button
-              v-if="updateResult && updateResult.installable"
+              v-if="updateResult && updateResult.installable && !updateResult.updated"
               type="primary"
               size="large"
               :loading="updateApplying"
