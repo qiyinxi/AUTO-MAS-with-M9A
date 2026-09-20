@@ -30,6 +30,18 @@
   - 开发流程：只影响贡献者、用户看不见的改动，不进公告。
 -->
 
+## [未发布]
+
+### 变更
+
+- 【end】新建脚本时的类型说明改为写明「明日方舟：终末地」，并可按游戏名搜索到 (#924) by @qiyinxi
+
+### 修复
+
+- 【绝区零一条龙】修复运行或配置会话期间备份恢复失败的问题，损坏时会提示位置并支持确认后强制恢复（仅公测） (#915) by @AthenaHibou
+- 【通用脚本】修复通用用户无法启动通用配置的问题 by @HarcoChen
+- 【工具】修复启动参数含引号或空格时不生效的问题 (#866) by @beichen24a1
+
 ## [v5.5.0-beta.7] - 2026-09-20
 
 ### 新增
@@ -348,6 +360,7 @@
 - OK-NTE专项 修复任务结束后异环启动器进程残留并持续占用内存的问题 by @qiyinxi by @HarcoChen
 - MAA专项 修复开启活动关优先后普通理智作战的理智药额度被静默清零的问题，两个作战任务各自使用独立理智药额度 by @qiyinxi by @HarcoChen
 
+[未发布]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.7...dev
 [v5.5.0-beta.7]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.6...v5.5.0-beta.7
 [v5.5.0-beta.6]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.5...v5.5.0-beta.6
 [v5.5.0-beta.5]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.4...v5.5.0-beta.5
