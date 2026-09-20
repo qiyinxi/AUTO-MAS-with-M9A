@@ -221,39 +221,60 @@ def describe_unusable_runtime(project_path: Path) -> str | None:
 
     # 运行池会拉起 uv 与安装器，只在真要用时导入，别让每次 import 都付这份成本。
     from app.task.MaaFW.tools.core.automas_maafw_runner.environment import (
-        build_runner_packages,
-        resolve_project_maafw_requirement,
+        describe_runner_runtime_selection,
     )
     from app.task.MaaFW.tools.core.automas_maafw_runtime_pool import (
         MaaFWRuntimePoolError,
         MaaFWRuntimePoolService,
     )
-    from app.task.MaaFW.tools.core.automas_maafw_runtime_pool.installer import (
-        host_bootstrap_python_request,
+    from app.task.MaaFW.tools.core.automas_maafw_runtime_pool.binding import (
+        verify_binding,
+        verify_native,
     )
 
     try:
-        requirement = resolve_project_maafw_requirement(project_path)
-        if not requirement:
-            return None
-        packages = build_runner_packages(project_path, maafw_requirement=requirement)
         service = MaaFWRuntimePoolService()
-        python_identity = None
-        bootstrap_request = host_bootstrap_python_request()
-        if bootstrap_request is not None:
-            target = service.pool.resolve_python(bootstrap_request, allow_install=False)
-            if target is None:
-                # 托管解释器还没装，runtime 也就不可能存在。
-                return None
-            python_identity = target["identity"]
+        # 与 prepare 同一套推导；托管解释器还没装时返回 None，runtime 也就不可能存在。
+        selection = describe_runner_runtime_selection(project_path, service.pool)
+        if selection is None:
+            return None
     except Exception:  # noqa: BLE001 - 自检失败不该反过来挡住运行
         return None
 
     try:
-        # 找到 runtime 后 resolve() 会真的起一次解释器核对 ABI，起不来就是坏了。
-        service.resolve(packages, python_identity=python_identity)
+        # 找到 base 后 get() 会真的起一次解释器核对 ABI，起不来就是坏了。
+        runtime = service.pool.get(selection.runtime_id)
     except MaaFWRuntimePoolError as exc:  # 原文就是给用户看的
         return f"MFW 运行环境不可用：{exc}"
+    except Exception:  # noqa: BLE001
+        return None
+    if runtime is None or selection.binding_version is None:
+        # base 没建过 / binding 版本还没定：运行时按需准备，失败自有它的报错路径
+        return None
+    try:
+        # binding 目录存在但清单校验不过（被删了一半、文件被改）→ 拦下来说清楚；
+        # 压根没有则同样交给运行时准备。
+        binding_dir = (
+            service.pool.root / "bindings" / f"maafw-{selection.binding_version}"
+        )
+        if (
+            binding_dir.is_dir()
+            and verify_binding(service.pool.root, selection.binding_version) is None
+        ):
+            return (
+                f"MFW 运行环境不可用：maafw {selection.binding_version} 的 binding 目录"
+                f"校验不通过（{binding_dir}），请重新准备运行环境"
+            )
+        native_dir = service.pool.root / "native" / f"maafw-{selection.binding_version}"
+        if (
+            selection.native_needed
+            and native_dir.is_dir()
+            and verify_native(service.pool.root, selection.binding_version) is None
+        ):
+            return (
+                f"MFW 运行环境不可用：maafw {selection.binding_version} 的官方原生库目录"
+                f"校验不通过（{native_dir}），请重新准备运行环境"
+            )
     except Exception:  # noqa: BLE001
         return None
     return None
@@ -664,6 +685,13 @@ class MaaFWEmbeddedManager(TaskExecuteBase):
             f"开始{phase_zh}检查 MFW 项目更新：下载源 {credentials.source}，"
             f"渠道 {credentials.channel}，Mirror 酱 CDK {describe_cdk(credentials)}"
         )
+        # 记下更新前钉定的 maafw 版本：提交后若换了版本，旧 runtime 不必再等宽限。
+        from app.task.MaaFW.tools.embedded.pool_reconcile import (
+            previous_maafw_version,
+            reconcile_in_background,
+        )
+
+        previous_version = await asyncio.to_thread(previous_maafw_version, project_path)
 
         # 用户点停止时 ``CancelledError`` 从 await 上抛出，但事务跑在工作线程
         # 里不会自己停：预检期间的 uv 安装靠令牌终止，随后事务回滚。与
@@ -727,6 +755,12 @@ class MaaFWEmbeddedManager(TaskExecuteBase):
                 await asyncio.to_thread(clear_runtime_precheck, project_path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"清理运行环境预检备忘失败：{exc}")
+            # 新版本的 runtime 预检时已建好；旧版本的那份此刻可能已无人引用。
+            reconcile_in_background(
+                f"{phase.lower()}-update",
+                updated_project_path=project_path,
+                previous_version=previous_version,
+            )
             # interface.json 已经变了：不刷新缓存，本轮用户仍按旧版任务表跑。
             try:
                 interface_model = await asyncio.to_thread(
