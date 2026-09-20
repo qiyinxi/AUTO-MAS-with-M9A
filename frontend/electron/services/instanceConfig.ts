@@ -7,6 +7,7 @@
  * 不依赖本目录下其它服务，避免与 environmentService / mirrorService 形成循环导入。
  */
 
+import * as fs from 'fs'
 import * as path from 'path'
 import { app } from 'electron'
 
@@ -51,9 +52,45 @@ export function resolveHttpPort(): number {
   return isDevelopmentEnvironment() ? DEV_HTTP_PORT : DEFAULT_HTTP_PORT
 }
 
-// 停止全部任务的全局快捷键，开发环境错开以免与正式版互抢
+// 打包版按 config/frontend_config.json 的 Instance.Name 另起了身份（第二份安装）时为 true
+let namedPackagedInstance = false
+
+// 停止全部任务的全局快捷键，开发环境与另起身份的打包版都错开，以免与正式版互抢
 export function resolveStopAllTasksShortcut(): string {
-  return isDevelopmentEnvironment() ? DEV_STOP_ALL_TASKS_SHORTCUT : STOP_ALL_TASKS_SHORTCUT
+  return isDevelopmentEnvironment() || namedPackagedInstance
+    ? DEV_STOP_ALL_TASKS_SHORTCUT
+    : STOP_ALL_TASKS_SHORTCUT
+}
+
+// 实例名只允许拼进目录名的安全字符，长度有限
+const INSTANCE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/**
+ * 打包版的实例名：exe 同级 `config/frontend_config.json` 里的 `Instance.Name`。
+ *
+ * 正式安装不写这个字段，行为与从前完全一致。同一台机器要并存第二份打包安装（比如
+ * development 模式跑的测试包）时，两份共用 `%APPDATA%\frontend` 会被单实例锁静默挡掉，
+ * 写上实例名让它另起 userData。文件不存在、字段缺失或非法一律视为未设置。
+ * 不能依赖 environmentService（循环导入），路径直接按 exe 所在目录算。
+ */
+export function readPackagedInstanceName(): string | undefined {
+  try {
+    const settingsPath = path.join(
+      path.dirname(app.getPath('exe')),
+      'config',
+      'frontend_config.json'
+    )
+    if (!fs.existsSync(settingsPath)) return undefined
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as {
+      Instance?: { Name?: unknown }
+    }
+    const name = parsed.Instance?.Name
+    if (typeof name !== 'string') return undefined
+    const trimmed = name.trim()
+    return INSTANCE_NAME_PATTERN.test(trimmed) ? trimmed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // 后端默认端点，云端镜像配置未下发时使用
@@ -66,14 +103,23 @@ export function getDefaultApiEndpoints(): { local: string; websocket: string } {
 }
 
 /**
- * 开发环境改用独立的 userData 目录
+ * 开发环境改用独立的 userData 目录；打包版按 Instance.Name 另起身份
  *
  * userData 同时决定 Chromium profile 与 requestSingleInstanceLock 的锁键。打包版
  * asar 内的 package.json 仍为 name=frontend，与源码开发版取到同一个目录，后启动的
  * 一方会在窗口创建之前静默退出。必须在 app ready 之前调用。
  */
 export function applyInstanceIdentity(): void {
-  if (!app || !isDevelopmentEnvironment()) {
+  if (!app) {
+    return
+  }
+
+  if (!isDevelopmentEnvironment()) {
+    const packagedName = readPackagedInstanceName()
+    if (packagedName === undefined) return
+    namedPackagedInstance = true
+    app.setPath('userData', path.join(app.getPath('appData'), packagedName))
+    app.setName(packagedName)
     return
   }
 
