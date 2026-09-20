@@ -81,7 +81,7 @@ describe('打包版按 Instance.Name 另起身份', () => {
   })
 
   it('非法实例名（路径分隔符、空串、非字符串）按未设置处理', () => {
-    for (const bad of ['..\evil', '', 42, ' ']) {
+    for (const bad of ['../evil', '', 42, ' ']) {
       writeInstanceName(bad)
       expect(readPackagedInstanceName()).toBeUndefined()
     }
