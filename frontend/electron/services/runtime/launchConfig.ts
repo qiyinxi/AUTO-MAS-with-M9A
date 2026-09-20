@@ -36,6 +36,18 @@ export const RUNTIME_MODE_ENV = 'AUTO_MAS_RUNTIME_MODE'
 export const RUNTIME_EXE_ENV = 'AUTO_MAS_RUNTIME_EXE'
 
 /**
+ * 指定受监督后端监听端口的环境变量名（传给 `backend supervise --port`）。
+ *
+ * 不设时 Runtime 按模式取缺省值（managed 36163、development 36164）。同一台机器上要并存
+ * 第二份安装（比如用 development 模式跑一份测试包）时，两份都落到缺省端口就会互相撞上，
+ * 这个口子让测试包挪到别的端口；正式安装不需要碰它。
+ */
+export const RUNTIME_PORT_ENV = 'AUTO_MAS_RUNTIME_PORT'
+
+const RUNTIME_PORT_MIN = 1024
+const RUNTIME_PORT_MAX = 65535
+
+/**
  * 后端启动链路。
  *
  * `development` 监督开发者自己的源码检出（要求 `<repo>/main.py`、`<repo>/pyproject.toml`
@@ -82,6 +94,8 @@ export interface RuntimeSupervisedLaunchConfig {
   appRoot: string
   /** `development` 模式传给 `--repo`（源码根）；`managed` 模式不传。 */
   repo?: string
+  /** 传给 `--port` 的监听端口；未指定时不传，由 Runtime 按模式取缺省值。 */
+  port?: number
   /**
    * 用户数据根，即传入 `resolveRuntimeLaunchConfig` 的 `getAppRoot()`：`config/Config.json`、
    * `config/frontend_config.json` 等都在它下面。凡是读用户配置的地方一律用它，不用 `appRoot`。
@@ -133,6 +147,53 @@ function readPersistedLaunchMode(appRoot: string): string | undefined {
     )
     return undefined
   }
+}
+
+/** 读取持久化设置里的端口；文件不存在、字段缺失或不是数字都视为「未设置」。 */
+function readPersistedRuntimePort(appRoot: string): unknown {
+  try {
+    const settingsPath = resolveSettingsPath(appRoot)
+    if (!fs.existsSync(settingsPath)) return undefined
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as {
+      Runtime?: { Port?: unknown }
+    }
+    return parsed.Runtime?.Port
+  } catch {
+    // JSON 损坏在 readPersistedLaunchMode 里已经记过 warning，这里不重复
+    return undefined
+  }
+}
+
+function parseRuntimePort(value: unknown): number | undefined {
+  const port = typeof value === 'string' ? Number(value.trim()) : value
+  if (typeof port !== 'number' || !Number.isInteger(port)) return undefined
+  if (port < RUNTIME_PORT_MIN || port > RUNTIME_PORT_MAX) return undefined
+  return port
+}
+
+/**
+ * 解析受监督后端的监听端口：环境变量 `AUTO_MAS_RUNTIME_PORT` > 持久化设置 `Runtime.Port` >
+ * 不指定（Runtime 缺省）。非法取值记 warning 后落到下一级。
+ */
+export function resolveRuntimePort(appRoot: string): number | undefined {
+  const rawEnv = process.env[RUNTIME_PORT_ENV]
+  if (rawEnv !== undefined && rawEnv.trim() !== '') {
+    const port = parseRuntimePort(rawEnv)
+    if (port !== undefined) return port
+    logger.warn(
+      `${RUNTIME_PORT_ENV} 取值非法：${rawEnv}，改按持久化设置处理（须是 ${RUNTIME_PORT_MIN}-${RUNTIME_PORT_MAX} 的整数）`
+    )
+  }
+
+  const rawSetting = readPersistedRuntimePort(appRoot)
+  if (rawSetting !== undefined && rawSetting !== null && rawSetting !== '') {
+    const port = parseRuntimePort(rawSetting)
+    if (port !== undefined) return port
+    logger.warn(`持久化的 Runtime 端口设置非法：${String(rawSetting)}，改按 Runtime 缺省端口处理`)
+  }
+
+  return undefined
 }
 
 /** 构建默认值：打包安装且已捆绑 Runtime 才默认切新链路，源码开发默认走旧链路。 */
@@ -254,12 +315,14 @@ export function resolveRuntimeLaunchConfig(appRoot: string): RuntimeLaunchConfig
     return { mode, runtimePath: null, appRoot }
   }
 
+  const port = resolveRuntimePort(appRoot)
   if (mode === 'development') {
     return {
       mode,
       runtimePath: resolveRuntimeExecutable(),
       appRoot: resolveDevelopmentRuntimeRoot(appRoot),
       repo: appRoot,
+      port,
       dataRoot: appRoot,
     }
   }
@@ -269,6 +332,7 @@ export function resolveRuntimeLaunchConfig(appRoot: string): RuntimeLaunchConfig
     runtimePath: resolveRuntimeExecutable(),
     appRoot,
     repo: undefined,
+    port,
     dataRoot: appRoot,
   }
 }

@@ -169,6 +169,8 @@ export interface RuntimeSuperviseOptions extends RuntimeRunOptions {
   mode: 'managed' | 'development'
   /** development 模式的源码目录。 */
   repo?: string
+  /** 后端监听端口（`--port`）；不传由 Runtime 按模式取缺省值。 */
+  port?: number
 }
 
 export interface RuntimeShutdownOptions {
@@ -894,6 +896,9 @@ export class RuntimeClient extends EventEmitter {
     const command = ['backend', 'supervise', '--mode', options.mode]
     if (options.repo) {
       command.push('--repo', options.repo)
+    }
+    if (options.port !== undefined) {
+      command.push('--port', String(options.port))
     }
 
     const session = new RuntimeSession(this.options, command, options, this)

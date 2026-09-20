@@ -52,6 +52,7 @@ export {
   RUNTIME_EXECUTABLE_NAME,
   RUNTIME_EXE_ENV,
   RUNTIME_MODE_ENV,
+  RUNTIME_PORT_ENV,
   PersistedRuntimeLaunchMode,
   RuntimeDisabledLaunchConfig,
   RuntimeLaunchConfig,
@@ -65,6 +66,7 @@ export {
   resolveRuntimeLaunchConfig,
   resolveRuntimeLaunchMode,
   resolveRuntimeLaunchModeDetail,
+  resolveRuntimePort,
 } from './launchConfig'
 
 export {

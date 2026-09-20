@@ -407,6 +407,7 @@ export class BackendService {
       handle = await client.supervise({
         mode: config.mode,
         repo: config.repo,
+        port: config.port,
         onLog: event => {
           const lines = event.stream === 'stderr' ? stderrLines : stdoutLines
           pushBoundedLine(lines, event.message, RUNTIME_STARTUP_LOG_LINE_LIMIT)

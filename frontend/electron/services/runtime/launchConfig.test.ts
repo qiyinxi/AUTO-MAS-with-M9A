@@ -7,12 +7,14 @@ import {
   RUNTIME_DEVELOPMENT_ROOT_DIRNAME,
   RUNTIME_EXE_ENV,
   RUNTIME_MODE_ENV,
+  RUNTIME_PORT_ENV,
   isPersistedRuntimeLaunchMode,
   resolveDevelopmentRuntimeRoot,
   resolveRuntimeExecutable,
   resolveRuntimeLaunchConfig,
   resolveRuntimeLaunchMode,
   resolveRuntimeLaunchModeDetail,
+  resolveRuntimePort,
 } from './launchConfig'
 
 const warn = vi.fn()
@@ -53,17 +55,29 @@ function writePersistedLaunchMode(value: unknown): void {
   )
 }
 
+function writePersistedRuntime(runtime: Record<string, unknown>): void {
+  const configDir = path.join(appRoot, 'config')
+  fs.mkdirSync(configDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(configDir, 'frontend_config.json'),
+    JSON.stringify({ Runtime: runtime }),
+    'utf8'
+  )
+}
+
 beforeEach(() => {
   setPackaged(false)
   warn.mockClear()
   delete process.env[RUNTIME_MODE_ENV]
   delete process.env[RUNTIME_EXE_ENV]
+  delete process.env[RUNTIME_PORT_ENV]
   appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-mas-launch-config-'))
 })
 
 afterEach(() => {
   delete process.env[RUNTIME_MODE_ENV]
   delete process.env[RUNTIME_EXE_ENV]
+  delete process.env[RUNTIME_PORT_ENV]
   fs.rmSync(appRoot, { recursive: true, force: true })
 })
 
@@ -269,6 +283,7 @@ describe('resolveRuntimeLaunchConfig', () => {
       runtimePath: EXISTING_EXE,
       appRoot: resolveDevelopmentRuntimeRoot(appRoot),
       repo: appRoot,
+      port: undefined,
       dataRoot: appRoot,
     })
     // Runtime 拒绝 runtime_root_inside_development_repo：Runtime 根既不能等于源码根，也不能在它里面。
@@ -285,6 +300,7 @@ describe('resolveRuntimeLaunchConfig', () => {
       runtimePath: EXISTING_EXE,
       appRoot,
       repo: undefined,
+      port: undefined,
       dataRoot: appRoot,
     })
   })
@@ -298,6 +314,7 @@ describe('resolveRuntimeLaunchConfig', () => {
       runtimePath: EXISTING_EXE,
       appRoot,
       repo: undefined,
+      port: undefined,
       dataRoot: appRoot,
     })
   })
@@ -325,5 +342,34 @@ describe('resolveDevelopmentRuntimeRoot', () => {
 
     expect(root).toBe(path.join(path.dirname(appRoot), `${path.basename(appRoot)}-runtime`))
     expect(root.startsWith(appRoot + path.sep)).toBe(false)
+  })
+})
+
+describe('resolveRuntimePort：受监督后端的监听端口', () => {
+  it('三级都未设置时不指定端口（由 Runtime 按模式取缺省值）', () => {
+    expect(resolveRuntimePort(appRoot)).toBeUndefined()
+  })
+
+  it('环境变量覆盖持久化设置，并进入 resolveRuntimeLaunchConfig', () => {
+    writePersistedRuntime({ LaunchMode: 'development', Port: 36170 })
+    process.env[RUNTIME_PORT_ENV] = '36171'
+    process.env[RUNTIME_EXE_ENV] = EXISTING_EXE
+
+    expect(resolveRuntimePort(appRoot)).toBe(36171)
+    expect(resolveRuntimeLaunchConfig(appRoot)).toMatchObject({ mode: 'development', port: 36171 })
+  })
+
+  it('未设环境变量时读持久化设置 Runtime.Port', () => {
+    writePersistedRuntime({ LaunchMode: 'development', Port: 36170 })
+
+    expect(resolveRuntimePort(appRoot)).toBe(36170)
+  })
+
+  it('非法取值（越界、非整数、非数字）记 warning 后落到下一级', () => {
+    writePersistedRuntime({ Port: 'not-a-port' })
+    process.env[RUNTIME_PORT_ENV] = '80'
+
+    expect(resolveRuntimePort(appRoot)).toBeUndefined()
+    expect(warn).toHaveBeenCalledTimes(2)
   })
 })
