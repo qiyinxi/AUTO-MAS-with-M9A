@@ -30,7 +30,7 @@
   - 开发流程：只影响贡献者、用户看不见的改动，不进公告。
 -->
 
-## [未发布]
+## [v5.5.0-beta.7] - 2026-09-20
 
 ### 新增
 
@@ -40,6 +40,7 @@
 - 【MFW】任务失败时自动截图，随代理结果与统计通知内嵌进邮件或 Webhook 发出 (#841) by @qiyinxi
 - 【MFW】编辑页整改：PC 游戏默认由 MAS 启停、可临时改 Unity 分辨率，运行环境与更新改为日志面板 (#843) by @qiyinxi
 - 【模拟器】为 MuMu 启动、外部命令超时和任务收尾补充诊断日志 (#811) by @Craun718
+- 【工具】首页新增签到情况与可切换用户的单条便笺，社区便笺支持按游戏查看（仅公测） (#912) by @Lance0174
 
 ### 变更
 
@@ -55,6 +56,7 @@
 
 - 【MAA】修复 MAA 里开启的临期理智药等理智作战选项不生效，并移除自动肉鸽开关 (#875) by @1w1w11w1
 - 【MAA】修复 MAA 托管会话后任务队列被改回默认、部分任务设置丢失的问题 (#907) by @1w1w11w1
+- 【MAA】修复静默模式下 MAA 仍弹出公告与更新弹窗的问题 (#918) by @jinghero
 - 【end】问题包包含最近三次失败记录，并自动清理超过 10MB 的登录截图。 (#905) by @HarcoChen
 - 【end】修复使用 ADB 控制器时任务收尾未关闭模拟器，并可能丢失代理数据和结果通知的问题。（仅公测） (#906) by @HarcoChen
 - 【HSR】修复 SRA 历战余响混跑日常时漏记完成、战斗超时后又误记为完成的问题 (#791) by @jinghero
@@ -346,7 +348,7 @@
 - OK-NTE专项 修复任务结束后异环启动器进程残留并持续占用内存的问题 by @qiyinxi by @HarcoChen
 - MAA专项 修复开启活动关优先后普通理智作战的理智药额度被静默清零的问题，两个作战任务各自使用独立理智药额度 by @qiyinxi by @HarcoChen
 
-[未发布]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.6...dev
+[v5.5.0-beta.7]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.6...v5.5.0-beta.7
 [v5.5.0-beta.6]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.5...v5.5.0-beta.6
 [v5.5.0-beta.5]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.4...v5.5.0-beta.5
 [v5.5.0-beta.4]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.3...v5.5.0-beta.4
