@@ -30,12 +30,13 @@
   - 开发流程：只影响贡献者、用户看不见的改动，不进公告。
 -->
 
-## [未发布]
+## [v5.5.0-beta.8] - 2026-09-23
 
 ### 变更
 
 - 【MAA】MAA 配置页直接编辑 base，队列交还 MAA，删除剩余理智任务 (#927) by @1w1w11w1
 - 【end】新建脚本时的类型说明改为写明「明日方舟：终末地」，并可按游戏名搜索到 (#924) by @qiyinxi
+- 【end】关闭游戏时可恢复启动前的显示模式与分辨率（仅公测） (#947) by @HarcoChen
 - 【MFW】项目更新包先走 GitHub 加速镜像并可回退直连，重试退避，进度带预计剩余时间（仅公测） (#945) by @qiyinxi
 
 ### 修复
@@ -375,7 +376,7 @@
 - OK-NTE专项 修复任务结束后异环启动器进程残留并持续占用内存的问题 by @qiyinxi by @HarcoChen
 - MAA专项 修复开启活动关优先后普通理智作战的理智药额度被静默清零的问题，两个作战任务各自使用独立理智药额度 by @qiyinxi by @HarcoChen
 
-[未发布]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.7...dev
+[v5.5.0-beta.8]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.7...v5.5.0-beta.8
 [v5.5.0-beta.7]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.6...v5.5.0-beta.7
 [v5.5.0-beta.6]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.5...v5.5.0-beta.6
 [v5.5.0-beta.5]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.4...v5.5.0-beta.5
