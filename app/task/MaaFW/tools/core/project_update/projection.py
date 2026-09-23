@@ -292,6 +292,8 @@ class ProjectionRules:
     agents: list[dict[str, Any]]
     conservative: bool
     warnings: list[str] = field(default_factory=list)
+    # 导入时声明了但发行包里没有的 resource（名字）：副本里不可用，其余照常导入。
+    unavailable_resources: list[str] = field(default_factory=list)
 
     @property
     def base_relative(self) -> Path:
@@ -391,6 +393,7 @@ class ProjectionPlan:
             "interfaceBase": self.rules.base_relative.as_posix(),
             "agents": [dict(agent) for agent in self.rules.agents],
             "warnings": list(self.rules.warnings),
+            "unavailableResources": list(self.rules.unavailable_resources),
             "bundledMaaFWVersion": self.bundled_maafw_version or "",
             "bundledPythonVersion": self.bundled_python_version or "",
         }
@@ -619,10 +622,57 @@ def collect_ui_asset_paths(data: Any) -> list[str]:
 
     walk(data)
     if isinstance(data, dict):
-        welcome = _text(data.get("welcome"))
-        if welcome:
-            found.append(welcome)
+        found.extend(_welcome_entries(data.get("welcome")))
     return found
+
+
+#: 协议里「支持文件路径、URL 或直接文本」的说明类字段：description 在各层级都有，
+#: contact / license 只在顶层。
+_DOCUMENT_KEYS = frozenset({"description"})
+_ROOT_DOCUMENT_KEYS = ("contact", "license")
+# 说明文字往往就是一段正文；只有像文件路径的值（单行、不太长、带扩展名）才去查盘，
+# 免得把一整段文字拼成超长路径去 stat。
+_DOCUMENT_PATH_RE = re.compile(r"^[^\r\n<>|\"*?]{1,200}\.[A-Za-z0-9]{1,8}$")
+
+
+def collect_document_paths(data: Any) -> list[str]:
+    """interface 里 description（各层级）与顶层 contact / license 中像文件路径的值。
+
+    「关于」页、任务说明会按项目根去读这些文件；以前只靠「顶层小目录一并带走」捡到，
+    放进大目录里的就丢了。是不是真文件由调用方查。
+    """
+
+    found: list[str] = []
+
+    def add(value: Any) -> None:
+        for item in value if isinstance(value, list) else [value]:
+            text = _text(item)
+            if text and _DOCUMENT_PATH_RE.match(text):
+                found.append(text)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _DOCUMENT_KEYS:
+                    add(value)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(data)
+    if isinstance(data, dict):
+        for key in _ROOT_DOCUMENT_KEYS:
+            add(data.get(key))
+    return found
+
+
+def _welcome_entries(value: Any) -> list[str]:
+    """顶层 ``welcome`` 的各条内容：单个字符串（旧写法）或字符串数组（PI v2.10.2）。"""
+
+    items = value if isinstance(value, list) else [value]
+    return [text for text in (_text(item) for item in items) if text]
 
 
 # welcome（README）里以 Markdown / HTML 写法引用的本地图片。只认这两种写法，
@@ -743,6 +793,62 @@ def _retention_root(relative: Path, view: _FileView) -> Path:
     return parent if parent != ROOT else relative
 
 
+#: 分类表里按「内嵌解释器」处理的目录名（python / venv / .venv / python-embed …）。
+EMBEDDED_PYTHON_DIR_NAMES = frozenset(
+    name
+    for name, reason in EXCLUDED_DIRECTORY_REASONS.items()
+    if reason == "embedded-python"
+)
+
+
+def _is_python_interpreter_dir(view: _FileView, relative: Path) -> bool:
+    """目录里真有一个 Python 解释器（发行版 / 嵌入式包 / venv），而不只是叫这个名字。
+
+    特征：根上的 ``python.exe`` / ``pythonw.exe`` / ``python`` / ``python3`` /
+    ``pyvenv.cfg`` / ``python3.dll`` / ``python3XY.dll``，或 venv 布局的
+    ``Scripts/python.exe``、``bin/python``。只放 ``.py`` 源码的 ``python/``（MaaFramework
+    官方 Demo 的 agent 就在 ``python/demo3_agent.py``）不是解释器。
+    """
+
+    if not view.is_dir(relative):
+        return False
+    for name in (
+        "python.exe",
+        "pythonw.exe",
+        "python",
+        "python3",
+        "pyvenv.cfg",
+        "python3.dll",
+        "Scripts/python.exe",
+        "bin/python",
+        "bin/python3",
+    ):
+        if view.is_file(relative / name):
+            return True
+    return any(
+        _PYTHON_DLL_RE.match(entry.name) and view.is_file(entry)
+        for entry in view.iter_entries(relative)
+    )
+
+
+def _python_named_source_prefix(view: _FileView, relative: Path) -> Path | None:
+    """``relative``（目录）路径上名字像内嵌解释器、其实只是源码目录的最外层前缀。
+
+    分类表只看名字，会把 ``python/demo3_agent.py`` 所在的整个 ``python/`` 当解释器
+    剔掉，声明的 agent 入口就成了「运行必需却被投影排除」。返回 None 表示路径上没有
+    这种段（或那一段真是解释器目录，照旧按解释器处理）。
+    """
+
+    prefix = ROOT
+    for part in relative.parts:
+        prefix = prefix / part
+        if part.casefold() in EMBEDDED_PYTHON_DIR_NAMES:
+            if _is_python_interpreter_dir(view, prefix):
+                return None
+            return prefix
+    return None
+
+
 # --------------------------------------------------------------------------
 # 白名单目标收集
 # --------------------------------------------------------------------------
@@ -799,6 +905,7 @@ def build_projection_rules(
     required: list[RequiredPath] = []
     warnings: list[str] = []
     agents: list[dict[str, Any]] = []
+    unavailable_resources: list[str] = []
     opaque_found = False
 
     def add_target(
@@ -878,6 +985,27 @@ def build_projection_rules(
                 return with_exe
         return relative
 
+    def add_retention_target(
+        referenced: Path, *, required_label: str | None, required_path: Path
+    ) -> None:
+        """agent / pretask 引用的文件：所在目录整个保留（按分类表剔除）。
+
+        所在目录（或它的上级）叫 ``python`` 这类名字、其实只是源码目录时，声明比猜测
+        更可信：把它当显式目标、豁免名字本身（与 resource 目录叫 ``runtime`` 同一口径），
+        里面照常按分类表剔除。
+        """
+
+        retention = _retention_root(referenced, view)
+        directory = retention if view.is_dir(retention) else retention.parent
+        python_source = _python_named_source_prefix(view, directory) is not None
+        add_target(
+            retention,
+            complete=python_source,
+            required_label=required_label,
+            required_path=required_path,
+            allow_excluded_root=python_source,
+        )
+
     visited: set[Path] = set()
 
     def visit_interface(relative: Path, scope: str) -> None:
@@ -896,14 +1024,19 @@ def build_projection_rules(
                 raise ProjectionError("ProjectInterface 的 import 必须是字符串数组")
             for raw_import in raw_imports:
                 imported = declare(
-                    raw_import, "ProjectInterface import", must_exist=True
+                    raw_import, "ProjectInterface import", must_exist=False
                 )
                 if imported is None:
                     continue
                 if strict and not view.is_file(imported):
-                    raise ProjectionError(
-                        f"ProjectInterface import 不是文件：{raw_import}"
+                    # 发行包漏打包了 import 文件（MPA v3.10.46、MSBA v3.7.41）：与加载器
+                    # 同一口径，跳过这一个文件继续导入，其中声明的任务 / 选项不可用。
+                    warnings.append(
+                        f"ProjectInterface import 声明的文件不存在：{raw_import}；"
+                        "发行包漏打包了这个文件，其中声明的任务与选项在副本里不可用，"
+                        "其余照常导入"
                     )
+                    continue
                 if view.is_file(imported):
                     visit_interface(imported, imported.as_posix())
                 else:
@@ -924,7 +1057,18 @@ def build_projection_rules(
             for raw_path in values:
                 if not isinstance(raw_path, str):
                     raise ProjectionError(f"resource {name} 的 path 必须是字符串")
-                relative_path = declare(raw_path, f"resource {name}", must_exist=True)
+                relative_path = declare(raw_path, f"resource {name}", must_exist=False)
+                if strict and not view.exists(relative_path):
+                    # 发行包声明了却没打进包的资源（MaaDuDuL v1.1.7 的 resource/zh_hant）：
+                    # 只是这一个资源用不了，不该让整个项目导入不了。选中它运行时由
+                    # runner 的「资源目录不存在」报清楚。
+                    if name not in unavailable_resources:
+                        unavailable_resources.append(name)
+                    warnings.append(
+                        f"resource {name} 声明的路径不存在：{raw_path}；"
+                        "该资源在副本里不可用（选中它运行会报资源目录不存在），其余照常导入"
+                    )
+                    continue
                 if relative_path is not None:
                     add_target(
                         relative_path,
@@ -970,15 +1114,20 @@ def build_projection_rules(
             if asset_relative is not None and view.is_file(asset_relative):
                 add_target(asset_relative, complete=True, required_label=None)
 
+        # description / contact / license 写成文件路径时（docs/about.md），同样只在文件
+        # 确实在时显式带上。
+        for raw_document in collect_document_paths(data):
+            document_relative = _normalize_ui_asset_path(raw_document, base_relative)
+            if document_relative is not None and view.is_file(document_relative):
+                add_target(document_relative, complete=True, required_label=None)
+
         # welcome 正文里引用的图片：说明页会按项目根去取，缺了就是一排裂图。先按
         # welcome 文件所在目录解析（Markdown 的习惯），再退到项目根；都不在就算了。
-        welcome_raw = _text(data.get("welcome"))
-        welcome_relative = (
-            _normalize_ui_asset_path(welcome_raw, base_relative)
-            if welcome_raw
-            else None
-        )
-        if welcome_relative is not None and view.is_file(welcome_relative):
+        # 数组写法（PI v2.10.2）逐条处理。
+        for welcome_raw in _welcome_entries(data.get("welcome")):
+            welcome_relative = _normalize_ui_asset_path(welcome_raw, base_relative)
+            if welcome_relative is None or not view.is_file(welcome_relative):
+                continue
             try:
                 welcome_text = view.read_text(welcome_relative)
             except (OSError, UnicodeDecodeError):
@@ -1034,15 +1183,22 @@ def build_projection_rules(
                     # 自带解释器所在目录原样带走：里面的 site-packages 就是这个项目
                     # 实际跑起来的环境，运行池重建的不等价（版本、自定义构建、
                     # requirements 没写的包）。其它 agent 文件所在目录只是保留根。
-                    add_target(
-                        _retention_root(exec_relative, view),
-                        complete=interpreter,
-                        required_label=label,
-                        required_path=exec_relative,
-                        allow_excluded_root=interpreter,
-                        python_interpreter=interpreter,
-                        verbatim_runtime=interpreter,
-                    )
+                    if interpreter:
+                        add_target(
+                            _retention_root(exec_relative, view),
+                            complete=True,
+                            required_label=label,
+                            required_path=exec_relative,
+                            allow_excluded_root=True,
+                            python_interpreter=True,
+                            verbatim_runtime=True,
+                        )
+                    else:
+                        add_retention_target(
+                            exec_relative,
+                            required_label=label,
+                            required_path=exec_relative,
+                        )
                     _add_root_python_siblings(
                         exec_relative, view, targets, base_relative
                     )
@@ -1081,9 +1237,8 @@ def build_projection_rules(
                         continue
                 if view.exists(arg_relative):
                     discovered.append(arg_relative.as_posix())
-                    add_target(
-                        _retention_root(arg_relative, view),
-                        complete=False,
+                    add_retention_target(
+                        arg_relative,
                         required_label=label,
                         required_path=arg_relative,
                     )
@@ -1113,9 +1268,8 @@ def build_projection_rules(
             label = f"pretask[{index}].exec"
             exec_relative = declare_executable(raw_exec, label)
             if view.exists(exec_relative):
-                add_target(
-                    _retention_root(exec_relative, view),
-                    complete=False,
+                add_retention_target(
+                    exec_relative,
                     required_label=label,
                     required_path=exec_relative,
                 )
@@ -1124,25 +1278,89 @@ def build_projection_rules(
             else:
                 warnings.append(f"{label} 声明的路径当前不存在：{raw_exec}")
 
+        # pretask 参数里引用的项目文件（"exec": "python", "args": ["./scripts/p.py"]）：
+        # 所在目录整个保留。参数也可能只是自由文本，找不到只记警告，不让导入失败。
+        for index, pretask in enumerate(_as_list(data.get("pretask"))):
+            if not isinstance(pretask, dict):
+                continue
+            raw_args = pretask.get("args")
+            if not isinstance(raw_args, list):
+                continue
+            for arg_index, raw_arg in enumerate(raw_args):
+                if not isinstance(raw_arg, str) or not looks_like_local_path(raw_arg):
+                    continue
+                label = f"pretask[{index}].args[{arg_index}]"
+                try:
+                    arg_relative = _normalize_declared_path(
+                        raw_arg, base_relative, label
+                    )
+                except ProjectionError:
+                    warnings.append(
+                        f"{label} 像路径但不在项目内，按普通参数原样保留：{raw_arg}"
+                    )
+                    continue
+                if arg_relative in (ROOT, base_relative):
+                    # "{PROJECT_DIR}" 本身：不是要带走的某个文件，整棵根不能因此进白名单。
+                    continue
+                if view.exists(arg_relative):
+                    # 不记进「运行必需」：参数是给 pretask 程序的自由文本，被分类表剔掉
+                    # （例如放在 build/ 下）也只是回到以前的行为，不该让导入失败。
+                    add_retention_target(
+                        arg_relative,
+                        required_label=None,
+                        required_path=arg_relative,
+                    )
+                else:
+                    warnings.append(f"{label} 声明的路径当前不存在：{raw_arg}")
+
     visit_interface(interface_relative, interface_relative.as_posix())
 
     # 依赖清单：根目录与 interface 所在目录都看一眼。
     for base in {ROOT, base_relative}:
         for entry in view.iter_entries(base):
             name = entry.name
-            if name.casefold() in DEPENDENCY_DIR_NAMES and view.is_dir(entry):
-                add_target(entry, complete=False, required_label=None)
-            elif view.is_file(entry) and any(
-                fnmatch.fnmatchcase(name, pattern)
-                for pattern in DEPENDENCY_FILE_PATTERNS
-            ):
-                add_target(entry, complete=False, required_label=None)
+            is_dependency = (
+                name.casefold() in DEPENDENCY_DIR_NAMES and view.is_dir(entry)
+            ) or (
+                view.is_file(entry)
+                and any(
+                    fnmatch.fnmatchcase(name, pattern)
+                    for pattern in DEPENDENCY_FILE_PATTERNS
+                )
+            )
+            if not is_dependency:
+                continue
+            if not _is_relative_to(entry, base_relative):
+                # assets 布局（MATR）：interface 在 assets/ 下，根目录上的 plugins/ 等是
+                # 自动收集的、不是 interface 声明的；副本以 assets/ 为根，它们提升不进去。
+                # 以前留在白名单里，到下面的越界检查整包拒绝；现在跳过并告警。
+                warnings.append(
+                    f"根目录上的 {entry.as_posix()} 不在 interface 所在的 "
+                    f"{base_relative.as_posix()}/ 里，内嵌副本以它为根，未带入"
+                )
+                continue
+            add_target(entry, complete=False, required_label=None)
 
     # 项目自带的 MaaFramework 原生库目录原样带走：runner 优先加载它（与路径模式一致），
     # 非 Python 的 agent 更是启动时就从 <项目>/maafw 加载。
     runtime_relative = _bundled_native_runtime_dir(roots, base_relative)
     for candidate in {runtime_relative, base_relative / "maafw"}:
         if candidate is None or not view.is_dir(candidate):
+            continue
+        if candidate in (ROOT, base_relative):
+            # 原生库直接放在包根目录（MRA / MaaTOT / MALW 的 PiCLI 包、MAAAE、MAG、MAH、
+            # MMleo、MaaEOV）：根目录不能当成原样带走的运行时目录——以前那样做，根目录
+            # 退回分类表，恰好剔掉 MaaFramework / MaaToolkit / MaaAdbControlUnit、留下其余
+            # 原生库（运行时退到运行池的库、与自带版本混载），整个根目录还失去了 64 MB
+            # 限制（MAAAE 带走 134 MB 的外壳 libs/）。改为只把根上的原生库文件逐个原样带走。
+            for native_file in _root_native_runtime_files(view, candidate):
+                add_target(
+                    native_file,
+                    complete=True,
+                    required_label="bundled native runtime",
+                    allow_excluded_root=True,
+                    verbatim_runtime=True,
+                )
             continue
         add_target(
             candidate,
@@ -1187,6 +1405,7 @@ def build_projection_rules(
         agents=agents,
         conservative=conservative,
         warnings=warnings,
+        unavailable_resources=unavailable_resources,
     )
     return rules
 
@@ -1389,6 +1608,15 @@ def _looks_like_frozen_python_package_dir(view: _FileView, directory: Path) -> b
     return any(path.suffix.casefold() == ".pyd" for path in view.walk_files(directory))
 
 
+def _looks_like_offline_dependency_dir(view: _FileView, directory: Path) -> bool:
+    """顶层目录里有 ``*.whl`` 或 ``get-pip.py``：项目的离线依赖包（deps/、wheels/ 之类）。"""
+
+    return any(
+        path.suffix.casefold() == ".whl" or path.name.casefold() == "get-pip.py"
+        for path in view.walk_files(directory)
+    )
+
+
 def _adopt_small_undeclared_entries(
     view: _FileView,
     base_relative: Path,
@@ -1420,7 +1648,24 @@ def _adopt_small_undeclared_entries(
         if entry in targets and targets[entry].complete:
             continue
         is_dir = view.is_dir(entry)
-        if exclusion_reason(entry, is_directory=is_dir) is not None:
+        reason = exclusion_reason(entry, is_directory=is_dir)
+        if (
+            reason == "embedded-python"
+            and is_dir
+            and not _is_python_interpreter_dir(view, entry)
+        ):
+            # 叫 python / venv 却没有解释器的目录只是项目源码（agent 会 import 的
+            # 辅助脚本），按名字当解释器丢掉就和路径模式不一样了。名字本身豁免，
+            # 里面照常按分类表剔除。
+            remainder = sum(
+                view.size(path)
+                for path in view.walk_files(entry)
+                if exclusion_reason(path.relative_to(entry)) is None
+            )
+            if remainder <= UNDECLARED_KEEP_LIMIT:
+                targets[entry] = TargetMode(True, True)
+            continue
+        if reason is not None:
             continue
         if not is_dir:
             if entry.suffix.casefold() in UNDECLARED_BINARY_SUFFIXES:
@@ -1438,7 +1683,17 @@ def _adopt_small_undeclared_entries(
             for path in view.walk_files(entry)
             if not covered(path) and exclusion_reason(path) is None
         )
-        if remainder > UNDECLARED_KEEP_LIMIT:
+        if remainder > UNDECLARED_KEEP_LIMIT and _looks_like_offline_dependency_dir(
+            view, entry
+        ):
+            # 离线依赖目录（MaaGumballs 的 deps/ 94 MB、MHXY 102 MB：一堆 .whl，或带
+            # get-pip.py）：agent 首次启动从这里离线装依赖，丢了就装不上。外壳的大目录
+            # 里没有 wheel，不会被这条带走。
+            warnings.append(
+                f"目录 {entry.as_posix()}/ 有 {remainder / 2**20:.0f} MB，里面是离线安装"
+                "的依赖（.whl / get-pip.py），不受 64 MB 限制，一并带入副本"
+            )
+        elif remainder > UNDECLARED_KEEP_LIMIT:
             if entry in targets:
                 warnings.append(
                     f"目录 {entry.as_posix()}/ 里没被 interface 引用的部分有 "
@@ -1460,6 +1715,43 @@ def _adopt_small_undeclared_entries(
             + "、".join(frozen_packages)
             + " 是冻结 Python 外壳自带的依赖包，未带入副本"
         )
+
+
+#: MaaFramework 发行的原生库里不以 Maa 开头的那几个（MaaFramework 自己的 bin 目录、PyPI
+#: maafw 包的 maa/bin 里都是这一套）：OCR / 推理 / 图像库带 ``_maa`` 后缀，另有
+#: DirectML 与手柄控制器用的 ViGEmClient。
+_MAAFW_RUNTIME_EXTRA_STEMS = frozenset({"directml", "vigemclient"})
+_NATIVE_LIBRARY_SUFFIXES = frozenset({".dll", ".so", ".dylib"})
+
+
+def _is_maafw_runtime_library(name: str) -> bool:
+    """文件名是不是 MaaFramework 运行时的原生库（而不是外壳 / 界面的）。
+
+    认的是 MaaFramework 自己发布的那套：``Maa*``（MaaFramework、MaaToolkit、MaaUtils、
+    MaaAgentClient / Server、各 ``Maa*ControlUnit``；Linux / macOS 带 ``lib`` 前缀）、
+    ``*_maa``（opencv_world4_maa、onnxruntime_maa、fastdeploy_ppocr_maa）、DirectML、
+    ViGEmClient。外壳放在根上的 MaaPiCli.exe、MFAAvalonia.dll、libSkiaSharp.dll、
+    Node 绑定 MaaNode.node 都不算。
+    """
+
+    path = PurePosixPath(name.casefold())
+    if path.suffix not in _NATIVE_LIBRARY_SUFFIXES:
+        return False
+    stem = path.name.split(".", 1)[0]
+    stem = stem.removeprefix("lib") if path.suffix != ".dll" else stem
+    if stem.startswith("maa") and stem != "maapicli":
+        return True
+    return stem.endswith("_maa") or stem in _MAAFW_RUNTIME_EXTRA_STEMS
+
+
+def _root_native_runtime_files(view: _FileView, directory: Path) -> list[Path]:
+    """``project_maafw_runtime_path`` 认定的运行时目录是包根时，其中的 MaaFramework 原生库文件。"""
+
+    return sorted(
+        entry
+        for entry in view.iter_entries(directory)
+        if view.is_file(entry) and _is_maafw_runtime_library(entry.name)
+    )
 
 
 def _bundled_native_runtime_dir(

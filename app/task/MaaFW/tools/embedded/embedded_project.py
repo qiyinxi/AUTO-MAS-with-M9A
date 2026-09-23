@@ -1068,6 +1068,11 @@ def import_embedded_project(
         raise EmbeddedProjectError(f"导入失败：{exc}") from exc
     except payloads.PayloadError as exc:
         raise EmbeddedProjectError(f"导入失败：{exc}") from exc
+    for resource_name in plan.rules.unavailable_resources:
+        logger.warning(
+            f"[MFW 内嵌] {source} 声明的资源 {resource_name} 在发行包里没有目录，"
+            "副本里该资源不可用，其余照常导入"
+        )
 
     store_root = payloads_root(base)
     blob_store = RuntimeBlobStore.default(base)
@@ -1123,6 +1128,21 @@ def import_embedded_project(
     # 都会以「文件被本地修改」失败，而且没有别的入口能清它）。
 
     report = plan.report()
+    # 加载器对 interface 内容的告警（缺 import 文件、preset 引用不存在的 case……）也进
+    # 导入报告，与投影告警同一张表、去重；读不出 interface 不挡导入（运行前会报清楚）。
+    try:
+        from app.task.MaaFW.tools.core.interface.loader import load_interface_model
+        from app.task.MaaFW.tools.core.interface.models import (
+            interface_load_warnings,
+        )
+
+        loaded = load_interface_model(final_dir)
+    except Exception as exc:  # noqa: BLE001 - 导入报告的附加信息，失败不影响导入
+        logger.debug(f"[MFW 内嵌] 导入后读取 interface 失败：{exc}")
+    else:
+        report["warnings"] = list(
+            dict.fromkeys([*report["warnings"], *interface_load_warnings(loaded)])
+        )
     report["sourcePath"] = str(source)
     report["copyPath"] = str(final_dir)
     # 与其它副本共用的文件（同内容只在磁盘上存一份）。

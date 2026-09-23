@@ -4,6 +4,7 @@ import copy
 import json
 import logging
 import os
+import shutil
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,9 @@ from app.task.MaaFW.tools.core.interface.models import (
     MaaFWTaskOptionsByTask,
     MaaFWTaskOptionValue,
     build_pretask_task_name,
+    checkbox_count_problem,
     find_pretask_by_task_name,
+    interface_load_warnings,
     is_pretask_task_name,
     iter_pretasks,
     resolve_task_instance_name,
@@ -31,6 +34,7 @@ from app.task.MaaFW.tools.core.interface.models import (
 from app.task.MaaFW.tools.core.interface.task_config import (
     MaaFWTaskPresetSnapshot,
     _build_option_defaults,
+    build_default_task_instances,
     build_interface_preset_snapshot,
     normalize_snapshot,
     normalize_task_execution_payload,
@@ -44,7 +48,11 @@ from .models import (
     MaaFWSkippedTaskPlan,
     MaaFWTaskRunPlan,
 )
-from .pipeline_override import MaaFWPipelineOverrideBuilder
+from .pipeline_override import (
+    MaaFWCheckboxCountError,
+    MaaFWInputValueError,
+    MaaFWPipelineOverrideBuilder,
+)
 
 # 本模块会被运行池隔离 venv 里的 worker 进程导入（``runner``
 # 的 ``__init__`` 连带 import 它），那个 venv 只装了 maafw 与项目依赖，没有
@@ -60,7 +68,21 @@ logger = logging.getLogger("automas.maafw.runner.run_plan")
 # 语言文件解析失败只提醒一次：同一份坏文件每次建计划都会再撞上。
 _WARNED_LANGUAGE_FILES: set[str] = set()
 
-PI_INTERFACE_VERSION = "v2.8.1"
+# 注入给 agent 的 PI_INTERFACE_VERSION：Client 侧实际实现到的 PI 语义化版本（不是
+# interface_version 那个固定的 2）。取「协议里要求 Client 必须做到的行为都已实现」的
+# 最高版本，依据（对照 MaaFramework docs/zh_cn/3.3-ProjectInterfaceV2协议.md 的版本表）：
+# - v2.1.0–v2.8.1：import / attach_resource_path、checkbox、option 适用性过滤、preset、
+#   group、PI_* 环境变量、pretask（含 controller / resource 过滤与选项 JSON 参数）、
+#   hotkey 都已实现；未做的只有「应」级的界面行为：resource.hash 不匹配时的提示
+#   （v2.6.0）、setting 设置分区的渲染（v2.8.0）。
+# - v2.9.0–v2.9.2：telemetry 协议写明「并非所有 Client 都会支持」，不上报即合规。
+# - v2.10.0：password 输入——「必须」级的三条都已做到：界面掩码、配置加密存储
+#   （option_secrets）、不把原文写进日志（原生日志复制 / worker 输出 / 失败摘录处替换）。
+# - v2.10.1：checkbox 的 min_count / max_count——界面限制勾选数，运行前不满足就报错。
+# - v2.10.2：welcome 字符串数组——能解析、投影带上每一条；「按数组顺序展示」是「应」级
+#   的界面行为，与 v2.6.0 / v2.8.0 那两条一样不妨碍声明（单字符串的 welcome 也从未展示）。
+# 所以声明 v2.10.2（协议版本表截至 2026-09-08 的最新版本）。
+PI_INTERFACE_VERSION = "v2.10.2"
 PI_CLIENT_LANGUAGE = "zh_cn"
 PI_CLIENT_NAME = "AUTO-MAS"
 PROJECT_RUNTIME_MANIFEST_NAME = ".auto_mas_maafw_project.json"
@@ -135,9 +157,27 @@ def build_maafw_run_plan(
     )
     i18n_mapping = _load_i18n_mapping(resolved_base_dir, interface)
     option_defaults, _ = _build_option_defaults(interface.option)
+    resource_bundle = _build_resource_bundle_plan(
+        resolved_base_dir, resource, controller
+    )
+    # 选中的资源在发行包里没有目录（导入时已记成「不可用的资源」，MaaDuDuL 的
+    # zh_hant）：在宿主建计划 / 运行前检查时就报，别等拉起游戏或模拟器之后 runner
+    # 加载资源时才失败。
+    missing_path = next(
+        (path for path in resource_bundle.paths if not path.exists), None
+    )
+    if missing_path is not None:
+        resource_label = _resolve_i18n_label(
+            resource.label, resource.name, i18n_mapping
+        )
+        raise MaaFWRunPlanError(
+            f"资源「{resource_label}」的目录 {missing_path.raw} 不存在："
+            "发行包里缺少这个资源目录，请在脚本设置里换一个资源"
+        )
 
     runnable_tasks: list[MaaFWTaskRunPlan] = []
     skipped_tasks: list[MaaFWSkippedTaskPlan] = []
+    input_warnings: list[str] = []
     # 队列元素是任务实例 id：同一个任务可以出现多次，每份各带自己的一套选项。
     for task_id in selected_common_task_ids:
         task_name = resolve_task_instance_name(task_id, task_map)
@@ -165,10 +205,31 @@ def build_maafw_run_plan(
             continue
 
         options = selected_task_options.get(task_id, {})
-        pipeline_override = pipeline_builder.build_task_pipeline_override(
-            task.name,
-            options,
-        )
+        try:
+            pipeline_override = pipeline_builder.build_task_pipeline_override(
+                task.name,
+                options,
+            )
+        except MaaFWCheckboxCountError as exc:
+            raise MaaFWRunPlanError(
+                _describe_checkbox_count_error(
+                    exc,
+                    _resolve_i18n_label(task.label, task.name, i18n_mapping),
+                    interface,
+                    i18n_mapping,
+                )
+            ) from exc
+        # 值下发不了的 input 选项已被跳过覆盖：按任务拼成告警（只影响这个任务的这个选项）
+        for input_error in pipeline_builder.input_errors:
+            input_warnings.append(
+                _describe_input_value_error(
+                    input_error,
+                    _resolve_i18n_label(task.label, task.name, i18n_mapping),
+                    interface,
+                    i18n_mapping,
+                )
+            )
+        pipeline_builder.input_errors.clear()
         runnable_tasks.append(
             MaaFWTaskRunPlan(
                 name=task.name,
@@ -187,14 +248,24 @@ def build_maafw_run_plan(
     if not runnable_tasks:
         raise MaaFWRunPlanError("当前 controller/resource 下没有可执行任务")
 
+    builder_warnings = [*pipeline_builder.warnings, *input_warnings]
+    for warning in builder_warnings:
+        logger.warning("MaaFW 运行计划：%s", warning)
+    # 加载 interface 时的告警（preset 引用不存在的 case、缺 import 文件……）以前只进后端
+    # 日志；与建覆盖时跳过的项一起进计划，运行日志开头列一次（加载时已写过后端日志）。
+    plan_warnings = list(
+        dict.fromkeys([*interface_load_warnings(interface), *builder_warnings])
+    )
+
     return MaaFWRunPlan(
         path=str(resolved_base_dir),
         projectName=interface.name,
         projectLabel=interface.label,
         controllerName=controller.name,
         controllerType=controller.type,
+        controllerDisplay=_build_controller_display(controller),
         resourceName=resource.name,
-        resource=_build_resource_bundle_plan(resolved_base_dir, resource, controller),
+        resource=resource_bundle,
         nativePluginPaths=_build_native_plugin_paths(resolved_base_dir),
         agents=build_maafw_agent_command_plans(
             resolved_base_dir,
@@ -213,7 +284,85 @@ def build_maafw_run_plan(
         piEnv=_build_pi_env(interface, controller, resource, i18n_mapping),
         tasks=runnable_tasks,
         skippedTasks=skipped_tasks,
+        warnings=plan_warnings,
         i18n=i18n_mapping,
+    )
+
+
+def _describe_checkbox_count_error(
+    exc: MaaFWCheckboxCountError,
+    task_label: str,
+    interface_model: MaaFWInterface,
+    i18n_mapping: dict[str, Any],
+) -> str:
+    """勾选数不满足 checkbox 限制时给用户看的一句话：哪个任务、哪个选项、要几项、现在几项。"""
+
+    option = interface_model.option.get(exc.option_name)
+    option_label = (
+        _resolve_i18n_label(option.label, exc.option_name, i18n_mapping)
+        if option is not None
+        else exc.option_name
+    )
+    if exc.max_count is None:
+        requirement = f"至少需要选择 {exc.min_count} 项"
+    elif exc.min_count <= 0:
+        requirement = f"最多只能选择 {exc.max_count} 项"
+    elif exc.min_count == exc.max_count:
+        requirement = f"需要恰好选择 {exc.min_count} 项"
+    else:
+        requirement = f"需要选择 {exc.min_count}~{exc.max_count} 项"
+    return (
+        f"任务「{task_label}」的选项「{option_label}」{requirement}，"
+        f"当前选了 {exc.selected} 项，请在用户配置的任务队列里调整后再运行"
+    )
+
+
+_INPUT_TYPE_NAMES = {
+    "int": "整数",
+    "integer": "整数",
+    "float": "数字",
+    "double": "数字",
+    "number": "数字",
+}
+
+
+def _describe_input_value_error(
+    exc: MaaFWInputValueError,
+    task_label: str,
+    interface_model: MaaFWInterface,
+    i18n_mapping: dict[str, Any],
+) -> str:
+    """input 的值下发不了、覆盖已跳过时的告警：哪个任务、哪个选项（多字段时带字段名）、什么值。"""
+
+    option = interface_model.option.get(exc.option_name)
+    option_label = (
+        _resolve_i18n_label(option.label, exc.option_name, i18n_mapping)
+        if option is not None
+        else exc.option_name
+    )
+    inputs = (option.inputs or []) if option is not None else []
+    if len(inputs) > 1:
+        field = next((item for item in inputs if item.name == exc.field_name), None)
+        field_label = (
+            _resolve_i18n_label(field.label, exc.field_name, i18n_mapping)
+            if field is not None
+            else exc.field_name
+        )
+        option_label = f"{option_label}」的「{field_label}"
+    kind = _INPUT_TYPE_NAMES.get(
+        exc.expected, "布尔值" if "bool" in exc.expected else exc.expected
+    )
+    skipped = "已跳过该选项的设置，这个任务按项目原本的流程跑"
+    if exc.value is None:
+        # 数字 / 布尔类型的输入没有「空」这个取值，项目又没给默认值（MAH 的 select_team
+        # default 是空串）：只跳过这一个选项，说清去哪填。
+        return (
+            f"任务「{task_label}」的选项「{option_label}」需要填一个{kind}，"
+            f"但没有填写、项目也没有给默认值，{skipped}；请在用户配置的任务队列里填写"
+        )
+    return (
+        f"任务「{task_label}」的选项「{option_label}」的值 {exc.value} 不是{kind}，"
+        f"{skipped}"
     )
 
 
@@ -266,6 +415,25 @@ def _select_controller(
             f"controllers; use the project UI for: {declared_types}"
         )
     return controller
+
+
+CONTROLLER_DISPLAY_FIELDS = (
+    "display_short_side",
+    "display_long_side",
+    "display_expand",
+    "display_raw",
+)
+
+
+def _build_controller_display(controller: MaaFWController) -> dict[str, Any]:
+    """controller 的截图缩放声明原样摘出，交给 worker 在建控制器后下发。"""
+
+    dumped = controller.model_dump(mode="json")
+    return {
+        name: dumped[name]
+        for name in CONTROLLER_DISPLAY_FIELDS
+        if dumped.get(name) is not None
+    }
 
 
 def _ensure_direct_controller(controller: MaaFWController) -> None:
@@ -396,11 +564,14 @@ def _resolve_snapshot(
             interface_model,
         )
 
+    # 按出现位置各自取 default_check：同名任务出现两次时，以前 {任务名: 勾选} 字典让后一次
+    # （没勾）覆盖前一次，这个任务就从默认计划里消失了（MaaGFNeuralCloud 的收集任务奖励）。
+    instances = build_default_task_instances(interface_model)
     return normalize_snapshot(
         {
-            "taskOrder": [task.name for task in interface_model.task],
+            "taskOrder": [task_id for task_id, _ in instances],
             "taskChecked": {
-                task.name: bool(task.default_check) for task in interface_model.task
+                task_id: bool(task.default_check) for task_id, task in instances
             },
             "taskOptions": {},
         },
@@ -444,13 +615,25 @@ def _build_pretask_plans(
         if pretask.resource and resource.name not in pretask.resource:
             continue
 
-        serialized_options = _collect_pretask_option_values(
-            pretask,
-            interface_model,
-            task_options.get(task_id, {}),
-            controller_name=controller.name,
-            resource_name=resource.name,
+        pretask_label = _resolve_i18n_label(
+            pretask.label,
+            pretask.name or pretask.exec,
+            i18n_mapping,
         )
+        try:
+            serialized_options = _collect_pretask_option_values(
+                pretask,
+                interface_model,
+                task_options.get(task_id, {}),
+                controller_name=controller.name,
+                resource_name=resource.name,
+            )
+        except MaaFWCheckboxCountError as exc:
+            raise MaaFWRunPlanError(
+                _describe_checkbox_count_error(
+                    exc, pretask_label, interface_model, i18n_mapping
+                )
+            ) from exc
         args = list(pretask.args or [])
         if pretask.option:
             args.append(
@@ -463,11 +646,7 @@ def _build_pretask_plans(
         plans.append(
             MaaFWPretaskRunPlan(
                 name=task_name,
-                label=_resolve_i18n_label(
-                    pretask.label,
-                    pretask.name or pretask.exec,
-                    i18n_mapping,
-                ),
+                label=pretask_label,
                 executable=_resolve_pretask_executable(base_dir, pretask.exec),
                 # 并入自 mfwa：pretask 参数里的 {PROJECT_DIR} 也要展开，
                 # 否则声明 args: ["{PROJECT_DIR}/x.json"] 的项目会拿到字面量
@@ -520,6 +699,17 @@ def _collect_pretask_option_values(
                 collect(nested_name, next_lineage)
         elif option.type == "checkbox" and isinstance(value, list):
             selected_names = set(value)
+            selected_count = sum(
+                1 for case in option.cases or [] if case.name in selected_names
+            )
+            problem = checkbox_count_problem(option, selected_count)
+            if problem is not None:
+                raise MaaFWCheckboxCountError(
+                    option_name,
+                    selected=selected_count,
+                    min_count=problem[1],
+                    max_count=problem[2],
+                )
             for case in option.cases or []:
                 if case.name not in selected_names:
                     continue
@@ -544,6 +734,15 @@ def _is_option_compatible(
     return True
 
 
+def _is_bare_command(raw_exec: str) -> bool:
+    """``python`` / ``node.exe`` 这种不带路径的命令名（PI：exec 可以是系统 PATH 上的程序）。"""
+
+    value = raw_exec.strip()
+    return bool(value) and not any(
+        marker in value for marker in ("/", "\\", ":", "{PROJECT_DIR}")
+    )
+
+
 def _resolve_pretask_executable(base_dir: Path, raw_exec: str) -> str:
     resolved = _resolve_project_path(base_dir, raw_exec)
     candidate = Path(resolved.resolved)
@@ -556,9 +755,20 @@ def _resolve_pretask_executable(base_dir: Path, raw_exec: str) -> str:
             and windows_candidate.is_file()
         ):
             candidate = windows_candidate
-    if not candidate.is_file():
-        raise MaaFWRunPlanError(f"pretask 可执行文件不存在: {raw_exec}")
-    return str(candidate)
+    if candidate.is_file():
+        return str(candidate)
+    if _is_bare_command(raw_exec):
+        # 项目目录里没有同名文件时按系统 PATH 找（PI 文档的示例就是 ``"exec": "python"``），
+        # 解析成绝对路径再交给子进程：裸名原样交给 CreateProcess 的话，它先在父进程
+        # （AUTO-MAS 宿主解释器）所在目录里找，``python`` 永远落到宿主自己的解释器上——
+        # 与 agent 规划不把裸 ``python`` 交给 PATH 是同一个原因。
+        found = shutil.which(raw_exec.strip())
+        if found:
+            return str(Path(found).resolve())
+        raise MaaFWRunPlanError(
+            f"pretask 可执行文件不存在: {raw_exec}（项目目录与系统 PATH 里都没有）"
+        )
+    raise MaaFWRunPlanError(f"pretask 可执行文件不存在: {raw_exec}")
 
 
 def _build_task_log_options(

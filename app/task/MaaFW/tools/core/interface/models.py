@@ -17,10 +17,20 @@
 #   along with AUTO-MAS. If not, see <https://www.gnu.org/licenses/>.
 
 
-from collections.abc import Collection
+import json
+import math
+from collections.abc import Callable, Collection
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 MaaFWDocumentContent = str | list[str]
 MaaFWPipelineOverride = dict[str, Any]
@@ -88,8 +98,12 @@ class MaaFWController(BaseModel):
     description: str | None = None
     icon: str | None = None
     type: str
-    display_short_side: int | None = 720
-    display_long_side: int | None = None
+    # 协议写的是 number（schema 同），不只是整数；下发给控制器时再取整。
+    display_short_side: int | float | None = 720
+    display_long_side: int | float | None = None
+    # Unity Canvas Scaler Expand 语义的参考分辨率 [width, height]。以前按未知字段放行，
+    # 这里仍不做形状校验（写错不该让整份 interface 读不出来），建计划时校验、不对就告警忽略。
+    display_expand: Any = None
     display_raw: bool | None = False
     permission_required: bool | None = False
     attach_resource_path: list[str] | None = None
@@ -122,6 +136,16 @@ class MaaFWAgent(BaseModel):
     child_args: list[str] | None = None
     identifier: str | None = None
     embedded: bool | None = None
+    # MFAA 私有扩展：等 agent 连上的秒数（>0 生效，-1 / 不写 = 不限）。MAS 据此定连接
+    # 等待预算（runner.agent_connect_budget_seconds）。写法不对当没写，不让整份读不出来。
+    timeout: int | float | None = None
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def coerce_timeout(cls, value: Any) -> int | float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return value if math.isfinite(value) else None
 
 
 class MaaFWPretask(BaseModel):
@@ -154,6 +178,24 @@ class MaaFWTask(BaseModel):
     controller: list[str] | None = None
     pipeline_override: MaaFWPipelineOverride | None = None
     option: list[str] | None = None
+    # MFAA 私有扩展：任务默认重复执行 repeat_count 次（MaaYuan 10 次、MATR 3 次）。
+    # MAS 不在 runner 里循环，进队列时展开成 N 份重复任务实例（见 task_repeat_count）。
+    # 不做形状校验：写错不该让整份 interface 读不出来，由 task_repeat_count 宽松解读。
+    repeatable: Any = None
+    repeat_count: Any = None
+
+
+def task_repeat_count(task: MaaFWTask) -> int:
+    """任务进队列时展开成几份：``repeatable`` 为 true 且 ``repeat_count`` ≥ 2 才展开。
+
+    ``repeatable`` 缺省 / 为 false 时忽略 ``repeat_count``；``-1``（MFAA 的「无限」）、
+    0、负数、非整数一律按 1 份（加载器对 repeatable 为 true 的这些写法告警）。
+    """
+
+    if task.repeatable is not True:
+        return 1
+    count = coerce_option_count(task.repeat_count)
+    return count if count is not None and count >= 2 else 1
 
 
 class MaaFWGroup(BaseModel):
@@ -200,6 +242,31 @@ class MaaFWInputCase(BaseModel):
     verify: str | None = None
     verify_error: str | None = None
     pattern_msg: str | None = None
+    # PI v2.10.0：密码 / 密钥字段。界面掩码、配置加密存储、不进日志；与 default 互斥
+    # （两者同时出现时由加载器告警并丢掉 default）。
+    password: bool = False
+
+    @field_validator("default", mode="before")
+    @classmethod
+    def coerce_default_text(cls, value: Any) -> str | None:
+        # 协议写的是字符串，但真实发行包里有写成数字的（MAG：``"default": 300000``）：
+        # 与 preset 里的选项值同一口径按 JSON 写法转成字符串，结构值当没写。
+        # 告警由加载器按原始值写。
+        if value is None:
+            return None
+        return _preset_scalar_text(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def coerce_password_flag(cls, value: Any) -> bool:
+        # 写成 "true" / 1 也认；认不出来的一律当 false，别让整份 interface 读不出来。
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        if isinstance(value, str):
+            return value.strip().casefold() in {"true", "1", "yes"}
+        return False
 
     @model_validator(mode="after")
     def fill_verify_error_alias(self):
@@ -235,6 +302,174 @@ class MaaFWOption(BaseModel):
     scan_filter: str | None = None
     pipeline_override: MaaFWPipelineOverride | None = None
     default_case: str | list[str] | None = None
+    # PI v2.10.1：checkbox 的最少 / 最多选择数。写法不对（负数、小数、非数字）的按没写
+    # 处理；与 case 数、彼此之间不自洽的由加载器告警并放宽（见 loader）。
+    min_count: int | None = None
+    max_count: int | None = None
+
+    @field_validator("min_count", "max_count", mode="before")
+    @classmethod
+    def coerce_count(cls, value: Any) -> int | None:
+        return coerce_option_count(value)
+
+
+def coerce_option_count(value: Any) -> int | None:
+    """把 ``min_count`` / ``max_count`` 宽松地归一成非负整数；不可用时返回 None。
+
+    协议写的是 number；``"1"`` 这种数字字符串、``2.0`` 这种整数小数照样认，
+    其余（负数、非整数、布尔、结构值）都当没写。告警由加载器按原始值写。
+    """
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def checkbox_count_problem(
+    option: "MaaFWOption", selected_count: int
+) -> tuple[str, int, int | None] | None:
+    """勾选数不满足 checkbox 的 ``min_count`` / ``max_count`` 时返回 ``(方向, 下限, 上限)``。
+
+    方向是 ``"min"``（选少了）或 ``"max"``（选多了）；满足或没有限制时返回 None。
+    限制值已由加载器放宽成自洽的（下限不超过 case 数、上限不小于下限）。
+    """
+
+    min_count = option.min_count or 0
+    max_count = option.max_count
+    if selected_count < min_count:
+        return "min", min_count, max_count
+    if max_count is not None and selected_count > max_count:
+        return "max", min_count, max_count
+    return None
+
+
+def password_input_names(interface: "MaaFWInterface") -> dict[str, frozenset[str]]:
+    """``{option 名: 其中 password 为 true 的输入字段名}``，只收 input 类型且至少有一个的。"""
+
+    result: dict[str, frozenset[str]] = {}
+    for option_name, option in interface.option.items():
+        if option.type != "input":
+            continue
+        names = frozenset(item.name for item in option.inputs or [] if item.password)
+        if names:
+            result[option_name] = names
+    return result
+
+
+def map_password_values(
+    task_options: Any,
+    password_fields: dict[str, frozenset[str]],
+    transform: Callable[[str, str, str], str],
+) -> Any:
+    """对快照 ``taskOptions``（``{任务实例: {option: {字段: 值}}}``）里的密码字段逐个套 ``transform``。
+
+    ``transform(值, option 名, 字段名)`` 只作用于非空字符串；其余结构原样照抄（返回新
+    对象，不改入参）。``transform`` 抛出的异常原样上抛，调用方决定怎么报。
+    """
+
+    if not isinstance(task_options, dict) or not password_fields:
+        return task_options
+    result: dict[Any, Any] = {}
+    for task_id, option_values in task_options.items():
+        if not isinstance(option_values, dict):
+            result[task_id] = option_values
+            continue
+        mapped_options: dict[Any, Any] = {}
+        for option_name, value in option_values.items():
+            field_names = password_fields.get(option_name)
+            if field_names and isinstance(value, dict):
+                value = {
+                    field: (
+                        transform(item, option_name, field)
+                        if field in field_names and isinstance(item, str) and item
+                        else item
+                    )
+                    for field, item in value.items()
+                }
+            mapped_options[option_name] = value
+        result[task_id] = mapped_options
+    return result
+
+
+def _preset_scalar_text(value: Any) -> str | None:
+    """preset 里的标量按 JSON 写法转成字符串（99 → "99"，true → "true"）；非标量返回 None。
+
+    整数形态的浮点（``99.0``、``1e20``）规范成整数串（"99"、"100000000000000000000"）：
+    JSON 解析出来是 float，原样 ``json.dumps`` 会得到 "99.0" / "1e+20"，下发到
+    pipeline_type 为 int 的输入时转不成整数。
+    """
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return format(Decimal(repr(value)).to_integral_value(), "f")
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    return None
+
+
+def coerce_preset_option_value(
+    value: Any,
+) -> tuple[MaaFWPresetOptionValue | None, list[str]]:
+    """把 preset 里写的一个选项值宽松地归一成协议形状，返回 ``(值, 问题说明)``。
+
+    协议规定 ``OptionValue`` 只有字符串、字符串数组、字符串到字符串的对象三种，但真实
+    发行包里有把 input 值写成数字的（MaaNTE v1.5.1：``{"count": 99}``）。官方
+    MaaPiCli 对这类值是忽略而不是拒绝整份 interface，这里更进一步：数字 / 布尔标量
+    按 JSON 写法转成字符串（与用户在输入框里填 ``99`` 等价），结构不对的项丢掉。
+    值整个不可用时返回 ``None``。问题说明给加载器写告警用，这里不记日志。
+    """
+
+    problems: list[str] = []
+    text = _preset_scalar_text(value)
+    if text is not None:
+        if not isinstance(value, str):
+            problems.append(f"{json.dumps(value)} 已按字符串 {text!r} 处理")
+        return text, problems
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            item_text = _preset_scalar_text(item)
+            if item_text is None:
+                problems.append(
+                    f"数组元素 {json.dumps(item, ensure_ascii=False)} 不是字符串，已忽略"
+                )
+                continue
+            if not isinstance(item, str):
+                problems.append(
+                    f"数组元素 {json.dumps(item)} 已按字符串 {item_text!r} 处理"
+                )
+            items.append(item_text)
+        return items, problems
+    if isinstance(value, dict):
+        fields: dict[str, str] = {}
+        for key, item in value.items():
+            item_text = _preset_scalar_text(item)
+            if not isinstance(key, str) or item_text is None:
+                problems.append(
+                    f"字段 {key} 的值 {json.dumps(item, ensure_ascii=False)} 不是字符串，已忽略"
+                )
+                continue
+            if not isinstance(item, str):
+                problems.append(
+                    f"字段 {key} 的值 {json.dumps(item)} 已按字符串 {item_text!r} 处理"
+                )
+            fields[key] = item_text
+        return fields, problems
+    problems.append(
+        f"值 {json.dumps(value, ensure_ascii=False, default=str)} 不是合法的选项值，已忽略"
+    )
+    return None, problems
 
 
 class MaaFWPresetTask(BaseModel):
@@ -243,6 +478,23 @@ class MaaFWPresetTask(BaseModel):
     name: str
     enabled: bool | None = True
     option: dict[str, MaaFWPresetOptionValue] | None = None
+
+    @field_validator("option", mode="before")
+    @classmethod
+    def coerce_option_values(cls, value: Any) -> Any:
+        # 宽松解析：一个预设值写错不该让整份 interface 读不出来（告警由加载器写）。
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            return None
+        coerced: dict[str, MaaFWPresetOptionValue] = {}
+        for option_name, option_value in value.items():
+            if not isinstance(option_name, str):
+                continue
+            normalized, _ = coerce_preset_option_value(option_value)
+            if normalized is not None:
+                coerced[option_name] = normalized
+        return coerced
 
 
 class MaaFWPreset(BaseModel):
@@ -274,7 +526,8 @@ class MaaFWInterface(BaseModel):
     version: str | None = None
     contact: str | None = None
     license: str | None = None
-    welcome: str | None = None
+    # PI v2.10.2 起可以是字符串数组（多条公告按顺序展示）；单个字符串是旧写法。
+    welcome: str | list[str] | None = None
     description: str | None = None
     controller: list[MaaFWController] = Field(default_factory=list)
     resource: list[MaaFWResource] = Field(default_factory=list)
@@ -287,6 +540,9 @@ class MaaFWInterface(BaseModel):
     global_option: list[str] | None = None
     import_: list[str] | None = Field(default=None, alias="import")
     preset: list[MaaFWPreset] = Field(default_factory=list)
+    # 加载器这次加载写下的告警（给用户看的原文，已去重），由加载器填、随磁盘缓存保存。
+    # 私有属性：不进 model_dump，也不会被 interface.json 里的同名字段顶掉。
+    _load_warnings: list[str] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def fill_display_defaults(self):
@@ -295,6 +551,15 @@ class MaaFWInterface(BaseModel):
         if self.title is None and self.label and self.version:
             self.title = f"{self.label} {self.version}"
         return self
+
+
+def interface_load_warnings(interface: MaaFWInterface) -> list[str]:
+    """加载这份 interface 时的告警（preset 引用不存在的 case、缺 import 文件……）。
+
+    只有经加载器读出来的模型才有；从字典直接校验出来的模型是空列表。
+    """
+
+    return list(getattr(interface, "_load_warnings", None) or [])
 
 
 def iter_pretasks(interface: MaaFWInterface) -> list[MaaFWPretask]:

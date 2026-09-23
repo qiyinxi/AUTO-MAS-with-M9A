@@ -418,6 +418,8 @@ export interface MaaFWTaskInfo {
   resource: string[]
   option: string[]
   defaultCheck: boolean
+  /** 加入任务队列时展开成几份（interface 的 repeatable / repeat_count），缺省 1 */
+  repeatCount?: number
 }
 
 export interface MaaFWOptionCaseInfo {
@@ -438,6 +440,8 @@ export interface MaaFWOptionInputInfo {
   verify?: string | null
   verifyError?: string | null
   patternMsg?: string | null
+  /** PI v2.10.0：密码 / 密钥字段，掩码输入，保存后只拿得到密文 */
+  password?: boolean
 }
 
 export interface MaaFWOptionInfo {
@@ -457,6 +461,9 @@ export interface MaaFWOptionInfo {
     default?: string | null
   }>
   defaultCase?: string | string[] | null
+  /** PI v2.10.1：checkbox 最少 / 最多选择数，后端已放宽成自洽值；null 为不限 */
+  minCount?: number | null
+  maxCount?: number | null
 }
 
 export interface MaaFWAdbEmulatorExtraCapabilityInfo {

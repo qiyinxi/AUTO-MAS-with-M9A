@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import math
+from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 import json5
@@ -14,9 +16,76 @@ from app.task.MaaFW.tools.core.interface.models import (
     MaaFWResource,
     MaaFWTask,
     MaaFWTaskOptionValue,
+    checkbox_count_problem,
 )
 
 from .hotkey import MaaFWHotkeyError, resolve_hotkey
+
+
+class MaaFWCheckboxCountError(ValueError):
+    """checkbox 的勾选数不满足 ``min_count`` / ``max_count``（PI v2.10.1）。
+
+    只带机器可读的事实；给人看的整句由建计划的一方拼（它有任务与选项的显示名）。
+    """
+
+    def __init__(
+        self,
+        option_name: str,
+        *,
+        selected: int,
+        min_count: int,
+        max_count: int | None,
+    ) -> None:
+        self.option_name = option_name
+        self.selected = selected
+        self.min_count = min_count
+        self.max_count = max_count
+        super().__init__(
+            f"选项 {option_name} 选了 {selected} 项，要求 "
+            f"{min_count}~{'不限' if max_count is None else max_count} 项"
+        )
+
+
+class MaaFWInputValueError(ValueError):
+    """input 字段的值下发不了：该填数字的地方填的不是数字，或者没填也没有默认值。
+
+    与 ``MaaFWCheckboxCountError`` 同样只带事实（选项名、字段名、值、期望的类型），
+    给人看的整句由建计划的一方拼（它有任务与选项的显示名）。``value`` 为 None 表示没填。
+    """
+
+    def __init__(
+        self,
+        option_name: str,
+        field_name: str,
+        *,
+        expected: str,
+        value: str | None,
+    ) -> None:
+        self.option_name = option_name
+        self.field_name = field_name
+        self.expected = expected
+        self.value = value
+        detail = "未填写且 interface 未声明默认值" if value is None else f"值 {value}"
+        super().__init__(
+            f"选项 {option_name} 的字段 {field_name} 需要 {expected} 值，{detail}"
+        )
+
+
+def _parse_integer_text(text: str) -> int | None:
+    """整数，或整数形态的小数 / 科学计数（``99.0``、``1e20``）；别的返回 None。"""
+
+    stripped = text.strip()
+    try:
+        return int(stripped)
+    except ValueError:
+        pass
+    try:
+        number = Decimal(stripped)
+    except InvalidOperation:
+        return None
+    if not number.is_finite() or number != number.to_integral_value():
+        return None
+    return int(number)
 
 
 def deep_merge_pipeline_override(
@@ -47,6 +116,11 @@ class MaaFWPipelineOverrideBuilder:
         self.interface_model = interface_model
         self.controller_names = controller_names
         self.resource_name = resource_name
+        # 建覆盖时跳过的项（给用户看的原因）；调用方把它带进运行计划的告警。
+        self.warnings: list[str] = []
+        # 因为值下发不了而整段跳过覆盖的 input 选项（没填又没默认值、该填数字却不是）。
+        # 只带事实，调用方按任务拼成告警后清空——它知道当前是哪个任务、显示名是什么。
+        self.input_errors: list[MaaFWInputValueError] = []
 
     def build_task_pipeline_override(
         self,
@@ -192,19 +266,40 @@ class MaaFWPipelineOverrideBuilder:
             # 合法取值（M9A 的兑换码没填就该是空）。
             fallback = "" if default is None else str(default).strip()
             if not fallback:
-                raise ValueError(
-                    f"选项 {option_name or '?'} 的字段 {field_name or '?'} "
-                    f"需要 {normalized_type} 值，但未填写且 interface 未声明默认值"
+                raise MaaFWInputValueError(
+                    option_name or "?",
+                    field_name or "?",
+                    expected=normalized_type,
+                    value=None,
                 )
             raw_value = fallback
         if normalized_type in {"bool", "boolean"}:
             typed_value = raw_value.lower() in {"true", "1", "yes", "y", "on"}
             return typed_value, "true" if typed_value else "false"
         if normalized_type in {"int", "integer"}:
-            typed_value = int(raw_value)
-            return typed_value, str(typed_value)
+            # 整数形态的小数（「99.0」「1e20」，preset / 默认值里写成数字时常见）规范成整数；
+            # 确实不是整数的报清楚是哪个选项、什么值，不抛 int() 那句没有上下文的原文。
+            integer = _parse_integer_text(raw_value)
+            if integer is None:
+                raise MaaFWInputValueError(
+                    option_name or "?",
+                    field_name or "?",
+                    expected=normalized_type,
+                    value=raw_value,
+                )
+            return integer, str(integer)
         if normalized_type in {"float", "double", "number"}:
-            typed_value = float(raw_value)
+            try:
+                typed_value = float(raw_value)
+            except ValueError:
+                typed_value = math.nan
+            if not math.isfinite(typed_value):
+                raise MaaFWInputValueError(
+                    option_name or "?",
+                    field_name or "?",
+                    expected=normalized_type,
+                    value=raw_value,
+                )
             return typed_value, str(typed_value)
         return raw_value, raw_value
 
@@ -296,13 +391,20 @@ class MaaFWPipelineOverrideBuilder:
             elif isinstance(raw_option_value, list):
                 raw_text = raw_option_value[0] if raw_option_value else ""
 
-            typed_value, text_value = self._coerce_input_value(
-                raw_text,
-                input_item.pipeline_type,
-                input_item.default,
-                option_name=option_name,
-                field_name=input_item.name,
-            )
+            try:
+                typed_value, text_value = self._coerce_input_value(
+                    raw_text,
+                    input_item.pipeline_type,
+                    input_item.default,
+                    option_name=option_name,
+                    field_name=input_item.name,
+                )
+            except MaaFWInputValueError as exc:
+                # 与 hotkey 没有默认值时同一口径：这个选项的覆盖整段跳过（半替换会把
+                # 字面量 "{字段}" 塞进 pipeline），任务按项目原 pipeline 跑，不让整轮
+                # 失败（MXU 填 0、CFA 失败时保留原值，也都不让整轮失败）。
+                self.input_errors.append(exc)
+                return {}
             placeholder = f"{{{input_item.name}}}"
             typed_replacements[placeholder] = typed_value
             text_replacements[placeholder] = text_value
@@ -360,9 +462,16 @@ class MaaFWPipelineOverrideBuilder:
                 if isinstance(field_value, str):
                     raw_text = field_value
             if not raw_text.strip():
-                raise MaaFWHotkeyError(
-                    f"hotkey 字段 {option_name}.{hotkey_item.name} 未配置"
+                # 项目没给 default、用户也没设：这一个快捷键选项的覆盖整段跳过（半替换
+                # 会把字面量 "{K}" 塞进 pipeline），任务按项目原始 pipeline 跑，不让整次
+                # 运行失败。
+                warning = (
+                    f"快捷键 {option_name}.{hotkey_item.name} 没有默认值也未设置，"
+                    "已跳过该选项的 pipeline 覆盖"
                 )
+                if warning not in self.warnings:
+                    self.warnings.append(warning)
+                return {}
 
             resolved = resolve_hotkey(raw_text, controller_type)
             values = resolved.placeholder_values(hotkey_item.name)
@@ -464,6 +573,15 @@ class MaaFWPipelineOverrideBuilder:
             selected_case_names = set(
                 self._normalize_checkbox_values(option_name, option, options)
             )
+            problem = checkbox_count_problem(option, len(selected_case_names))
+            if problem is not None:
+                _, min_count, max_count = problem
+                raise MaaFWCheckboxCountError(
+                    option_name,
+                    selected=len(selected_case_names),
+                    min_count=min_count,
+                    max_count=max_count,
+                )
             for case in option.cases:
                 if case.name not in selected_case_names:
                     continue

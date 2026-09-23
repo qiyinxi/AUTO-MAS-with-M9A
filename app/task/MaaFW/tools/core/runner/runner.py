@@ -20,6 +20,7 @@
 import ctypes
 import hashlib
 import html
+import inspect
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import subprocess
 import sysconfig
 import threading
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, TextIO
@@ -127,9 +129,38 @@ _MAAFW_INITIALIZED = False
 _MAAFW_INIT_LOCK = threading.Lock()
 
 
-AGENT_CONNECT_RETRY_COUNT = 30
 AGENT_CONNECT_RETRY_INTERVAL = 0.2
+# 每次 connect() 的阻塞上限；按总等待预算反复尝试，直到连上、agent 进程退出或用户停止。
 AGENT_CONNECT_TIMEOUT_MS = 1000
+# 以前固定 30 次 ×（1 s + 0.2 s）≈ 36 s；interface 写的 agent.timeout 比它短时仍按它等。
+AGENT_CONNECT_BASELINE_SECONDS = 36.0
+# 在 agent.timeout 之上再宽容的秒数：MFAA 的 timeout 是它自己连接的上限，MAS 这边在
+# 连接前还要建环境变量、起子进程、等 Python 解释器冷启动（杀软扫描时十几秒很常见），
+# 按原值卡死会把作者认为够用的时间吃掉一截。30 s 与 baseline 同一量级，够吸收这段差。
+AGENT_CONNECT_GRACE_SECONDS = 30.0
+# 不写 agent.timeout 或写 -1 / 0：MFAA / MXU 是进程活着就一直等（MaaGumballs、
+# MaaStarResonance 首启要 pip 装依赖，36 s 不够）。MAS 不无限等，封顶 10 分钟。
+AGENT_CONNECT_UNBOUNDED_CAP_SECONDS = 600.0
+# 超过 baseline 还没连上时，每隔这么久往用户日志报一次还在等。
+AGENT_CONNECT_PROGRESS_LOG_SECONDS = 30.0
+
+
+def agent_connect_budget_seconds(timeout: Any) -> float:
+    """按 interface 的 ``agent.timeout``（秒，MFAA / CFA 语义）算连接的总等待预算。
+
+    - 正数 T：``max(T, 36) + 30``；
+    - 不写、-1、0 或写法不对：10 分钟上限。
+    只用于等 agent 连上；连上之后照旧不设请求超时（``set_timeout(-1)``）。
+    """
+
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+        if timeout > 0:
+            return max(float(timeout), AGENT_CONNECT_BASELINE_SECONDS) + (
+                AGENT_CONNECT_GRACE_SECONDS
+            )
+    return AGENT_CONNECT_UNBOUNDED_CAP_SECONDS
+
+
 # 冷启动的模拟器要等很久：LDPlayer.open() 在 in_android==1 之后只 sleep 3 秒
 # 就返回「启动完成」（不传 package_name 时不走那个 30 秒分支），此时 Android
 # 里的 adbd 往往还没起来。第一层不受影响——它把等待交给项目外壳自己做了，
@@ -239,6 +270,58 @@ def _is_single_method(value: int) -> bool:
 
     raw = int(value)
     return raw > 0 and raw & (raw - 1) == 0
+
+
+def _callable_parameters(target: Any) -> set[str]:
+    """``target``（类取 ``__init__``）的参数名；取不到签名时返回空集。"""
+
+    try:
+        return set(inspect.signature(target).parameters)
+    except (TypeError, ValueError):
+        return set()
+
+
+def _positive_int(value: Any) -> int | None:
+    """interface 里的 number（可能是浮点、可能是数字字符串）→ 正整数；不合法返回 None。"""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = round(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
+
+
+def _positive_int_pair(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    first, second = (_positive_int(item) for item in value)
+    if first is None or second is None:
+        return None
+    return first, second
+
+
+def _supported_win32_method(enum_cls: Any, value: int, *, combinable: bool) -> bool:
+    """当前加载的绑定库认不认得这个 Win32 截图 / 输入方式取值。
+
+    绑定库与原生库按版本成对（运行池按原生库版本钉 binding），枚举里没有的取值原生层
+    同样不认识：例如 5.12.3 没有 AnchoredTouch（1 << 10），原样传下去会建控制器失败或
+    行为未定义。截图方式可以是多个位的组合（Background = FramePool | PrintWindow），
+    只要每个位都是已知成员即可；输入方式只能选一个。负数是 All 这类全选，交给原生层。
+    """
+
+    raw = int(value)
+    if raw <= 0:
+        return True
+    members = [int(member) for member in getattr(enum_cls, "__members__", {}).values()]
+    known = [member for member in members if member > 0]
+    if not combinable:
+        return raw in known
+    mask = 0
+    for member in known:
+        mask |= member
+    return raw & ~mask == 0
 
 
 def _format_enum_methods(enum_cls: Any, value: int) -> str:
@@ -587,6 +670,9 @@ class MaaFWRunner:
         self._post_lock: threading.Lock = threading.Lock()
         self._task_in_flight: bool = False
         self._deadline_stop_posted: bool = False
+        # 本次运行的实例标识：拼进 interface 声明的固定 agent identifier，防同一项目的
+        # 两个脚本并行时抢同一个 socket（见 _run_agent_identifier）。
+        self._run_instance_tag: str = uuid.uuid4().hex[:8]
 
     @property
     def failure_screenshots(self) -> list[MaaFWFailureScreenshot]:
@@ -886,6 +972,7 @@ class MaaFWRunner:
     def _connect_device(self, device_config: MaaFWDeviceConfig) -> None:
         self._log_controller_config(device_config)
         self.controller = self._create_controller(device_config)
+        self._apply_screenshot_target(self.controller)
         self._install_controller_sink(self.controller)
         self._wait_job(self.controller.post_connection())
         if not self.tasker.bind(self.resource, self.controller):
@@ -989,6 +1076,27 @@ class MaaFWRunner:
             keyboard_method = (
                 device_config.keyboardMethod or MaaWin32InputMethodEnum.Seize
             )
+            screencap_method = self._fallback_unsupported_win32_method(
+                "截图方式",
+                MaaWin32ScreencapMethodEnum,
+                screencap_method,
+                MaaWin32ScreencapMethodEnum.DXGI_DesktopDup,
+                combinable=True,
+            )
+            mouse_method = self._fallback_unsupported_win32_method(
+                "鼠标输入方式",
+                MaaWin32InputMethodEnum,
+                mouse_method,
+                MaaWin32InputMethodEnum.Seize,
+                combinable=False,
+            )
+            keyboard_method = self._fallback_unsupported_win32_method(
+                "键盘输入方式",
+                MaaWin32InputMethodEnum,
+                keyboard_method,
+                MaaWin32InputMethodEnum.Seize,
+                combinable=False,
+            )
             return Win32Controller(
                 device_config.hWnd,
                 screencap_method,
@@ -1000,6 +1108,87 @@ class MaaFWRunner:
             "AUTO-MAS MaaFW Direct currently supports only Adb/Win32 "
             f"controllers; use the project UI for {device_config.type}"
         )
+
+    def _apply_screenshot_target(self, controller: Any) -> None:
+        """按 interface 的 display_* 设截图目标尺寸（PI：四者互斥）。
+
+        取用顺序 display_raw > display_expand > display_long_side > display_short_side
+        （后者默认 720，与原生层默认值相同）。老版本绑定库没有对应方法（例如 5.12 没有
+        set_screenshot_target_expand）或原生层拒绝时告警，保持原生层默认的短边 720。
+        """
+
+        display = self.plan.controllerDisplay or {}
+
+        def apply(method_name: str, description: str, *args: Any) -> None:
+            setter = getattr(controller, method_name, None)
+            if not callable(setter):
+                self.send_log(
+                    f"截图缩放 {description} 未生效：当前 MaaFramework binding 没有 "
+                    f"{method_name}，保持默认短边 720"
+                )
+                return
+            detail = ""
+            try:
+                applied = setter(*args)
+            except Exception as exc:  # noqa: BLE001 - 设不上不该挡住运行
+                applied = False
+                detail = f"：{exc}"
+            if applied is False:
+                self.send_log(
+                    f"截图缩放 {description} 设置失败{detail}，保持 MaaFramework 默认值"
+                )
+            else:
+                self.send_log(f"截图缩放: {description}")
+
+        if display.get("display_raw") is True:
+            apply("set_screenshot_use_raw_size", "原始分辨率", True)
+            return
+
+        expand = display.get("display_expand")
+        if expand is not None:
+            size = _positive_int_pair(expand)
+            if size is not None:
+                apply(
+                    "set_screenshot_target_expand", f"Expand {size[0]}x{size[1]}", *size
+                )
+                return
+            self.send_log(
+                f"interface 的 display_expand 必须是 [宽, 高] 两个正数，已忽略: {expand!r}"
+            )
+
+        long_side = _positive_int(display.get("display_long_side"))
+        if long_side is not None:
+            apply("set_screenshot_target_long_side", f"长边 {long_side}", long_side)
+            return
+
+        raw_short = display.get("display_short_side")
+        short_side = _positive_int(raw_short)
+        if short_side is not None:
+            apply("set_screenshot_target_short_side", f"短边 {short_side}", short_side)
+        elif raw_short is not None:
+            self.send_log(
+                f"interface 的 display_short_side 不是正数，已忽略: {raw_short!r}"
+            )
+
+    def _fallback_unsupported_win32_method(
+        self,
+        label: str,
+        enum_cls: Any,
+        value: int,
+        default: int,
+        *,
+        combinable: bool,
+    ) -> int:
+        if _supported_win32_method(enum_cls, value, combinable=combinable):
+            return value
+        loaded, binding = describe_loaded_maafw()
+        self.send_log(
+            f"Win32 {label} {int(value)} 当前 MaaFramework 不支持"
+            f"（原生库 {loaded or '未知'}，binding {binding or '未知'}），"
+            f"已改用 {_format_enum_methods(enum_cls, default)}；"
+            "需要该方式请更新项目自带的 MaaFramework"
+        )
+        return default
 
     def _log_controller_config(self, device_config: MaaFWDeviceConfig) -> None:
         if device_config.type == "Adb":
@@ -1181,7 +1370,12 @@ class MaaFWRunner:
         for agent_plan in self.plan.agents:
             if agent_plan.embedded:
                 continue
-            agent_client = self._create_agent_client(agent_plan.childExec)
+            agent_client = self._create_agent_client(
+                agent_plan.childExec,
+                identifier=self._run_agent_identifier(
+                    agent_plan.identifier, agent_plan.childExec
+                ),
+            )
             if not agent_client.bind(self.resource):
                 raise RuntimeError("AgentClient 绑定资源失败")
 
@@ -1264,7 +1458,55 @@ class MaaFWRunner:
             "rebuild the MaaFW run plan before starting agents"
         )
 
-    def _create_agent_client(self, label: str) -> AgentClient:
+    def _run_agent_identifier(self, declared: str | None, label: str) -> str | None:
+        """本次运行实际用的 agent 连接标识。
+
+        interface 写了固定的 identifier 时拼成 ``{identifier}_{本次运行实例标识}``（照
+        MFAA ``AgentHelper.cs``）：同一项目的两个脚本并行时，IPC 模式下 socket 名是
+        ``maafw-agent-{identifier}.sock``，不加后缀两边会抢同一个 socket。agent 子进程
+        从命令行拿到的是 AgentClient 实际用的那个（``<socket_id>``），两边一致。
+        纯数字（1–65535）按 MaaFramework ``Transceiver::parse_tcp_port`` 是 TCP 端口，
+        拼后缀会把它变成 IPC 名、改掉语义，所以原样用；这种写法并行时仍会抢同一端口。
+        """
+
+        text = str(declared or "").strip()
+        if not text:
+            return None
+        if text.isdigit() and 1 <= int(text) <= 65535:
+            self.send_log(
+                f"interface 声明的 agent identifier={text} 是 TCP 端口，按原样使用；"
+                f"同一项目的多个脚本同时运行会抢同一端口: {label}"
+            )
+            return text
+        return f"{text}_{self._run_instance_tag}"
+
+    def _create_agent_client(
+        self, label: str, *, identifier: str | None = None
+    ) -> AgentClient:
+        declared = str(identifier or "").strip()
+        if declared:
+            # interface 的 agent.identifier：连接标识符，填了就用（PI 协议），项目自己的
+            # agent 可能按这个名字连。老版本绑定库的 AgentClient 不收这个参数，或者按它
+            # 建不起来时，告警后退回自动生成的标识——agent 从命令行拿到的是实际那个。
+            if "identifier" not in _callable_parameters(AgentClient):
+                self.send_log(
+                    f"interface 声明了 agent identifier={declared!r}，当前 MaaFramework "
+                    f"binding 的 AgentClient 不支持指定，已改用自动生成的标识: {label}"
+                )
+            else:
+                try:
+                    agent_client = AgentClient(identifier=declared)
+                except Exception as exc:  # noqa: BLE001 - 退回自动标识，不挡运行
+                    self.send_log(
+                        f"按 interface 声明的 identifier={declared!r} 创建 AgentClient "
+                        f"失败，已改用自动生成的标识: {label}: {exc}"
+                    )
+                else:
+                    self.send_log(
+                        f"AgentClient 使用 interface 声明的标识: "
+                        f"{label}, identifier={agent_client.identifier}"
+                    )
+                    return agent_client
         try:
             agent_client = AgentClient()
             self.send_log(
@@ -1295,32 +1537,60 @@ class MaaFWRunner:
         agent_plan: Any = None,
     ) -> None:
         last_error: Exception | None = None
+        declared_timeout = getattr(agent_plan, "timeout", None)
+        budget = agent_connect_budget_seconds(declared_timeout)
+        if declared_timeout is not None:
+            self.send_log(
+                f"interface 声明了 agent.timeout={declared_timeout}，"
+                f"连接 Agent 最多等 {budget:.0f} 秒: {label}"
+            )
         if not agent_client.set_timeout(AGENT_CONNECT_TIMEOUT_MS):
             self.send_log(f"AgentClient 设置连接超时失败: {label}")
-        for attempt in range(1, AGENT_CONNECT_RETRY_COUNT + 1):
+        started_at = time.monotonic()
+        next_progress_at = AGENT_CONNECT_BASELINE_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
             exit_code = process.poll()
             if exit_code is not None:
                 raise RuntimeError(
                     f"Agent 进程已退出，无法连接: {label}, exit={exit_code}"
                 )
+            if self._stop_requested.is_set():
+                raise RuntimeError(f"已停止，不再等待 Agent 连接: {label}")
 
             try:
                 if agent_client.connect():
+                    # 超时只管「等连上」：连上之后恢复成不限时，不能让它变成运行期每次
+                    # 请求的超时（MAES 写 8 秒，超过 8 秒的自定义动作会被判超时）。
                     if not agent_client.set_timeout(-1):
                         self.send_log(f"AgentClient 恢复运行超时失败: {label}")
                     if attempt > 1:
                         self.send_log(
-                            f"AgentClient 已连接: {label}, 尝试次数 {attempt}"
+                            f"AgentClient 已连接: {label}, 尝试次数 {attempt}，"
+                            f"用时 {time.monotonic() - started_at:.0f} 秒"
                         )
                     return
             except Exception as exc:
                 last_error = exc
 
-            time.sleep(AGENT_CONNECT_RETRY_INTERVAL)
+            elapsed = time.monotonic() - started_at
+            if elapsed >= budget:
+                break
+            if elapsed >= next_progress_at:
+                self.send_log(
+                    f"仍在等待 agent 启动（已等 {elapsed:.0f} 秒，上限 {budget:.0f} 秒）: {label}"
+                )
+                next_progress_at = elapsed + AGENT_CONNECT_PROGRESS_LOG_SECONDS
+            if self._stop_requested.wait(AGENT_CONNECT_RETRY_INTERVAL):
+                raise RuntimeError(f"已停止，不再等待 Agent 连接: {label}")
 
         detail = f": {last_error}" if last_error else ""
         hint = self._describe_agent_maafw_mismatch(agent_plan)
-        raise RuntimeError(f"AgentClient 连接超时: {label}{detail}{hint}")
+        raise RuntimeError(
+            f"AgentClient 连接超时（等了 {time.monotonic() - started_at:.0f} 秒）: "
+            f"{label}{detail}{hint}"
+        )
 
     def _describe_agent_maafw_mismatch(self, agent_plan: Any) -> str:
         """连不上时补一句版本诊断。

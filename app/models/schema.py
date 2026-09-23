@@ -3871,6 +3871,10 @@ class MaaFWTaskInfo(BaseModel):
     resource: List[str] = Field(default_factory=list, description="适用资源")
     option: List[str] = Field(default_factory=list, description="任务选项")
     defaultCheck: bool = Field(default=False, description="是否默认勾选")
+    repeatCount: int = Field(
+        default=1,
+        description="加入任务队列时展开成几份（interface 的 repeatable / repeat_count）",
+    )
 
 
 class MaaFWOptionCaseInfo(BaseModel):
@@ -3891,6 +3895,9 @@ class MaaFWOptionInputInfo(BaseModel):
     verify: Optional[str] = Field(default=None, description="输入校验正则")
     verifyError: Optional[str] = Field(default=None, description="输入校验提示")
     patternMsg: Optional[str] = Field(default=None, description="输入校验提示")
+    password: bool = Field(
+        default=False, description="是否为密码 / 密钥字段（界面掩码，配置加密存储）"
+    )
 
 
 class MaaFWOptionHotkeyInfo(BaseModel):
@@ -3919,6 +3926,12 @@ class MaaFWOptionInfo(BaseModel):
     )
     defaultCase: Optional[Union[str, List[str]]] = Field(
         default=None, description="默认 case"
+    )
+    minCount: Optional[int] = Field(
+        default=None, description="checkbox 最少选择数，未限制为 None"
+    )
+    maxCount: Optional[int] = Field(
+        default=None, description="checkbox 最多选择数，未限制为 None"
     )
 
 

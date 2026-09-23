@@ -21,6 +21,7 @@ import copy
 import hashlib
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from threading import RLock
@@ -34,6 +35,9 @@ from .models import (
     MaaFWOption,
     MaaFWPretask,
     build_pretask_task_name,
+    coerce_option_count,
+    coerce_preset_option_value,
+    interface_load_warnings,
     iter_pretasks,
 )
 
@@ -48,8 +52,15 @@ IMPORTABLE_KEYS = (
     "import",
 )
 logger = logging.getLogger("automas.maafw.interface.loader")
+# 带这个 extra 的告警只进后端日志，不进给用户看的加载告警（运行日志开头、导入报告）：
+# 「不认识的字段已忽略」（``$schema``、``telemetry``……）不影响任何已声明内容的行为，
+# 每次运行都列一遍只是噪声。
+_LOG_ONLY = {"maafw_log_only": True}
+_USER_WARNING_PREFIX = "MaaFW ProjectInterface "
 
-DISK_CACHE_VERSION = 3
+# 4：加载器开始改写模型（password 字段丢 default、checkbox 选择数放宽），旧缓存没经过这一步。
+# 5：缓存里带上加载告警（``warnings``），旧缓存命中会丢掉它们。
+DISK_CACHE_VERSION = 5
 DISK_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 DISK_CACHE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 _interface_cache: dict[
@@ -68,12 +79,38 @@ class _MergeState:
         self.group_names: set[str] = set()
         self.global_option_names: set[str] = set()
         self.pretask_names: set[str] = set()
+        # 声明了却不存在的 import 文件（发行包漏打包）：跳过继续，其余引用降级为告警。
+        self.missing_imports: list[str] = []
 
 
 class _LoadContext:
     def __init__(self) -> None:
         self.dependency_paths: set[Path] = set()
         self.scan_select_specs: set[tuple[Path, str]] = set()
+
+
+class _LoadWarningCollector(logging.Handler):
+    """把一次加载里加载器写的告警收成给用户看的列表（去重、保持先后）。
+
+    加载器各处照旧用标准 logging 写告警（后端日志不变），这里挂在加载器的 logger 上
+    旁听；只收**本线程**的记录——别的线程同时在加载另一个项目时，它的告警不能混进来。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self._thread_id = threading.get_ident()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id or getattr(record, "maafw_log_only", False):
+            return
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - 格式化失败的告警只丢这一条
+            return
+        message = message.removeprefix(_USER_WARNING_PREFIX)
+        if message not in self.messages:
+            self.messages.append(message)
 
 
 def parse_json_text(text: str) -> Any:
@@ -181,14 +218,11 @@ def _resolve_interface_path(base_dir: Path) -> Path:
 
 
 def _resolve_import_path(import_path: str, base_dir: Path) -> Path:
-    resolved_path = _resolve_project_relative_path(
+    return _resolve_project_relative_path(
         base_dir,
         import_path,
         field_name="import",
     )
-    if not resolved_path.exists() or not resolved_path.is_file():
-        raise MaaFWInterfaceLoadError(f"import 文件不存在: {import_path}")
-    return resolved_path
 
 
 def _validate_importable_fragment(data: dict[str, Any], source_path: Path) -> None:
@@ -198,6 +232,31 @@ def _validate_importable_fragment(data: dict[str, Any], source_path: Path) -> No
             "MaaFW ProjectInterface 导入文件包含暂不支持的字段，已忽略：%s；文件：%s",
             ", ".join(invalid_keys),
             source_path,
+            extra=_LOG_ONLY,
+        )
+
+
+def _ensure_pi_v2(data: dict[str, Any]) -> None:
+    """根 interface 按 ProjectInterface V2 读；缺 ``interface_version`` 时按 2 处理。
+
+    MMleo、MBCCtools、MATR、MaaEOV 的 interface 没写 interface_version（MFA 时代的
+    写法）。MFAA / MFW-CFA 缺失时照常按 V2 读，这里同一口径：补成 2 并告警。显式写成
+    别的值（如 1）才拒绝，报一句中文而不是 pydantic 校验原文。
+    """
+
+    if "interface_version" not in data:
+        logger.warning(
+            "MaaFW ProjectInterface interface.json 缺少 interface_version"
+            "（可能是 MFA 时代的旧写法），按 ProjectInterface V2 处理"
+        )
+        data["interface_version"] = 2
+        return
+    version = data["interface_version"]
+    if version != 2:
+        raise MaaFWInterfaceLoadError(
+            "这个项目的 interface.json 不是 ProjectInterface V2 格式"
+            f"（interface_version 是 {json.dumps(version, ensure_ascii=False)}，"
+            "MAS 只支持 2），MAS 暂不支持"
         )
 
 
@@ -213,6 +272,7 @@ def _warn_unsupported_root_fields(data: dict[str, Any], source_path: Path) -> No
             "MaaFW ProjectInterface 包含暂不支持的顶层字段，已忽略：%s；文件：%s",
             ", ".join(unsupported_keys),
             source_path,
+            extra=_LOG_ONLY,
         )
 
 
@@ -479,6 +539,20 @@ def _merge_imports_into_target(
 ) -> None:
     for import_path in import_paths:
         resolved_path = _resolve_import_path(import_path, base_dir)
+        if not resolved_path.is_file():
+            # 发行包漏打包了 import 文件（MPA v3.10.46 的 options/global_option.json、
+            # MSBA v3.7.41 的 tasks/选项_选择章节.json）：官方 MaaPiCli 整份拒绝，这里跳过
+            # 这一个文件继续——其中声明的任务 / 选项不可用，其余照常。文件记进依赖，
+            # 以后补上了缓存会失效。
+            if context is not None:
+                context.dependency_paths.add(resolved_path)
+            state.missing_imports.append(import_path)
+            logger.warning(
+                "MaaFW ProjectInterface import 文件不存在（发行包里没有这个文件）：%s；"
+                "其中声明的任务与选项不可用，其余照常加载",
+                import_path,
+            )
+            continue
         if resolved_path in stack:
             chain = " -> ".join(str(item) for item in [*stack, resolved_path])
             raise MaaFWInterfaceLoadError(f"检测到循环导入: {chain}")
@@ -534,10 +608,17 @@ def _scan_scan_select_cases(
     if context is not None:
         context.scan_select_specs.add((resolved_scan_dir, normalized_scan_filter))
 
-    if not resolved_scan_dir.exists() or not resolved_scan_dir.is_dir():
-        raise MaaFWInterfaceLoadError(
-            f"scan_select 选项 {option_name} 的 scan_dir 不存在或不是目录: {scan_dir}"
+    if not resolved_scan_dir.is_dir():
+        # scan_dir 常是要用户自备内容的目录（MaaFgo 的自定义配队目录），发行包里本来就
+        # 没有：按「没有可选项」处理，不让整份 interface 读不出来。目录已记进缓存依赖，
+        # 用户建好目录、放进文件后重新加载就有选项了。
+        logger.warning(
+            "MaaFW ProjectInterface scan_select 选项 %s 的 scan_dir 不存在或不是目录：%s；"
+            "按没有可选项处理",
+            option_name,
+            scan_dir,
         )
+        return []
 
     try:
         matched_paths = sorted(
@@ -608,54 +689,155 @@ def _validate_option_name_list(
             )
 
 
-def _validate_option_case_values(
+def _warn_preset_value_coercions(data: dict[str, Any]) -> None:
+    """preset 里不是字符串的选项值：模型会宽松转换 / 丢弃，这里把每一处写进告警。"""
+
+    presets = data.get("preset")
+    if not isinstance(presets, list):
+        return
+    for preset in presets:
+        if not isinstance(preset, dict):
+            continue
+        for preset_task in preset.get("task") or []:
+            if not isinstance(preset_task, dict):
+                continue
+            location = f"preset {preset.get('name')}.task {preset_task.get('name')}"
+            raw_options = preset_task.get("option")
+            if raw_options is None:
+                continue
+            if not isinstance(raw_options, dict):
+                logger.warning(
+                    "MaaFW ProjectInterface %s.option 不是对象，已忽略该任务的预设选项值",
+                    location,
+                )
+                continue
+            for option_name, option_value in raw_options.items():
+                _, problems = coerce_preset_option_value(option_value)
+                for problem in problems:
+                    logger.warning(
+                        "MaaFW ProjectInterface %s.%s：%s",
+                        location,
+                        option_name,
+                        problem,
+                    )
+
+
+def _warn_input_default_coercions(data: dict[str, Any]) -> None:
+    """input 字段的 default 不是字符串：模型按 JSON 写法转成字符串（MAG 的 300000），逐处告警。"""
+
+    options = data.get("option")
+    if not isinstance(options, dict):
+        return
+    for option_name, option in options.items():
+        if not isinstance(option, dict) or not isinstance(option.get("inputs"), list):
+            continue
+        for input_item in option["inputs"]:
+            if not isinstance(input_item, dict):
+                continue
+            raw = input_item.get("default")
+            if raw is None or isinstance(raw, str):
+                continue
+            text, _ = coerce_preset_option_value(raw)
+            if isinstance(text, str):
+                logger.warning(
+                    "MaaFW ProjectInterface option %s 的输入字段 %s 的 default 应为字符串，"
+                    "已按 %r 处理：%s",
+                    option_name,
+                    input_item.get("name"),
+                    text,
+                    json.dumps(raw, ensure_ascii=False),
+                )
+            else:
+                logger.warning(
+                    "MaaFW ProjectInterface option %s 的输入字段 %s 的 default 不是字符串，"
+                    "已忽略：%s",
+                    option_name,
+                    input_item.get("name"),
+                    json.dumps(raw, ensure_ascii=False, default=str),
+                )
+
+
+def _sanitize_option_case_values(
     option_name: str,
     option: MaaFWOption,
     value: Any,
     *,
     location: str,
-) -> None:
+) -> Any:
+    """校验一个预设选项值；形状不对的整项丢弃（返回 None），不认识的输入字段只丢该字段。
+
+    官方 MaaPiCli 对写错的预设值是忽略而不是拒绝整份 interface，这里同一口径：
+    一个预设值写错只影响这一项，不能让项目整个导入不了。
+    """
+
     case_names = {case.name for case in option.cases or []}
 
     if option.type in {"select", "switch", "scan_select"}:
         if not isinstance(value, str):
-            raise MaaFWInterfaceLoadError(f"{location}.{option_name} 必须是字符串")
-        if value not in case_names:
-            raise MaaFWInterfaceLoadError(
-                f"{location}.{option_name} 引用了不存在的 case: {value}"
+            logger.warning(
+                "MaaFW ProjectInterface %s.%s 必须是字符串，已忽略该预设值",
+                location,
+                option_name,
             )
-        return
+            return None
+        if value not in case_names:
+            logger.warning(
+                "MaaFW ProjectInterface %s.%s 引用了不存在的 case，已忽略该预设值：%s",
+                location,
+                option_name,
+                value,
+            )
+            return None
+        return value
 
     if option.type == "checkbox":
-        if not isinstance(value, list) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise MaaFWInterfaceLoadError(f"{location}.{option_name} 必须是字符串数组")
+        if not isinstance(value, list):
+            logger.warning(
+                "MaaFW ProjectInterface %s.%s 必须是字符串数组，已忽略该预设值",
+                location,
+                option_name,
+            )
+            return None
         invalid_cases = [item for item in value if item not in case_names]
         if invalid_cases:
-            raise MaaFWInterfaceLoadError(
-                f"{location}.{option_name} 引用了不存在的 case: {', '.join(invalid_cases)}"
+            logger.warning(
+                "MaaFW ProjectInterface %s.%s 引用了不存在的 case，已从预设值里去掉：%s",
+                location,
+                option_name,
+                ", ".join(invalid_cases),
             )
-        return
+            return [item for item in value if item in case_names]
+        return value
 
     if option.type in {"input", "hotkey"}:
         if not isinstance(value, dict):
-            raise MaaFWInterfaceLoadError(f"{location}.{option_name} 必须是对象")
+            logger.warning(
+                "MaaFW ProjectInterface %s.%s 必须是对象，已忽略该预设值",
+                location,
+                option_name,
+            )
+            return None
         field_names = (
             {input_item.name for input_item in option.inputs or []}
             if option.type == "input"
             else {hotkey_item.name for hotkey_item in option.hotkeys or []}
         )
         field_label = "输入项" if option.type == "input" else "快捷键字段"
+        kept: dict[str, Any] = {}
         for field_name, field_value in value.items():
             if field_name not in field_names:
-                raise MaaFWInterfaceLoadError(
-                    f"{location}.{option_name} 引用了不存在的{field_label}: {field_name}"
+                logger.warning(
+                    "MaaFW ProjectInterface %s.%s 引用了不存在的%s，已忽略：%s",
+                    location,
+                    option_name,
+                    field_label,
+                    field_name,
                 )
-            if not isinstance(field_value, str):
-                raise MaaFWInterfaceLoadError(
-                    f"{location}.{option_name}.{field_name} 必须是字符串"
-                )
+                continue
+            kept[field_name] = field_value
+        return kept
+
+    return value
 
 
 def _validate_task_context_constraints(interface_model: MaaFWInterface) -> None:
@@ -663,10 +845,16 @@ def _validate_task_context_constraints(interface_model: MaaFWInterface) -> None:
     controller_names = {controller.name for controller in interface_model.controller}
 
     for resource in interface_model.resource:
+        # 引用了不存在的 controller 只是这条声明写错（官方 MaaPiCli 同样不拒绝）：
+        # 告警后原样保留列表——删掉错的名字可能把列表删空，空列表的意思是「适用于所有
+        # controller」，反而放宽了作者的限制。
         for controller_name in resource.controller or []:
             if controller_name not in controller_names:
-                raise MaaFWInterfaceLoadError(
-                    f"resource {resource.name} 引用了不存在的 controller: {controller_name}"
+                logger.warning(
+                    "MaaFW ProjectInterface resource %s 引用了不存在的 controller"
+                    "（不会匹配任何控制器）：%s",
+                    resource.name,
+                    controller_name,
                 )
 
     for task in interface_model.task:
@@ -681,6 +869,69 @@ def _validate_task_context_constraints(interface_model: MaaFWInterface) -> None:
                 raise MaaFWInterfaceLoadError(
                     f"任务 {task_ref} 引用了不存在的 resource: {resource_name}"
                 )
+
+
+def _prune_references_lost_with_imports(
+    interface_model: MaaFWInterface, missing_imports: list[str]
+) -> None:
+    """缺了 import 文件时，指向没定义的选项 / 任务的引用降级为告警并去掉。
+
+    缺的文件里声明了什么无从得知，只能从悬空的引用反推：哪个任务（或全局、资源、
+    控制器、设置、case）引用的选项没有定义，哪个预设引用的任务不存在。没缺文件时
+    悬空引用照旧是错误（由后面的校验报），这里不放宽。
+    """
+
+    if not missing_imports:
+        return
+    missing_text = "、".join(missing_imports)
+    option_names = set(interface_model.option)
+
+    def keep_defined(names: list[str] | None, location: str) -> list[str] | None:
+        if not names:
+            return names
+        lost = [name for name in names if name not in option_names]
+        for name in lost:
+            logger.warning(
+                "MaaFW ProjectInterface %s 引用的选项 %s 没有定义（多半在缺失的 import "
+                "文件 %s 里），该选项不可用",
+                location,
+                name,
+                missing_text,
+            )
+        return [name for name in names if name in option_names] if lost else names
+
+    interface_model.global_option = keep_defined(
+        interface_model.global_option, "global_option"
+    )
+    for setting in interface_model.setting or []:
+        setting.option = keep_defined(setting.option, f"setting {setting.name}")
+    for resource in interface_model.resource:
+        resource.option = keep_defined(resource.option, f"resource {resource.name}")
+    for controller in interface_model.controller:
+        controller.option = keep_defined(
+            controller.option, f"controller {controller.name}"
+        )
+    for task in interface_model.task:
+        task.option = keep_defined(task.option, f"任务 {task.name}")
+    for option_name, option in interface_model.option.items():
+        for case in option.cases or []:
+            case.option = keep_defined(
+                case.option, f"选项 {option_name} 的 case {case.name}"
+            )
+
+    task_names = {task.name for task in interface_model.task}
+    for preset in interface_model.preset:
+        for preset_task in preset.task or []:
+            # __MXU_RANDOM_START__ 这类 MXU 客户端伪任务本来就不是 interface 任务
+            if preset_task.name in task_names or preset_task.name.startswith("__MXU_"):
+                continue
+            logger.warning(
+                "MaaFW ProjectInterface preset %s 引用的任务 %s 不存在（多半在缺失的 "
+                "import 文件 %s 里），应用该预设时跳过它",
+                preset.name,
+                preset_task.name,
+                missing_text,
+            )
 
 
 def _validate_option_references(interface_model: MaaFWInterface) -> None:
@@ -759,6 +1010,21 @@ def _sanitize_pretasks(interface_model: MaaFWInterface) -> None:
     interface_model.pretask = valid_pretasks or None
 
 
+def _warn_task_repeat_counts(interface_model: MaaFWInterface) -> None:
+    """``repeatable`` 为 true、``repeat_count`` 却不是正整数（-1、0……）：按 1 份处理并告警。"""
+
+    for task in interface_model.task:
+        if task.repeatable is not True or task.repeat_count is None:
+            continue
+        count = coerce_option_count(task.repeat_count)
+        if count is None or count < 1:
+            logger.warning(
+                "MaaFW ProjectInterface 任务 %s 的 repeat_count 不是正整数，按 1 份处理：%s",
+                task.name,
+                json.dumps(task.repeat_count, ensure_ascii=False, default=str),
+            )
+
+
 def _warn_unsupported_option_types(interface_model: MaaFWInterface) -> None:
     for option_name, option in interface_model.option.items():
         if option.type not in SUPPORTED_OPTION_TYPES:
@@ -766,6 +1032,120 @@ def _warn_unsupported_option_types(interface_model: MaaFWInterface) -> None:
                 "MaaFW ProjectInterface option 类型暂不支持，已忽略：%s（type=%s）",
                 option_name,
                 option.type,
+            )
+
+
+def _warn_option_count_values(data: dict[str, Any]) -> None:
+    """``min_count`` / ``max_count`` 写法不对时告警：模型按没写处理（见 ``coerce_option_count``）。"""
+
+    options = data.get("option")
+    if not isinstance(options, dict):
+        return
+    for option_name, option in options.items():
+        if not isinstance(option, dict):
+            continue
+        for key in ("min_count", "max_count"):
+            if key not in option or option[key] is None:
+                continue
+            raw = option[key]
+            coerced = coerce_option_count(raw)
+            if coerced is None:
+                logger.warning(
+                    "MaaFW ProjectInterface option %s.%s 不是非负整数，已忽略：%s",
+                    option_name,
+                    key,
+                    json.dumps(raw, ensure_ascii=False, default=str),
+                )
+            elif not isinstance(raw, int) or isinstance(raw, bool):
+                logger.warning(
+                    "MaaFW ProjectInterface option %s.%s 应为数字，已按 %d 处理：%s",
+                    option_name,
+                    key,
+                    coerced,
+                    json.dumps(raw, ensure_ascii=False, default=str),
+                )
+
+
+def _sanitize_v210_option_fields(interface_model: MaaFWInterface) -> None:
+    """PI v2.10.0 / v2.10.1 的两类声明错误：告警并按宽松口径改写模型。
+
+    - input 字段 ``password: true`` 又写了 ``default``：协议禁止（密钥不该随 interface
+      分发），丢掉 default，界面与运行都不再用它。
+    - checkbox 的 ``min_count`` 超过 case 数：压到 case 数（最多只能要求全选）；
+      ``max_count`` 超过 case 数：等于不限，置空；``max_count`` 小于 ``min_count``：
+      两者矛盾，丢掉上限、保留下限（下限是「不能少选」的运行前提，上限只是界面约束）。
+    - 非 checkbox 写了这两个字段：不适用，置空。
+    """
+
+    for option_name, option in interface_model.option.items():
+        for input_item in option.inputs or []:
+            if input_item.password and input_item.default is not None:
+                logger.warning(
+                    "MaaFW ProjectInterface option %s 的输入字段 %s 是密码字段，"
+                    "协议不允许同时声明 default，已忽略 default",
+                    option_name,
+                    input_item.name,
+                )
+                input_item.default = None
+
+        if option.min_count is None and option.max_count is None:
+            continue
+        if option.type != "checkbox":
+            logger.warning(
+                "MaaFW ProjectInterface option %s 不是 checkbox，min_count / max_count 已忽略",
+                option_name,
+            )
+            option.min_count = None
+            option.max_count = None
+            continue
+
+        case_count = len(option.cases or [])
+        if option.min_count is not None and option.min_count > case_count:
+            logger.warning(
+                "MaaFW ProjectInterface option %s 的 min_count=%d 超过 case 数 %d，已按 %d 处理",
+                option_name,
+                option.min_count,
+                case_count,
+                case_count,
+            )
+            option.min_count = case_count
+        if option.max_count is not None and option.max_count > case_count:
+            logger.warning(
+                "MaaFW ProjectInterface option %s 的 max_count=%d 超过 case 数 %d，已按不限处理",
+                option_name,
+                option.max_count,
+                case_count,
+            )
+            option.max_count = None
+        if (
+            option.min_count is not None
+            and option.max_count is not None
+            and option.max_count < option.min_count
+        ):
+            logger.warning(
+                "MaaFW ProjectInterface option %s 的 max_count=%d 小于 min_count=%d，已忽略 max_count",
+                option_name,
+                option.max_count,
+                option.min_count,
+            )
+            option.max_count = None
+        if option.min_count == 0:
+            option.min_count = None
+
+        default_names = (
+            set(option.default_case) if isinstance(option.default_case, list) else set()
+        )
+        default_count = len({case.name for case in option.cases or []} & default_names)
+        if (option.min_count is not None and default_count < option.min_count) or (
+            option.max_count is not None and default_count > option.max_count
+        ):
+            logger.warning(
+                "MaaFW ProjectInterface option %s 的 default_case 选了 %d 项，"
+                "不满足 min_count=%s / max_count=%s；未改动过该选项的用户运行前需要先调整",
+                option_name,
+                default_count,
+                option.min_count,
+                option.max_count,
             )
 
 
@@ -782,37 +1162,33 @@ def _validate_presets(interface_model: MaaFWInterface) -> None:
         reachable_options_by_task[task.name] = collected
 
     for preset in interface_model.preset:
-        seen_task_names: set[str] = set()
+        # 同一任务在 preset 里出现多次是合法的（MRA 周常配置把「自动出征」排了 9 次），
+        # 消费端 build_interface_preset_snapshot 把后续出现展开成重复任务实例，所以每一次
+        # 出现的选项值都要校验。MXU 写进 preset 的 __MXU_RANDOM_START__ 这类客户端伪任务
+        # 不是 interface 任务，下面按「任务不存在」跳过，重复多少次都无所谓。
         for preset_task in preset.task or []:
-            if preset_task.name in seen_task_names:
-                # MXU 会把 __MXU_RANDOM_START__ 这类客户端伪任务写进 preset，同一个
-                # preset 里出现多次是正常的。消费端 build_interface_preset_snapshot
-                # 本来就只认第一次出现，这里跟着忽略即可，不该让整份 interface 读不出来。
-                logger.warning(
-                    "MaaFW ProjectInterface preset 中存在重复任务，已忽略后一次：%s.%s",
-                    preset.name,
-                    preset_task.name,
-                )
-                continue
-            seen_task_names.add(preset_task.name)
-
             task = task_name_map.get(preset_task.name)
             if task is None:
                 continue
 
             reachable_options = reachable_options_by_task.get(task.name, set())
-            for option_name, option_value in (preset_task.option or {}).items():
-                if option_name not in reachable_options:
-                    continue
+            if not preset_task.option:
+                continue
+            sanitized_options: dict[str, Any] = {}
+            for option_name, option_value in preset_task.option.items():
                 option = option_map.get(option_name)
-                if option is None:
+                if option_name not in reachable_options or option is None:
+                    sanitized_options[option_name] = option_value
                     continue
-                _validate_option_case_values(
+                sanitized = _sanitize_option_case_values(
                     option_name,
                     option,
                     option_value,
                     location=f"preset {preset.name}.task {task.name}",
                 )
+                if sanitized is not None:
+                    sanitized_options[option_name] = sanitized
+            preset_task.option = sanitized_options
 
 
 def _build_common_option_names(interface_model: MaaFWInterface) -> list[str]:
@@ -828,6 +1204,19 @@ def _build_common_option_names(interface_model: MaaFWInterface) -> list[str]:
 def _load_interface_model_with_context(
     base_dir: str | Path,
 ) -> tuple[MaaFWInterface, _LoadContext]:
+    collector = _LoadWarningCollector()
+    logger.addHandler(collector)
+    try:
+        interface_model, context = _load_interface_model_uncollected(base_dir)
+    finally:
+        logger.removeHandler(collector)
+    interface_model._load_warnings = list(collector.messages)
+    return interface_model, context
+
+
+def _load_interface_model_uncollected(
+    base_dir: str | Path,
+) -> tuple[MaaFWInterface, _LoadContext]:
     resolved_base_dir = Path(base_dir).resolve()
     if not resolved_base_dir.exists() or not resolved_base_dir.is_dir():
         raise MaaFWInterfaceLoadError("请设置 MaaFW 项目目录")
@@ -835,6 +1224,7 @@ def _load_interface_model_with_context(
     context = _LoadContext()
     root_path = _resolve_interface_path(resolved_base_dir)
     root_data = _read_json_dict(root_path, context)
+    _ensure_pi_v2(root_data)
     _warn_unsupported_root_fields(root_data, root_path)
     merged_data = copy.deepcopy(root_data)
     merge_state = _MergeState()
@@ -850,14 +1240,20 @@ def _load_interface_model_with_context(
         context,
     )
     _expand_scan_select_options(merged_data, resolved_base_dir, context)
+    _warn_preset_value_coercions(merged_data)
+    _warn_input_default_coercions(merged_data)
+    _warn_option_count_values(merged_data)
 
     try:
         interface_model = MaaFWInterface.model_validate(merged_data)
     except Exception as exc:
         raise MaaFWInterfaceLoadError(f"校验 interface 配置失败: {exc}") from exc
 
+    _prune_references_lost_with_imports(interface_model, merge_state.missing_imports)
     _sanitize_pretasks(interface_model)
+    _warn_task_repeat_counts(interface_model)
     _warn_unsupported_option_types(interface_model)
+    _sanitize_v210_option_fields(interface_model)
     _validate_task_context_constraints(interface_model)
     _validate_option_references(interface_model)
     _validate_presets(interface_model)
@@ -1087,6 +1483,9 @@ def _load_from_disk_cache(
             return None
 
         interface_model = MaaFWInterface.model_validate(payload["interface"])
+        interface_model._load_warnings = [
+            item for item in payload.get("warnings") or [] if isinstance(item, str)
+        ]
         _touch_disk_cache(cache_path)
         logger.info(f"读取 MaaFW interface 缓存：{root_path}")
         return current_signature, interface_model, dependency_paths, scan_select_specs
@@ -1117,6 +1516,7 @@ def _save_disk_cache(
         ],
         "signature": _signature_to_json(signature),
         "interface": interface_model.model_dump(mode="json", by_alias=True),
+        "warnings": interface_load_warnings(interface_model),
     }
 
     try:

@@ -29,6 +29,7 @@ from app.task.emulator_core import close_emulator
 from app.task.general.tools import execute_script_task
 from app.task.MaaFW.tools.core.controller_win32.service import (
     MaaFWWin32ControllerService,
+    controller_has_window_rules,
 )
 from app.task.MaaFW.tools.core.interface.models import (
     MaaFWController,
@@ -72,6 +73,13 @@ from .embedded_project import resolve_maafw_project_root
 from .flavor import resolve_flavor
 from .game_package import resolve_game_package
 from .game_resolution import UnityGameResolutionOverride, parse_resolution_option
+from .option_secrets import (
+    REDACTED_SECRET_TEXT,
+    collect_plan_password_values,
+    open_task_snapshot,
+    redact_secret_text,
+    secret_log_variants,
+)
 from .project_path import release_project_path, try_reserve_project_path
 from .update_credentials import resolve_update_proxy_url
 
@@ -110,6 +118,10 @@ _ADB_INPUT_EMULATOR_EXTRAS = 1 << 3
 # 候选里摘掉，让文本走 MinitouchAndAdbKey 的 `InputText` 命令并替换成 ldconsole。
 # 触控仍是 minitouch 协议，雷电 adbd 本身是 root，minitouch 可用（实测 init 508 ms）。
 _ADB_INPUT_LDPLAYER_CONSOLE_TEXT = (1 << 1) | 1
+# 名字与取值照抄 MaaFramework 绑定库 ``maa/define.py``（main 分支）。Foreground /
+# Background 是组合名：原生层在组合里按顺序择一可用的方式，FOS、MaaNTE、mpa 的默认
+# Win32 控制器写的就是 Background。运行时绑定库 / 原生库认不认得某个值由 worker 再判一次
+# （runner._supported_win32_method），这里只负责把名字翻成数。
 _WIN32_SCREENCAP_METHODS = {
     "GDI": 1,
     "FramePool": 1 << 1,
@@ -117,6 +129,8 @@ _WIN32_SCREENCAP_METHODS = {
     "DXGI_DesktopDup_Window": 1 << 3,
     "PrintWindow": 1 << 4,
     "ScreenDC": 1 << 5,
+    "Foreground": (1 << 3) | (1 << 5),
+    "Background": (1 << 1) | (1 << 4),
 }
 _WIN32_INPUT_METHODS = {
     "Seize": 1,
@@ -128,6 +142,8 @@ _WIN32_INPUT_METHODS = {
     "PostMessageWithCursorPos": 1 << 6,
     "SendMessageWithWindowPos": 1 << 7,
     "PostMessageWithWindowPos": 1 << 8,
+    "Interception": 1 << 9,
+    "AnchoredTouch": 1 << 10,
 }
 _SUBPROCESS_OUTPUT_ENCODINGS = ("utf-8", "gbk", "shift_jis", "utf-16")
 _RUN_OVERVIEW_LOG_VALUE_LIMIT = 1200
@@ -137,6 +153,9 @@ _FRAMEWORK_UI_LOG_MAX_CHARS = 1200
 _RELAY_YIELD_EVERY_LINES = 50
 # 启动/附着游戏后定位其窗口的等待秒数
 WINDOW_SEARCH_TIMEOUT_SECONDS = 5.0
+_WIN32_NO_WINDOW_RULES_MESSAGE = (
+    "该控制器没有声明窗口匹配规则，请在脚本设置里指定窗口句柄或换一个控制器"
+)
 
 # 环境级失败：解释器自身坏了、依赖没装上。重试只会原样再失败一遍，而每次重试
 # 还要重启一遍模拟器/游戏——默认 RunTimesLimit=3，白等好几分钟才告诉用户同一件事。
@@ -514,6 +533,8 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     selected_preset=selected_preset,
                 )
             )
+            for warning in self.run_plan.warnings:
+                self._append_log(f"MaaFW 运行计划提示: {warning}")
 
         try:
             # 执行任务前脚本（每用户仅一次，重试不重复跑）。
@@ -715,6 +736,17 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         if (
             run_plan.tasks
             and run_plan.controllerType == "Win32"
+            and not _optional_int(self.script_config.get("Device", "HWnd"))
+            and not controller_has_window_rules(
+                _find_controller(interface_model, run_plan.controllerName)
+            )
+        ):
+            # 控制器一条窗口匹配规则都没写，又没指定句柄：以前会随便抓桌面上第一个窗口。
+            # 在拉起游戏之前就报。
+            game_path_error = _WIN32_NO_WINDOW_RULES_MESSAGE
+        elif (
+            run_plan.tasks
+            and run_plan.controllerType == "Win32"
             and self._mas_manages_game_launch()
         ):
             game_path = self._resolve_game_launch_path()
@@ -747,6 +779,9 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         # 没有钩子，仍按快照直接建计划，行为不变。
         flavor = resolve_flavor(self.script_config)
         try:
+            # 密码字段（PI v2.10.0）在配置里是密文，只在这份内存副本里解开交给计划；
+            # 用户配置本身不动，运行后的整表写回也就写不出明文。
+            task_snapshot = open_task_snapshot(task_snapshot, interface_model)
             if flavor is None:
                 return MaaFWRunnerService().build_plan(
                     self.project_path,
@@ -856,19 +891,25 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     self.script_config.get("Device", "Win32ScreencapMethod"),
                     win32_config.screencap if win32_config else None,
                     _WIN32_SCREENCAP_METHODS,
-                    _WIN32_SCREENCAP_METHODS["DXGI_DesktopDup"],
+                    "DXGI_DesktopDup",
+                    label=f"controller {controller.name} 的 Win32 截图方式",
+                    warn=self._append_log,
                 ),
                 mouseMethod=_resolve_win32_method(
                     self.script_config.get("Device", "Win32MouseMethod"),
                     win32_config.mouse if win32_config else None,
                     _WIN32_INPUT_METHODS,
-                    _WIN32_INPUT_METHODS["Seize"],
+                    "Seize",
+                    label=f"controller {controller.name} 的 Win32 鼠标输入方式",
+                    warn=self._append_log,
                 ),
                 keyboardMethod=_resolve_win32_method(
                     self.script_config.get("Device", "Win32KeyboardMethod"),
                     win32_config.keyboard if win32_config else None,
                     _WIN32_INPUT_METHODS,
-                    _WIN32_INPUT_METHODS["Seize"],
+                    "Seize",
+                    label=f"controller {controller.name} 的 Win32 键盘输入方式",
+                    warn=self._append_log,
                 ),
             )
 
@@ -1222,6 +1263,8 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         parsed_hwnd = _optional_int(configured_hwnd)
         if parsed_hwnd:
             return parsed_hwnd
+        if not controller_has_window_rules(controller):
+            raise RuntimeError(_WIN32_NO_WINDOW_RULES_MESSAGE)
         matches = await asyncio.to_thread(_match_controller_windows, controller)
         if not matches:
             raise RuntimeError("未找到匹配 MaaFW Win32 controller 的窗口")
@@ -1277,6 +1320,9 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         def send_runner_log(message: str) -> None:
             loop.call_soon_threadsafe(self._append_log, message)
 
+        # 密码字段（PI v2.10.0）的原文会随 override 进原生日志与 worker 输出：复制、转发、
+        # 摘录失败原因前都换成占位（协议要求不得把原文写进日志）。
+        secrets = self._secret_log_variants()
         prepare_cancel_event = threading.Event()
         # 与运行前更新 / 预检同一份解析：脚本级 Update.ProxyAddress 优先，留空跟随
         # 全局。运行时装依赖也走它，否则「更新能走代理、真跑时装不上」。
@@ -1432,6 +1478,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     line = _decode_subprocess_output(raw_line).strip()
                 if not line:
                     continue
+                line = redact_secret_text(line, secrets)
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -1473,6 +1520,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 ).strip()
                 if not line:
                     continue
+                line = redact_secret_text(line, secrets)
                 write_framework_log("worker-stderr", line)
                 stderr_lines.append(line)
                 del stderr_lines[:-20]
@@ -1518,6 +1566,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     native_debug_log_offset,
                     native_debug_log_rotations,
                     native_log_path,
+                    secrets,
                 )
             except Exception as exc:
                 self._append_log(f"MaaFW 原生日志复制失败: {exc}")
@@ -1542,6 +1591,15 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             # the worker exits without a protocol result.
             message += ": MaaFW worker 未返回任务结果，完整原生日志已保存到本次运行的 .maafw.log"
         raise RuntimeError(message)
+
+    def _secret_log_variants(self) -> list[str]:
+        """本次运行计划里 password 字段的值在日志里可能出现的写法（见 option_secrets）。"""
+
+        if self.run_plan is None or self.interface_model is None:
+            return []
+        return secret_log_variants(
+            collect_plan_password_values(self.run_plan, self.interface_model)
+        )
 
     async def _wait_worker_exit(
         self,
@@ -1604,7 +1662,9 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 if process.returncode is not None and self.pretask_process is process:
                     self.pretask_process = None
 
-            detail = _decode_subprocess_output(output).strip()
+            detail = redact_secret_text(
+                _decode_subprocess_output(output).strip(), self._secret_log_variants()
+            )
             if detail:
                 for line in detail.splitlines():
                     self._append_log(f"[运行前设置] {line}")
@@ -2405,13 +2465,30 @@ def _resolve_win32_method(
     configured_value: Any,
     interface_method: str | None,
     method_values: dict[str, int],
-    default: int,
+    default_name: str,
+    *,
+    label: str = "Win32 控制方式",
+    warn: Callable[[str], None] | None = None,
 ) -> int:
+    """脚本级配置的数值优先，其次 interface 里写的名字，最后是默认方式。
+
+    名字不认识时退回默认方式并**告警**：以前是静默换成 DXGI_DesktopDup / Seize，
+    项目要的后台截图 / 后台输入悄悄变成前台，用户只看到游戏被抢了鼠标。
+    """
+
+    default = method_values[default_name]
     configured = _optional_int(configured_value) or 0
     if configured:
         return configured
     if interface_method:
-        return method_values.get(interface_method, default)
+        value = method_values.get(interface_method.strip())
+        if value is not None:
+            return value
+        message = (
+            f"MaaFW interface 里 {label}「{interface_method}」无法识别，"
+            f"已改用默认的 {default_name}"
+        )
+        (warn or logger.warning)(message)
     return default
 
 
@@ -2646,13 +2723,23 @@ def _copy_native_debug_log_delta(
     start_offset: int,
     known_rotations: frozenset[str],
     target: Path,
+    secrets: list[str] | tuple[str, ...] = (),
 ) -> int:
     """把本次运行写下的原生日志分片按顺序原样追加到 ``target``，返回复制的字节数。
 
     按字节复制、不解码不清洗，副本才和项目 ``debug/maafw.log`` 完全一致。追加而不是
     覆盖：同一次代理的几轮重试共用一个文件名，每轮的分片挨着放，原生日志自己的
     「MAA Process Start」头就是分界。逐个分片流式复制，一份可能有几十 MB。
+
+    唯一的改动是 ``secrets``（密码字段的原文及其 JSON 转义写法）：原生日志按 DBG 级别
+    记下整份 ``pipeline_override``（``MaaTaskerPostTask`` 的 ``[pipeline_override={...}]``），
+    密码会原样出现；给了就逐行换成占位（按 UTF-8 字节替换，其余字节不动）。
     """
+
+    secret_pairs = [
+        (secret.encode("utf-8"), REDACTED_SECRET_TEXT.encode("utf-8"))
+        for secret in secrets
+    ]
 
     copied = 0
     target_file: Any | None = None
@@ -2672,7 +2759,14 @@ def _copy_native_debug_log_delta(
                 target_file = target.open("ab")
             with source_path.open("rb") as source_file:
                 source_file.seek(source_offset)
-                shutil.copyfileobj(source_file, target_file)
+                if secret_pairs:
+                    for raw_line in source_file:
+                        for secret, placeholder in secret_pairs:
+                            if secret in raw_line:
+                                raw_line = raw_line.replace(secret, placeholder)
+                        target_file.write(raw_line)
+                else:
+                    shutil.copyfileobj(source_file, target_file)
                 copied += source_file.tell() - source_offset
     finally:
         if target_file is not None:

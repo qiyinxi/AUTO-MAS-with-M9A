@@ -62,6 +62,9 @@ class MaaFWRunPlan(BaseModel):
     projectLabel: str | None = None
     controllerName: str
     controllerType: str
+    # interface 里该 controller 的截图缩放声明（display_short_side / display_long_side /
+    # display_expand / display_raw 原样摘出），worker 建控制器后按它设截图目标尺寸。
+    controllerDisplay: dict[str, Any] = Field(default_factory=dict)
     resourceName: str
     resource: MaaFWResourceBundlePlan
     nativePluginPaths: list[MaaFWResolvedPath] = Field(default_factory=list)
@@ -70,6 +73,8 @@ class MaaFWRunPlan(BaseModel):
     piEnv: dict[str, str] = Field(default_factory=dict)
     tasks: list[MaaFWTaskRunPlan] = Field(default_factory=list)
     skippedTasks: list[MaaFWSkippedTaskPlan] = Field(default_factory=list)
+    # 建计划时降级处理的项（例如没设的快捷键被跳过），宿主写进用户可见的运行日志。
+    warnings: list[str] = Field(default_factory=list)
     # 项目 zh_cn 语言文件的内容，worker 用它翻译 pipeline focus 文案里的 ``$key``。
     # 随计划带进 worker，runner 自己不再读语言文件。
     i18n: dict[str, Any] = Field(default_factory=dict)

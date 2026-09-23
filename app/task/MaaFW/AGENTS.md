@@ -16,7 +16,7 @@ MaaFW 是**通用引擎**，不是专项：任何带 `interface.json` 的 MaaFra
   端点 docstring 会进 OpenAPI 生成物，搬业务时留在端点上原样不动。
 - `tools/embedded/`：宿主与核心包之间**唯一**的接缝（`runner_task`、`runtime_route`、
   `update_credentials`、`update_mirrors`、`project_path`、`env_cache`、`game_package`、
-  `game_resolution`、`update_progress`、`embedded_project`）。
+  `game_resolution`、`update_progress`、`embedded_project`、`option_secrets`）。
   要读 `Config`、发通知、碰宿主模型，只能在这里和 `embedded_manager.py` 里做。
 - `tools/core/`：六个核心包（interface / runner / runtime_pool / agent_env /
   project_update / controller_win32），按零宿主耦合设计。已知例外只有
@@ -100,8 +100,9 @@ MaaFW 是**通用引擎**，不是专项：任何带 `interface.json` 的 MaaFra
   谱系还有视图时再加它的 latest；一个视图都不剩的谱系整个收走，视图丢了但脚本还在的按导入来源保住；
   本进程起来之后建的不收。回收跑在后台、API 已在服务：删之前要在该谱系的 `lineage_lock` 内按盘上最新
   状态再判一次，否则判定之后刚登记的载荷会被一起删掉；整谱系收走时放锁后还会删锁文件和空目录，
-  所以 `DurableFileLock` 的等待方碰到目录没了要重建再等，不能把这次撞车报给调用方），随后 `clean_maafw_runtime_blobs` 删 `st_nlink == 1` 的 blob。本机实测：inode 被映射时只有被映射的
-  那个目录项删不掉 / 换不掉，同一 inode 的其它硬链接名随便删换（见 `blob_store.py` 模块说明）。
+  所以 `DurableFileLock` 的等待方碰到目录没了要重建再等，不能把这次撞车报给调用方），随后 `clean_maafw_runtime_blobs` 删 `st_nlink == 1` 的 blob。本机实测：inode 被映射（DLL 已加载）时
+  删不掉的是它的最后一个链接，与进程经由哪个名字加载无关——视图里的名字（含正被经由加载的
+  那个）都能删，只要库里的 blob 还在（见 `blob_store.py` 模块说明）。
 - **同一项目再建一个脚本**走 `/maafw/embedded/sources`（候选）+ `/maafw/embedded/clone`
   （`embedded_project.clone_embedded_copy`）：从源脚本挂着的载荷物化目标视图（源正在切换就取 journal
   的目标），不读源视图、不要源空闲、源的运行期状态不带；只预约目标（源还是没采纳的老副本、只能按目录
@@ -122,6 +123,9 @@ MaaFW 是**通用引擎**，不是专项：任何带 `interface.json` 的 MaaFra
   旧内容进 `local-modified` 留档。采纳失败的原样保留、下次再试。导入与采纳都把脚本记着的来源目录记进
   `lineage.json.knownSources`：视图丢了反查谱系重建、整谱系回收认「脚本还在」都看它（更新得来的载荷
   清单里没有导入目录）。
+- **只支持发行包形态**：源码仓里 agent 写成 `"child_exec": "uv"`（`uv run agent/main.py`）
+  这类开发者形态不支持、也不打算适配——发行包的打包流程会把它改写成
+  `./python/python.exe`，导入发行包即可。
 - Python agent 的解释器三种落法（`agent_env/planner.py`）：项目自带 `python/python.exe` 存在 →
   `project_python`；声明的是自带 Python 模式但文件不存在，或者裸写 `python` 让 PATH 去找
   （PI v2 示例与 MAA_Punish 的写法）→ 该项目专属隔离 venv（`isolated_venv`，按项目路径哈希
@@ -168,6 +172,25 @@ MaaFW 是**通用引擎**，不是专项：任何带 `interface.json` 的 MaaFra
   比较任务数时要减掉。
 - 选项 `type` 支持 `select / scan_select / switch / checkbox / input / hotkey`，后端下发与
   前端 `MaaFWTaskOptionEditor.vue` 两侧都有；未知 type 前端有兜底提示。
+- input 字段 `password: true`（PI v2.10.0）的值在 `Task.TaskSnapshot` 里是带 `mas-dpapi:` 前缀的
+  DPAPI 密文：`Config.update_user` 写入前按 interface 加密（`tools/embedded/option_secrets`），
+  `runner_task` 建计划前只在内存副本里解密；前端只看到密文、显示「已设置」。没有前缀的是旧明文，
+  照常使用、下次保存时加密。checkbox 的 `min_count` / `max_count`（v2.10.1）由加载器放宽成自洽值，
+  运行计划里不满足就报错（`MaaFWCheckboxCountError`），不静默截断。密码原文会随 override 进
+  原生日志（`MaaTaskerPostTask` 按 DBG 记整份 override），`runner_task` 复制原生日志、转发
+  worker 输出时按 `option_secrets.redact_secret_text` 换成占位；新增任何落盘 / 转发日志的路径都要过它。
+- 加载器写的告警（`logger.warning`）由加载器旁听收集、挂在模型上（`interface_load_warnings`），
+  随磁盘缓存保存，进运行计划的 `warnings`（运行日志开头）与导入报告；只给后端看的用
+  `extra=_LOG_ONLY`。发行包的毛病能降级就降级：缺 import 文件、scan_dir 不在、缺
+  interface_version（按 2）、input 的 default 写成数字、数字输入没填 / 填错（跳过该选项的
+  覆盖）都是告警，不整份拒绝。
+- 任务表里同名任务出现多次、`repeatable` + `repeat_count`（MFAA 私有扩展）都展开成
+  `__MAS_DUP__` 重复实例（`task_config.build_default_task_instances` / `build_repeat_instance_ids`，
+  前端「添加任务」按 `repeatCount` 一次加 N 份），不做 runner 循环。select 的私有 `default`
+  **故意不认**：作者自己的 MXU / MFAA 壳都不认，认了反而比作者更激进。
+- `agent.timeout`（秒）只决定等 agent 连上的预算（`runner.agent_connect_budget_seconds`，不写 /
+  -1 = 10 分钟），连上后照旧不限时；interface 写死的 `agent.identifier` 运行时拼上实例后缀，
+  纯数字（TCP 端口）原样用。
 
 ## 更新
 
