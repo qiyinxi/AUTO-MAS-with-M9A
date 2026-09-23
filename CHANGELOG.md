@@ -30,6 +30,18 @@
   - 开发流程：只影响贡献者、用户看不见的改动，不进公告。
 -->
 
+## [未发布]
+
+### 变更
+
+- 【MAA】库存保持的计划列表重新支持在 MAS 配置页直接编辑 (#958) by @1w1w11w1
+
+### 修复
+
+- 【MAA】修复静默模式下 MAA 启动后仍显示窗口的问题 (#953) by @1w1w11w1
+- 【MAA】修复 MAA 更新资源时误报内存不足、代理反复重试的问题（仅公测） (#955) by @jinghero
+- 【绝区零一条龙】修复自动代理再次运行时报错中断的问题（仅公测） (#962) by @AthenaHibou
+
 ## [v5.5.0-beta.8] - 2026-09-23
 
 ### 变更
@@ -376,6 +388,7 @@
 - OK-NTE专项 修复任务结束后异环启动器进程残留并持续占用内存的问题 by @qiyinxi by @HarcoChen
 - MAA专项 修复开启活动关优先后普通理智作战的理智药额度被静默清零的问题，两个作战任务各自使用独立理智药额度 by @qiyinxi by @HarcoChen
 
+[未发布]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.8...dev
 [v5.5.0-beta.8]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.7...v5.5.0-beta.8
 [v5.5.0-beta.7]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.6...v5.5.0-beta.7
 [v5.5.0-beta.6]: https://github.com/AUTO-MAS-Project/AUTO-MAS/compare/v5.5.0-beta.5...v5.5.0-beta.6

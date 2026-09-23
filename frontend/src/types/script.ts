@@ -184,13 +184,7 @@ export interface MaaEndScriptConfig {
     SetResolution: boolean
     CloseOnFinish: boolean
     RestoreDisplayType: 'Window' | 'Fullscreen'
-    RestoreResolution:
-      | 'Off'
-      | 'Original'
-      | '1920x1080'
-      | '2560x1440'
-      | '3840x2160'
-      | 'Custom'
+    RestoreResolution: 'Off' | 'Original' | '1920x1080' | '2560x1440' | '3840x2160' | 'Custom'
     RestoreResolutionWidth: number
     RestoreResolutionHeight: number
   }
@@ -600,7 +594,6 @@ export interface User {
     IfMall: boolean
     IfAward: boolean
     IfSwitchTheme: boolean
-    IfReclamation: boolean
     IfRecruit: boolean
     IfStartUp: boolean
     Queue?: unknown
@@ -608,6 +601,7 @@ export interface User {
     ActivityStageIndex?: number
     ActivityMedicineNumb?: number
     IfDepotMaintain?: boolean
+    DepotMaintainPlans?: string
     IfGreenTicketStore?: boolean
     SanityTaskType?: MaaEndTaskConfig['SanityTaskType']
     OperatorProgression?: MaaEndTaskConfig['OperatorProgression']
