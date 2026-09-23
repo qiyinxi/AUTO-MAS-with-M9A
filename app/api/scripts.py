@@ -57,6 +57,7 @@ from app.task.MaaFW.tools.core.automas_maafw_project_update.updater import (
 )
 from app.task.MaaFW.tools.embedded.embedded_project import (
     EmbeddedProjectError,
+    GroupMember,
     clone_embedded_copy,
     copy_is_healthy,
     embedded_project_dir,
@@ -65,6 +66,7 @@ from app.task.MaaFW.tools.embedded.embedded_project import (
     import_embedded_project,
     inherit_embedded_record,
     read_interface_version,
+    read_view_marker,
     resolve_maafw_project_root,
     shell_hint_from_report,
 )
@@ -1248,6 +1250,12 @@ async def _embed_from_source(
     环境准备进行到一半时换树，两边都会坏。
     """
 
+    try:
+        channel = str(
+            _maafw_script_config(script_id).get("Update", "Channel") or "stable"
+        )
+    except (KeyError, ValueError, TypeError):
+        channel = "stable"
     reservation = await try_reserve_project_path(embedded_project_dir(script_id))
     if reservation is None:
         return None, _EMBEDDED_COPY_BUSY
@@ -1260,6 +1268,7 @@ async def _embed_from_source(
             script_id,
             source_path,
             progress=_embedded_import_progress(publish),
+            channel=channel,
         )
         publish("imported", "success", "导入完成", 100.0)
     except EmbeddedProjectError as exc:
@@ -1279,7 +1288,48 @@ async def _embed_from_source(
         },
     )
     await _apply_project_flavor(script_id)
+    await _propagate_view_to_group(script_id, channel)
     return None, ""
+
+
+async def _propagate_view_to_group(script_id: str, channel: str) -> None:
+    """导入之后，把同项目同渠道里还挂在别的版本上的空闲脚本切到组当前版本（§3.5「本地
+    导入并组」）。运行中 / 被占用的跳过，它们下次运行前自己对齐。失败只记日志。"""
+
+    view = embedded_project_dir(script_id)
+    marker = await asyncio.to_thread(read_view_marker, view)
+    if marker is None:
+        return
+    # 遍历脚本表必须在事件循环线程上做（工作线程里遍历会撞 dict changed size）
+    members = _maafw_group_members(script_id)
+    try:
+        source_name = str(
+            _maafw_script_config(script_id).get("Info", "Name") or script_id[:8]
+        )
+    except (KeyError, ValueError, TypeError):
+        source_name = script_id[:8]
+    # 切换只把文件摆好：被切的兄弟各自在后台确认一次运行环境，别把 isolated_venv 的
+    # 重建留到它们下一次运行、游戏已经起来的时候（§3.1 第 8 步）。切换时拿的预约直接
+    # 交给确认线程，两步之间不留空档。
+    from app.task.MaaFW.tools.embedded.view_update import propagate_and_confirm
+
+    try:
+        result = await asyncio.to_thread(
+            propagate_and_confirm,
+            str(marker["lineage"]),
+            channel,
+            str(marker["payload"]),
+            members,
+            switched_by={"scriptId": script_id, "name": source_name},
+        )
+    except Exception as exc:  # noqa: BLE001 - 同步兄弟失败不影响本次导入
+        logger.opt(exception=True).warning(f"导入后同步同项目脚本失败：{exc}")
+        return
+    if result.switched or result.skipped or result.failed:
+        logger.info(
+            f"MFW 脚本 {script_id} 导入后同步同项目脚本：已切换 {result.switched}，"
+            f"跳过 {result.skipped}，失败 {result.failed}"
+        )
 
 
 _EmbeddedImportPublish = Callable[[str, str, str, float | None], None]
@@ -1541,6 +1591,14 @@ def _embedded_summary_lines(script_id: str) -> list[str]:
         bundled.append(f"Python {report['bundledPythonVersion']}")
     if bundled:
         details.append(f"项目自带 {'、'.join(bundled)}")
+    current = str(status.get("version") or "")
+    if current:
+        siblings = int(status.get("siblingCount") or 0)
+        details.append(
+            f"当前版本 {current}（与 {siblings} 个脚本共用）"
+            if siblings
+            else f"当前版本 {current}"
+        )
     if details:
         lines.append("；".join(details))
     return lines
@@ -1602,10 +1660,6 @@ async def list_maafw_embedded_sources(
     return MaaFWEmbeddedSourcesOut(data=await asyncio.to_thread(_collect))
 
 
-_EMBEDDED_SOURCE_BUSY = "源脚本正在运行，运行结束后再复用它的项目"
-_EMBEDDED_SOURCE_COPY_BUSY = "源脚本的项目正在更新或准备环境，请稍后再复用"
-
-
 @router.post(
     "/maafw/embedded/clone",
     tags=["MaaFW"],
@@ -1623,6 +1677,8 @@ async def clone_maafw_embedded(
     ``Info.Path`` 与 ``Embedded.*`` 沿用源脚本的记录；类型随项目（M9A 项目 → M9A）。
     用户、任务队列与运行设置不带——那是「复制脚本」的事。
     """
+    # 载荷 + 视图口径：新视图从源脚本挂着的载荷物化（大文件与载荷共用，源的运行期状态
+    # 不带），源脚本运行中也能建，只预约目标。docstring 会进 OpenAPI 生成物，保持原文。
 
     try:
         script_config = _maafw_script_config(payload.scriptId)
@@ -1637,45 +1693,32 @@ async def clone_maafw_embedded(
         )
     if busy := _embedded_busy_reason(script_config):
         return MaaFWEmbeddedStatusOut(code=400, status="error", message=busy)
-    if getattr(source_config, "is_locked", False):
-        return MaaFWEmbeddedStatusOut(
-            code=400, status="error", message=_EMBEDDED_SOURCE_BUSY
-        )
 
     target_dir = embedded_project_dir(payload.scriptId)
-    source_dir = embedded_project_dir(payload.sourceScriptId)
     # 老脚本换项目：目标原有副本钉定的版本在克隆后可能就没人用了
     previous_version = await _previous_maafw_version(target_dir)
-    # 两边的副本路径都要预约：源在更新落地 / 准备环境时克隆会带走半截树，
-    # 目标正被别的入口导入时更不能同时写。
+    # 只预约目标：源脚本挂的是不可变载荷（正在切换就取 journal 的目标），物化不读源视图，
+    # 源在运行 / 更新 / 准备环境都不影响。目标正被别的入口导入时不能同时写。
     target_reservation = await try_reserve_project_path(target_dir)
     if target_reservation is None:
         return MaaFWEmbeddedStatusOut(
             code=400, status="error", message=_EMBEDDED_COPY_BUSY
         )
     try:
-        source_reservation = await try_reserve_project_path(source_dir)
-        if source_reservation is None:
-            return MaaFWEmbeddedStatusOut(
-                code=400, status="error", message=_EMBEDDED_SOURCE_COPY_BUSY
-            )
-        try:
-            # 目标已有副本（老脚本换项目）由服务层在克隆成功后原子换掉，失败时原样放回。
-            cloned = await asyncio.to_thread(
-                clone_embedded_copy, payload.sourceScriptId, payload.scriptId
-            )
-        except EmbeddedProjectError as exc:
-            return MaaFWEmbeddedStatusOut(
-                code=400, status="error", message=f"克隆失败: {exc}"
-            )
-        except Exception as exc:  # noqa: BLE001 - 文件系统异常也要原样给用户
-            return MaaFWEmbeddedStatusOut(
-                code=400,
-                status="error",
-                message=f"克隆失败: {type(exc).__name__}: {exc}",
-            )
-        finally:
-            await release_project_path(source_reservation)
+        # 目标已有视图（老脚本换项目）在新视图建好后原子换掉，失败时原样不动。
+        cloned = await asyncio.to_thread(
+            clone_embedded_copy, payload.sourceScriptId, payload.scriptId
+        )
+    except EmbeddedProjectError as exc:
+        return MaaFWEmbeddedStatusOut(
+            code=400, status="error", message=f"克隆失败: {exc}"
+        )
+    except Exception as exc:  # noqa: BLE001 - 文件系统异常也要原样给用户
+        return MaaFWEmbeddedStatusOut(
+            code=400,
+            status="error",
+            message=f"克隆失败: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_project_path(target_reservation)
     if not cloned:
@@ -1868,7 +1911,7 @@ async def update_maafw_project(
 
     # 编辑页「更新过程」面板：阶段、下载 / 覆盖进度与逐行日志全程推给前端。
     # 更新实现的回调既会从事件循环里来（下载在协程里跑），也会从工作线程里来
-    # （apply_package_transaction 跑在 to_thread 里），统一跨回循环再发。
+    # （新版本的构建 / 预检 / 登记跑在 to_thread 里），统一跨回循环再发。
     tracker = MaaFWUpdateProgressTracker()
     loop = asyncio.get_running_loop()
 
@@ -1972,8 +2015,8 @@ async def update_maafw_project(
             ),
         )
 
-    # 手动更新后跑不起来和自动更新是同一种坏：提交前同样真建一次运行环境，
-    # 建不出来就回滚（预检失败也写备忘，但手动路径不读备忘——它就是强制重试）。
+    # 手动更新后跑不起来和自动更新是同一种坏：登记前同样在新版本上真建一次运行环境，
+    # 建不出来就丢掉新版本（预检失败也按谱系写备忘，但手动路径不读备忘——它就是强制重试）。
     # 这几个模块会拉起 runtime_pool 与 agent_env，只在真要用时导入。
     import functools
     import threading
@@ -1999,55 +2042,65 @@ async def update_maafw_project(
     from app.task.MaaFW.tools.embedded.update_mirrors import (
         github_release_mirror_urls,
     )
+    from app.task.MaaFW.tools.embedded.view_update import (
+        memo_path_factory,
+        run_view_update,
+    )
 
-    route = await asyncio.to_thread(
-        lambda: runtime_pool_route_from_service(MaaFWRuntimePoolService())
-    )
-    # 记下更新前钉定的 maafw 版本：提交后若换了版本，旧 runtime 不必再等宽限。
-    previous_version = await asyncio.to_thread(previous_maafw_version, root_path)
-    precheck_failure: dict[str, Any] = {}
-    # 不把 report_progress 交给环境准备：它的收尾事件 completed / failed 会被
-    # 进度跟踪器当成更新终态，而事务此时还在 post_validating。
-    post_validate = build_precheck_validator(
-        # 预检里的 uv / pip 子进程也走脚本级代理；用 partial 绑上去，
-        # ``PrepareProjectEnvironment`` 的签名不变。
-        prepare=functools.partial(
-            MaaFWEmbeddedManager._prepare_project_environment_sync,
-            proxy_url=proxy_url,
-        ),
-        cancel_event=threading.Event(),
-        send_log=send_update_log,
-        agent_env_root=precheck_agent_root(route.root),
-        failure=precheck_failure,
-        previous_version=current_version,
-        project_name=getattr(interface, "name", None),
-    )
-    # 只查版本随时可以；真落地要等运行结束：运行中的 worker 正从这棵树读资源、
-    # 加载库，包一落地就是半新半旧。项目路径的内存预约只有运行前检查那一小段
-    # 才拿着，挡不住这里，得看脚本锁。
+    # 只查版本随时可以；真切换要等运行结束（与 dev 一致，运行中的手动更新不支持）：
+    # 运行中的脚本只经兄弟脚本的更新被动 pending，跑完后切。
     if getattr(script_config, "is_locked", False):
         return MaaFWProjectUpdateOut(
             code=400, status="error", message=_UPDATE_SCRIPT_BUSY
         )
-    # 下载 + 落地要几分钟，锁只在这一刻查过一次：期间开始的运行会撞上半新半旧的树。
-    # 整段持有项目预约，运行前检查看到预约就按「正在更新」跳过。
+    # 下载 + 构建 + 预检要几分钟，锁只在这一刻查过一次：整段持有本视图的项目预约，
+    # 运行前检查看到预约就按「正在更新」跳过；切换与之后的运行环境确认都在这段预约里。
     apply_reservation = await try_reserve_project_path(root_path)
     if apply_reservation is None:
         return MaaFWProjectUpdateOut(
             code=400, status="error", message=_UPDATE_SCRIPT_BUSY
         )
 
+    precheck_failure: dict[str, Any] = {}
+    script_name = str(script_config.get("Info", "Name") or payload.scriptId[:8])
     try:
-        # 仓库、tag、资产名等 GitHub 参数不再传入：核心包从 interface.json 与
-        # 目录名自行推断。**source_config 必须传**：它带着用户选定的下载源，
-        # 漏了就会退回缺省的 GitHub——check 说走 Mirror 酱、apply 却从 GitHub
-        # 下载，正是本次设计要禁掉的静默换源。
-        # 检查 / 下载 / 覆盖 / 校验的收尾事件（completed / failed）由更新实现
-        # 自己经 progress 发出，这里不再补发。
-        try:
-            result = await update_maafw_project_if_needed(
-                root_path,
-                interface,
+        route = await asyncio.to_thread(
+            lambda: runtime_pool_route_from_service(MaaFWRuntimePoolService())
+        )
+        # 记下更新前钉定的 maafw 版本：切换后若换了版本，旧 runtime 不必再等宽限。
+        previous_version = await asyncio.to_thread(previous_maafw_version, root_path)
+
+        async def core_call(view_path: Path, target: Any, after_register: Any) -> Any:
+            view_interface = await asyncio.to_thread(
+                lambda: load_interface_model_cached(view_path, force_reload=True)
+            )
+            memo_path_for = memo_path_factory(target.lineage)
+            # 不把 report_progress 交给环境准备：它的收尾事件 completed / failed 会被
+            # 进度跟踪器当成更新终态，而此时还在 post_validating。
+            post_validate = build_precheck_validator(
+                # 预检里的 uv / pip 子进程也走脚本级代理；用 partial 绑上去，
+                # ``PrepareProjectEnvironment`` 的签名不变。
+                prepare=functools.partial(
+                    MaaFWEmbeddedManager._prepare_project_environment_sync,
+                    proxy_url=proxy_url,
+                ),
+                cancel_event=threading.Event(),
+                send_log=send_update_log,
+                agent_env_root=precheck_agent_root(route.root),
+                failure=precheck_failure,
+                previous_version=str(view_interface.version or ""),
+                project_name=getattr(view_interface, "name", None),
+                memo_path_for=memo_path_for,
+            )
+            # 仓库、tag、资产名等 GitHub 参数不再传入：核心包从 interface.json 与
+            # 目录名自行推断。**source_config 必须传**：它带着用户选定的下载源，
+            # 漏了就会退回缺省的 GitHub——check 说走 Mirror 酱、apply 却从 GitHub
+            # 下载，正是本次设计要禁掉的静默换源。
+            # 检查 / 下载 / 构建 / 预检的收尾事件（completed / failed）由更新实现
+            # 自己经 progress 发出，这里不再补发。
+            return await update_maafw_project_if_needed(
+                view_path,
+                view_interface,
                 mirror_cdk=source_config["mirror_cdk"],
                 channel=source_config["channel"],
                 source_config=source_config,
@@ -2055,15 +2108,47 @@ async def update_maafw_project(
                 send_log=send_update_log,
                 progress=report_progress,
                 post_validate=post_validate,
-                # 同步 HTTP 请求不该跟着另一次自动更新 / 预检等几分钟。
-                project_lock_timeout=_MAAFW_MANUAL_UPDATE_LOCK_TIMEOUT_SECONDS,
-                # 落在副本上：只写 interface 白名单内的条目。
                 projection=True,
                 # 手动更新与运行前自动更新用同一套加速镜像，否则「手动快、自动慢」。
                 github_mirror_urls=github_release_mirror_urls,
+                payload=target,
+                after_register=after_register,
             )
-        finally:
-            await release_project_path(apply_reservation)
+
+        try:
+            outcome = await run_view_update(
+                payload.scriptId,
+                channel=source_config["channel"],
+                # 登记之后（持谱系锁、事件循环上）再抄同组候选，别用等锁 / 下载前的快照。
+                members=lambda: _maafw_group_members(payload.scriptId),
+                reservation_held=True,
+                send_log=send_update_log,
+                core_call=core_call,
+                script_name=script_name,
+                # 同步 HTTP 请求不该跟着同项目另一次自动更新 / 预检等几分钟。
+                lock_timeout=_MAAFW_MANUAL_UPDATE_LOCK_TIMEOUT_SECONDS,
+            )
+        except EmbeddedProjectError as exc:
+            return MaaFWProjectUpdateOut(
+                code=400, status="error", message=f"MFW 项目更新失败: {exc}"
+            )
+        result = outcome.result
+        if outcome.updated:
+            # 切完就在自己这段预约里确认一次运行环境再放手：前端随后那次 prepare 会被
+            # 「环境已就绪」短路（页面记的路径没变），不能指望它接。
+            send_update_log("正在确认新版本的运行环境")
+            try:
+                await asyncio.to_thread(
+                    MaaFWEmbeddedManager._prepare_project_environment_sync,
+                    root_path,
+                    threading.Event(),
+                    send_update_log,
+                    proxy_url=proxy_url,
+                )
+                send_update_log("运行环境已就绪")
+            except Exception as exc:  # noqa: BLE001 - 确认失败不算更新失败，运行前还会再备
+                _maafw_update_logger.warning(f"更新后确认运行环境失败: {exc}")
+                send_update_log(f"运行环境确认失败（运行前会再准备）: {exc}")
     except MaaFWProjectUpdateError as exc:
         if exc.project_lock_busy:
             return MaaFWProjectUpdateOut(
@@ -2081,14 +2166,22 @@ async def update_maafw_project(
         return MaaFWProjectUpdateOut(
             code=500, status="error", message=f"MFW 项目更新失败: {exc}"
         )
+    finally:
+        await release_project_path(apply_reservation)
 
-    if bool(getattr(result, "updated", False)):
-        # 提交成功即预检建出了环境，上次运行前更新留下的备忘（若有）作废。
+    if outcome.registered_id:
+        # 登记成功即预检建出了环境，这个版本上次运行前更新留下的备忘（若有）作废。
         try:
-            await asyncio.to_thread(clear_runtime_precheck, root_path)
+            await asyncio.to_thread(
+                clear_runtime_precheck,
+                memo_path_factory(outcome.lineage)(
+                    str(getattr(result, "latest_version", "") or "")
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             _maafw_update_logger.warning(f"清理运行环境预检备忘失败: {exc}")
-        # 新版本的 runtime 预检时已建好；旧版本的那份此刻可能已无人引用。
+    if bool(getattr(result, "updated", False)):
+        # 新版本的 runtime 预检时已建好；旧版本的那份在谱系里最后一个视图离开后才可能无人引用。
         reconcile_in_background(
             "manual-update",
             updated_project_path=root_path,
@@ -2115,6 +2208,25 @@ async def update_maafw_project(
             **extra,
         ),
     )
+
+
+def _maafw_group_members(script_id: str) -> list[GroupMember]:
+    """同组候选：除自己外的 MFW 家族脚本（事件循环线程上抄出来）。运行中的标 ``busy``。"""
+
+    members: list[GroupMember] = []
+    for uid, config in Config.ScriptConfig.items():
+        if not isinstance(config, RuntimeMaaFWConfig) or str(uid) == script_id:
+            continue
+        members.append(
+            GroupMember(
+                script_id=str(uid),
+                channel=str(config.get("Update", "Channel") or "stable"),
+                busy=bool(getattr(config, "is_locked", False)),
+                name=str(config.get("Info", "Name") or ""),
+                proxy_url=resolve_update_proxy_url(config) or None,
+            )
+        )
+    return members
 
 
 def _maafw_agent_env_prepare_data(
