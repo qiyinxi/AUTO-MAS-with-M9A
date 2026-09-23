@@ -215,6 +215,12 @@ def resolve_user_control(
         # 直控但未勾选引擎：回落到「配了脚本路径」的引擎，与脚本管理页展示的
         # effective_engines 同源，避免用户选了直控却什么都不跑。
         engines = resolve_configured_engines(script_config)
+        from .account_switch import is_cloud_platform
+
+        if is_cloud_platform(script_config):
+            # 云·星穹铁道只有三月七能跑；回落时不把 SRA 带进来（显式勾了 SRA
+            # 的直控由 check() 报错）。
+            engines = tuple(engine for engine in engines if engine == "M7A")
     return HSRUserControlSettings(
         mode=mode,
         engines=engines,
@@ -349,9 +355,12 @@ class SRANativeControlProvider:
 class M7ADirectControlSession:
     """一次三月七直控运行：以真实安装根目录启动，跑三月七 GUI 里的 config.yaml。"""
 
-    def __init__(self, root: Path, log) -> None:
+    def __init__(self, root: Path, log, script_config: Any = None) -> None:
         self._root = root
         self._log = log
+        # 直控不写用户配置：云平台只靠环境变量钉（优先于 config.yaml）；客户端
+        # 平台不钉云开关，按三月七自己的配置跑（见 configure_m7a_runner）。
+        self._script_config = script_config
         self._runner: M7ARunner | None = None
         self._closed = False
 
@@ -361,6 +370,10 @@ class M7ADirectControlSession:
             f"（{self._root / 'config.yaml'}）；MAS 只负责外部进程生命周期"
         )
         self._runner = M7ARunner(self._root, log_callback=self._log)
+        if self._script_config is not None:
+            from .account_switch import configure_m7a_runner
+
+            configure_m7a_runner(self._runner, self._script_config, direct=True)
         result = await self._runner.run_task("main", timeout=timeout_seconds)
         return HSRRunResult.from_native(
             result,
@@ -370,7 +383,7 @@ class M7ADirectControlSession:
 
     async def cancel(self) -> None:
         if self._runner is not None:
-            await self._runner.terminate_current_process()
+            await self._runner.terminate()
 
     async def close(self) -> None:
         if self._closed:
@@ -433,7 +446,7 @@ class M7ANativeControlProvider:
             raise FileNotFoundError(
                 f"三月七原生配置不存在：{config_path}，请先在三月七中保存一次设置"
             )
-        return M7ADirectControlSession(root, log)
+        return M7ADirectControlSession(root, log, script_config)
 
 
 def native_provider(engine: str):
