@@ -18,6 +18,7 @@
 
 
 import ctypes
+import errno
 import hashlib
 import html
 import inspect
@@ -110,6 +111,20 @@ _FOCUS_WARNING_TAG_RE = re.compile(
     r"|font-weight\s*:\s*bold)",
     re.IGNORECASE,
 )
+# MFAA / CFA 的颜色标记 ``[color:red]文案[/color]``（Maa_bbb 前后都写 ``[color:x]``）。
+_FOCUS_COLOR_MARKUP_RE = re.compile(r"\[/?color(?::[^\]]*)?\]", re.IGNORECASE)
+_FOCUS_WARNING_COLOR_MARKUP_RE = re.compile(
+    r"\[color:\s*(?:red|crimson|orange)\s*\]", re.IGNORECASE
+)
+# 协议「Client 处理流程」第 5 步：用 details_json 里的同名字段替换 ``{name}`` 这类占位。
+_FOCUS_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+# focus 旧协议（MFAA FocusHandler.Focus）：整串 focus 等价于 start；对象里的
+# start / succeeded / failed 按动作阶段打；toast 在动作开始时打（[标题, 内容]）。
+_LEGACY_FOCUS_KEYS = {
+    "Node.Action.Starting": "start",
+    "Node.Action.Succeeded": "succeeded",
+    "Node.Action.Failed": "failed",
+}
 # 界面上每任务只有这一行配置，超过就没人看得完；完整 options 走 DETAIL_LOG_PREFIX
 # 那条，宿主拦在界面外、只进 worker.log。
 TASK_CONFIG_LOG_UI_LIMIT = 240
@@ -300,6 +315,34 @@ def _positive_int_pair(value: Any) -> tuple[int, int] | None:
     if first is None or second is None:
         return None
     return first, second
+
+
+#: CreateProcess 被应用控制策略（智能应用控制 / WDAC）拒绝时的 Windows 错误码。
+_WINDOWS_ERROR_APPLICATION_CONTROL_BLOCKED = 4551
+
+
+def _agent_spawn_error_hint(exc: OSError) -> str | None:
+    """起 agent 子进程失败时给用户的说明（照 MXU ``agent_spawn_hint_tag``）；其余返回 None。
+
+    原始 OSError 只有一句「系统找不到指定的文件」，用户分不清是项目坏了还是被拦了。
+    """
+
+    code = getattr(exc, "winerror", None)
+    if code is None and exc.errno == errno.ENOENT:
+        code = 2
+    if code == 2:
+        return (
+            "找不到 Agent 程序文件，常见原因是被杀毒软件隔离或删除；请检查杀毒软件的"
+            "隔离区并把项目目录加入信任，确认无误后在脚本页重新导入项目"
+        )
+    if code == 3:
+        return "Agent 程序所在的路径不存在，项目文件可能不完整；请在脚本页重新导入项目"
+    if code == _WINDOWS_ERROR_APPLICATION_CONTROL_BLOCKED:
+        return (
+            "Agent 程序被 Windows 的应用控制策略（智能应用控制）拦截；请在"
+            "「Windows 安全中心 → 应用和浏览器控制 → 智能应用控制」中关闭该功能后重试"
+        )
+    return None
 
 
 def _supported_win32_method(enum_cls: Any, value: int, *, combinable: bool) -> bool:
@@ -931,11 +974,48 @@ class MaaFWRunner:
             self._initialized = False
 
     def _load_resources(self) -> None:
-        for path_info in [*self.plan.resource.paths, *self.plan.resource.attachedPaths]:
-            if not path_info.exists or not path_info.isDir:
-                raise RuntimeError(f"资源目录不存在: {path_info.resolved}")
-            self._wait_job(self.resource.post_bundle(path_info.resolved))
-            self.send_log(f"已加载资源: {path_info.resolved}")
+        for path_info in self.plan.resource.paths:
+            self._load_resource_bundle(path_info)
+        # PI v2.6.0：hash 只基于 resource.path，必须在加载 attach_resource_path 之前比对
+        # （MFAA / MXU / CFA 同口径）。
+        self._check_resource_hash()
+        for path_info in self.plan.resource.attachedPaths:
+            self._load_resource_bundle(path_info)
+
+    def _load_resource_bundle(self, path_info: Any) -> None:
+        if not path_info.exists or not path_info.isDir:
+            raise RuntimeError(f"资源目录不存在: {path_info.resolved}")
+        self._wait_job(self.resource.post_bundle(path_info.resolved))
+        self.send_log(f"已加载资源: {path_info.resolved}")
+
+    def _check_resource_hash(self) -> None:
+        """interface 声明了 resource.hash 时与 MaaResourceGetHash 比对，不一致只告警。
+
+        协议要求「应向用户发出警告，但不应阻止继续使用」；大小写不敏感（MFAA 同）。
+        取不到实际值（老 binding、原生层报错）时不告警，免得把环境问题说成资源被改。
+        """
+
+        expected = (self.plan.resource.hash or "").strip()
+        if not expected:
+            return
+        try:
+            actual = str(self.resource.hash or "").strip()
+        except Exception as exc:
+            self.send_log(
+                f"{DETAIL_LOG_PREFIX}读取资源 hash 失败，跳过完整性校验: {exc}"
+            )
+            return
+        if not actual or actual.casefold() == expected.casefold():
+            return
+        label = (self.plan.resource.label or "").strip()
+        resource_name = (
+            label if label and not label.startswith("$") else self.plan.resource.name
+        )
+        self.send_log(
+            f"资源完整性校验不一致（资源 {resource_name}）：interface 声明 {expected}，"
+            f"实际加载得到 {actual}。资源文件可能被改动或更新不完整，建议重新下载或"
+            "更新该项目；本次照常运行"
+        )
 
     def _preflight_device(self, device_config: MaaFWDeviceConfig) -> None:
         """在加载插件与资源之前先把设备连通性确认掉。
@@ -1391,14 +1471,22 @@ class MaaFWRunner:
             self.send_log(
                 f"启动 Agent 子进程: {Path(command[0]).name} (cwd={agent_plan.cwd})"
             )
-            process = subprocess.Popen(
-                command,
-                cwd=agent_plan.cwd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                creationflags=creationflags,
-            )
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=agent_plan.cwd,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    creationflags=creationflags,
+                )
+            except OSError as exc:
+                hint = _agent_spawn_error_hint(exc)
+                if hint is None:
+                    raise
+                raise RuntimeError(
+                    f"启动 Agent 子进程失败（{command[0]}）：{hint}。原始错误: {exc}"
+                ) from exc
             self.agent_clients.append(agent_client)
             self.agent_processes.append(process)
             self._start_agent_output_reader(process, Path(command[0]).name)
@@ -1472,7 +1560,9 @@ class MaaFWRunner:
         text = str(declared or "").strip()
         if not text:
             return None
-        if text.isdigit() and 1 <= int(text) <= 65535:
+        # 只认 ASCII 0-9：框架用 std::isdigit（C locale），str.isdigit 还认全角 / 阿拉伯
+        # 等 Unicode 数字，那些在框架里是 IPC 名。
+        if text.isascii() and text.isdigit() and 1 <= int(text) <= 65535:
             self.send_log(
                 f"interface 声明的 agent identifier={text} 是 TCP 端口，按原样使用；"
                 f"同一项目的多个脚本同时运行会抢同一端口: {label}"
@@ -1558,6 +1648,11 @@ class MaaFWRunner:
                 )
             if self._stop_requested.is_set():
                 raise RuntimeError(f"已停止，不再等待 Agent 连接: {label}")
+            if self._deadline_hit.is_set():
+                # RunTimeLimit 比连接预算短时，到点就按超时收尾（timedOut 结果回传），
+                # 不能一直等到宿主「限时 + 宽限」强杀 worker。
+                self.send_log(f"{RUN_TIMEOUT_MESSAGE}，不再等待 Agent 连接: {label}")
+                raise MaaFWRunTimeoutError(RUN_TIMEOUT_MESSAGE)
 
             try:
                 if agent_client.connect():
@@ -1764,6 +1859,12 @@ class MaaFWRunner:
         python_path_items.append(str(project_path))
         env["PYTHONPATH"] = os.pathsep.join(python_path_items)
         env["PYTHONIOENCODING"] = "utf-8"
+        # UTF-8 模式（open() / Path.read_text() 不写 encoding 时按 UTF-8）：MFAA 与 MXU
+        # 起 agent 都设，项目作者是在它下面测的；不设的话中文 Windows 上不写 encoding
+        # 的读写按 cp936 走，同一个 agent 在 MAS 里可能读坏自己的 UTF-8 文件。项目自带的
+        # 嵌入式 Python 有 ._pth（隔离模式、PYTHONPATH 不生效），这个变量照样生效
+        # （本机实测 3.12.7 / 3.13.7）。只设给 agent，worker 自己不受影响。
+        env["PYTHONUTF8"] = "1"
         # agent 的 stdout 接的是管道，Python 默认 8 KB 块缓冲：裸 print() 的输出会
         # 攒到进程结束才一起冒出来。关掉缓冲让 [Agent:xxx] 行实时进任务日志。
         env["PYTHONUNBUFFERED"] = "1"
@@ -2097,21 +2198,37 @@ class MaaFWRunner:
                 self.send_log(f"处理 MaaFW 通知失败: {exc}")
 
     def _resolve_focus_texts(self, message: str, details: dict[str, Any]) -> list[str]:
-        """按 MaaFW focus 协议取出这条消息要给用户看的文案（已翻译、去掉 HTML）。"""
+        """按 MaaFW focus 协议取出这条消息要给用户看的文案（已翻译、换好占位、去掉 HTML）。
 
-        focus = details.get("focus") if isinstance(details, dict) else None
-        if not isinstance(focus, dict):
+        新协议（以消息类型为键）之外，同时认 MFAA 的旧协议（``_legacy_focus_values``）：
+        Maa_bbb、MaaDuDuL、MaaFgo、MRA、MaaTOT 的发行包里还在用。旧协议只翻译不换
+        占位——MFAA 旧协议里的 ``{x}`` 是它私有的计数器语法，不是 details 字段。
+        """
+
+        if not isinstance(details, dict):
             return []
+        focus = details.get("focus")
         texts: list[str] = []
-        for raw in _focus_values(focus.get(message)):
-            translated = raw
-            if raw.startswith("$"):
-                # 翻不出来就原样打 $key：可见优于隐藏
-                translated = _lookup_i18n_text(raw, self.plan.i18n) or raw
-            cleaned = _clean_focus_text(translated)
+        if isinstance(focus, dict):
+            for raw in _focus_values(focus.get(message)):
+                cleaned = _clean_focus_text(
+                    _replace_focus_placeholders(self._translate_focus(raw), details)
+                )
+                if cleaned:
+                    texts.append(cleaned)
+        for parts in _legacy_focus_values(focus, message):
+            cleaned = _clean_focus_text(
+                "：".join(self._translate_focus(part) for part in parts)
+            )
             if cleaned:
                 texts.append(cleaned)
         return texts
+
+    def _translate_focus(self, raw: str) -> str:
+        if not raw.startswith("$"):
+            return raw
+        # 翻不出来就原样打 $key：可见优于隐藏
+        return _lookup_i18n_text(raw, self.plan.i18n) or raw
 
     def _emit_focus(self, text: str) -> None:
         with self._focus_lock:
@@ -2524,11 +2641,62 @@ def _focus_values(value: Any) -> list[str]:
     return []
 
 
+def _legacy_focus_values(focus: Any, message: str) -> list[tuple[str, ...]]:
+    """focus 旧协议在这条消息上要打的原始文案（MFAA ``FocusHandler.ProcessOldProtocol``）。
+
+    每项是一行日志的组成部分：调用方逐段翻译 ``$key``、再用「：」拼成一行。整串 focus
+    等价于 ``start``；``toast`` 在动作开始时打，``[标题, 内容]`` 合成一行（MAS 只有运行
+    日志这一个渠道），标题与内容分别翻译（MFAA 同）。``aborted``（MFAA 据此中止任务）
+    不认：真实发行包里没有用的，而中止任务是行为变化，不在兼容范围内。
+    """
+
+    if isinstance(focus, str):
+        if message == "Node.Action.Starting" and focus.strip():
+            return [(focus,)]
+        return []
+    if not isinstance(focus, dict):
+        return []
+    key = _LEGACY_FOCUS_KEYS.get(message)
+    if key is None:
+        return []
+    values: list[tuple[str, ...]] = [(item,) for item in _focus_values(focus.get(key))]
+    if message == "Node.Action.Starting":
+        toast = _focus_values(focus.get("toast"))
+        if toast:
+            values.append(tuple(toast[:2]))
+    return values
+
+
+def _replace_focus_placeholders(text: str, details: dict[str, Any]) -> str:
+    """``{字段}`` 换成 details_json 里的同名值（MFAA / MXU / CFA 同口径）。
+
+    details 里没有的原样保留（StellaSora 的「选择难度_{难度}」这种不是占位）；
+    ``{image}`` 在 MFAA / MXU 里是截图，运行日志放不下图，直接去掉。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key == "image":
+            return ""
+        value = details.get(key)
+        if value is None:
+            return match.group(0)
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    return _FOCUS_PLACEHOLDER_RE.sub(replace, text)
+
+
 def _clean_focus_text(text: str) -> str:
-    """去掉 HTML、压平空白；带红色/加粗标记的文案前加 ⚠。"""
+    """去掉 HTML 与 ``[color:x]`` 标记、压平空白；带红色/加粗标记的文案前加 ⚠。"""
 
     unescaped = html.unescape(text)
-    warn = bool(_FOCUS_WARNING_TAG_RE.search(unescaped))
+    warn = bool(
+        _FOCUS_WARNING_TAG_RE.search(unescaped)
+        or _FOCUS_WARNING_COLOR_MARKUP_RE.search(unescaped)
+    )
+    unescaped = _FOCUS_COLOR_MARKUP_RE.sub("", unescaped)
     # <br> 换成空格，其余标签直接去掉：中文里内联标签两侧不该多出空格
     cleaned = " ".join(_HTML_TAG_RE.sub("", _HTML_BREAK_RE.sub(" ", unescaped)).split())
     if not cleaned:

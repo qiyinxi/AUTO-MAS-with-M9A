@@ -153,8 +153,11 @@ _FRAMEWORK_UI_LOG_MAX_CHARS = 1200
 _RELAY_YIELD_EVERY_LINES = 50
 # 启动/附着游戏后定位其窗口的等待秒数
 WINDOW_SEARCH_TIMEOUT_SECONDS = 5.0
+# 脚本页没有填窗口句柄的入口，提示不能让用户去找一个不存在的设置。
 _WIN32_NO_WINDOW_RULES_MESSAGE = (
-    "该控制器没有声明窗口匹配规则，请在脚本设置里指定窗口句柄或换一个控制器"
+    "该项目的这个 Win32 控制器没有声明窗口匹配规则（interface 里的 class_regex / "
+    "window_regex），MAS 无法确定要控制哪个窗口，为避免控制错窗口不运行；请换用项目的"
+    "其他控制器，或请项目方在 interface 里补上窗口匹配规则"
 )
 
 # 环境级失败：解释器自身坏了、依赖没装上。重试只会原样再失败一遍，而每次重试
@@ -884,6 +887,11 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         if plan.controllerType == "Win32":
             controller = _find_controller(interface_model, plan.controllerName)
             win32_config = controller.win32
+            mouse = win32_config.mouse if win32_config else None
+            keyboard = win32_config.keyboard if win32_config else None
+            if mouse is None and keyboard is None and win32_config is not None:
+                # MFAA 的写法：只写 input 时鼠标、键盘都用它
+                mouse = keyboard = win32_config.input
             return MaaFWDeviceConfig(
                 type="Win32",
                 hWnd=await self._resolve_window_handle(controller),
@@ -894,10 +902,11 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     "DXGI_DesktopDup",
                     label=f"controller {controller.name} 的 Win32 截图方式",
                     warn=self._append_log,
+                    combinable=True,
                 ),
                 mouseMethod=_resolve_win32_method(
                     self.script_config.get("Device", "Win32MouseMethod"),
-                    win32_config.mouse if win32_config else None,
+                    mouse,
                     _WIN32_INPUT_METHODS,
                     "Seize",
                     label=f"controller {controller.name} 的 Win32 鼠标输入方式",
@@ -905,7 +914,7 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                 ),
                 keyboardMethod=_resolve_win32_method(
                     self.script_config.get("Device", "Win32KeyboardMethod"),
-                    win32_config.keyboard if win32_config else None,
+                    keyboard,
                     _WIN32_INPUT_METHODS,
                     "Seize",
                     label=f"controller {controller.name} 的 Win32 键盘输入方式",
@@ -1268,6 +1277,18 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
         matches = await asyncio.to_thread(_match_controller_windows, controller)
         if not matches:
             raise RuntimeError("未找到匹配 MaaFW Win32 controller 的窗口")
+        if len(matches) > 1:
+            # 仍取第一个（行为不变），但让用户看得见：多开、同名的启动器 / 浏览器
+            # 标签页都会命中同一条正则，接错窗口时日志里要能找到原因。
+            candidates = "; ".join(
+                f"hWnd={item.hWnd}, class={item.className}, title={item.windowName}"
+                for item in matches
+            )
+            self._append_log(
+                f"控制器 {controller.name} 的窗口规则匹配到 {len(matches)} 个窗口，"
+                f"本次使用第一个（hWnd={matches[0].hWnd}）。候选: {candidates}。"
+                "接错窗口时请先关掉多余的同名窗口再运行"
+            )
         return int(matches[0].hWnd)
 
     async def _run_maafw(self, device_config: MaaFWDeviceConfig) -> MaaFWRunResult:
@@ -1478,10 +1499,9 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
                     line = _decode_subprocess_output(raw_line).strip()
                 if not line:
                     continue
-                line = redact_secret_text(line, secrets)
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
+                event = _parse_worker_protocol_line(line, secrets)
+                if event is None:
+                    line = redact_secret_text(line, secrets)
                     write_framework_log("worker-stdout", line)
                     if _should_forward_framework_log(line):
                         self._append_log(_framework_ui_message(line))
@@ -1641,6 +1661,10 @@ class MaaFWPluginAutoProxyTask(TaskExecuteBase):
             raise RuntimeError("MaaFW 运行计划尚未初始化")
 
         env = os.environ.copy()
+        # 与 agent 同口径（runner._build_agent_env）：pretask 多是项目自带 Python 跑的
+        # 脚本，输出与读文件都按 UTF-8；对非 Python 程序这两个变量无害。
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         env.update(self.run_plan.piEnv)
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         for pretask in self.run_plan.pretasks:
@@ -2463,33 +2487,106 @@ def _optional_int(value: Any) -> int | None:
 
 def _resolve_win32_method(
     configured_value: Any,
-    interface_method: str | None,
+    interface_method: str | list[Any] | int | None,
     method_values: dict[str, int],
     default_name: str,
     *,
     label: str = "Win32 控制方式",
     warn: Callable[[str], None] | None = None,
+    combinable: bool = False,
 ) -> int:
     """脚本级配置的数值优先，其次 interface 里写的名字，最后是默认方式。
 
     名字不认识时退回默认方式并**告警**：以前是静默换成 DXGI_DesktopDup / Seize，
     项目要的后台截图 / 后台输入悄悄变成前台，用户只看到游戏被抢了鼠标。
+
+    名字大小写不敏感（MFAA 用 ``Enum.TryParse(ignoreCase)``）；可以写成数组（MXU）
+    或逗号 / ``|`` 分隔（MFAA 的组合名写法），也可以是旧版整数。截图方式
+    （``combinable``）按位或合并；输入方式原生层只能选一个，给了多个取第一个并告警。
+    认得的值是不是当前原生库支持的，仍由 worker 的 ``_supported_win32_method`` 再判。
     """
 
     default = method_values[default_name]
     configured = _optional_int(configured_value) or 0
     if configured:
         return configured
-    if interface_method:
-        value = method_values.get(interface_method.strip())
-        if value is not None:
-            return value
-        message = (
-            f"MaaFW interface 里 {label}「{interface_method}」无法识别，"
-            f"已改用默认的 {default_name}"
+    tokens = _win32_method_tokens(interface_method)
+    if not tokens:
+        return default
+    report = warn or logger.warning
+    by_name = {name.casefold(): (name, value) for name, value in method_values.items()}
+    resolved: list[tuple[str, int]] = []
+    unknown: list[str] = []
+    for token in tokens:
+        if isinstance(token, int):
+            if token > 0:
+                resolved.append((str(token), token))
+            else:
+                unknown.append(str(token))
+            continue
+        if token.isascii() and token.isdigit():
+            # 与整数写法同口径：0 不是任何方式（worker 对 <= 0 直接放行，交下去就是
+            # 「没有输入方式」），按无法识别处理。
+            if int(token) > 0:
+                resolved.append((token, int(token)))
+            else:
+                unknown.append(token)
+            continue
+        hit = by_name.get(token.casefold())
+        if hit is None:
+            unknown.append(token)
+        else:
+            resolved.append(hit)
+    if not resolved:
+        report(
+            f"MaaFW interface 里 {label}「{_describe_win32_method(interface_method)}」"
+            f"无法识别，已改用默认的 {default_name}"
         )
-        (warn or logger.warning)(message)
-    return default
+        return default
+    if unknown:
+        report(
+            f"MaaFW interface 里 {label}中的「{'、'.join(unknown)}」无法识别，已忽略"
+        )
+    if combinable:
+        value = 0
+        for _, item in resolved:
+            value |= item
+        return value
+    if len(resolved) > 1:
+        report(
+            f"MaaFW interface 里 {label}写了多个（"
+            f"{'、'.join(name for name, _ in resolved)}），输入方式只能选一个，"
+            f"已取第一个 {resolved[0][0]}"
+        )
+    return resolved[0][1]
+
+
+def _win32_method_tokens(value: Any) -> list[str | int]:
+    """把 interface 里的 Win32 方法声明拆成一个个名字 / 整数（空的丢掉）。"""
+
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, int):
+        return [value]
+    items = value if isinstance(value, list) else [value]
+    tokens: list[str | int] = []
+    for item in items:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            tokens.append(item)
+            continue
+        for part in re.split(r"[,|]", str(item)):
+            part = part.strip()
+            if part:
+                tokens.append(part)
+    return tokens
+
+
+def _describe_win32_method(value: Any) -> str:
+    if isinstance(value, list):
+        return "、".join(str(item) for item in value)
+    return str(value)
 
 
 def _snapshot_descendants(pid: int) -> list[tuple[int, float]]:
@@ -2572,6 +2669,37 @@ def _framework_ui_message(message: str) -> str:
         "完整内容请查看本次运行的 .maafw.log"
     )
     return summary[:_FRAMEWORK_UI_LOG_MAX_CHARS]
+
+
+def _parse_worker_protocol_line(
+    line: str, secrets: list[str] | tuple[str, ...]
+) -> dict[str, Any] | None:
+    """worker stdout 的一行若是协议事件（JSON 对象）就解析并打码后返回，否则 None。
+
+    **先解析、后打码**：以前对整行 JSON 做字符串替换，密码恰好是 ``true`` / ``result`` /
+    ``success`` / ``2026`` 或某个任务名时，替换会打坏 JSON 结构、键名、截图路径、完成任务
+    列表——成功的运行被判成「worker exited without result」而重试，或通知丢图、周期任务
+    不记完成。现在只替换给人读的文本（log / error 的 ``message``、结果里的
+    ``errorMessage``），结构字段（路径、任务名、状态、布尔、数字）一律不动。
+    解析不了的行（原生诊断）由调用方照旧整行打码。
+    """
+
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    message = event.get("message")
+    if isinstance(message, str):
+        event["message"] = redact_secret_text(message, secrets)
+    data = event.get("data")
+    if isinstance(data, dict) and isinstance(data.get("errorMessage"), str):
+        event["data"] = {
+            **data,
+            "errorMessage": redact_secret_text(data["errorMessage"], secrets),
+        }
+    return event
 
 
 def _should_forward_framework_log(message: str) -> bool:
@@ -2731,9 +2859,10 @@ def _copy_native_debug_log_delta(
     覆盖：同一次代理的几轮重试共用一个文件名，每轮的分片挨着放，原生日志自己的
     「MAA Process Start」头就是分界。逐个分片流式复制，一份可能有几十 MB。
 
-    唯一的改动是 ``secrets``（密码字段的原文及其 JSON 转义写法）：原生日志按 DBG 级别
-    记下整份 ``pipeline_override``（``MaaTaskerPostTask`` 的 ``[pipeline_override={...}]``），
-    密码会原样出现；给了就逐行换成占位（按 UTF-8 字节替换，其余字节不动）。
+    唯一的改动是 ``secrets``（密码字段的原文及其 JSON 转义写法）：框架在
+    ``Tasker::post_task`` 里按 INFO 级别记下整份 ``pipeline_override``（``[pipeline_override={...}]``），
+    密码会原样出现；给了就逐行换成占位（按 UTF-8 字节替换，其余字节不动）。项目目录里框架
+    自己写的 ``debug/maafw.log`` 不归 MAS 管，那份仍是原文。
     """
 
     secret_pairs = [

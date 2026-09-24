@@ -58,9 +58,13 @@ class MaaFWWin32Controller(BaseModel):
 
     class_regex: str | None = None
     window_regex: str | None = None
-    mouse: str | None = None
-    keyboard: str | None = None
-    screencap: str | None = None
+    # 协议写的是方法名字符串；MXU 另认数组（截图按位或），MFAA 另认旧版整数与
+    # ``input``（mouse / keyboard 都没写时两者都用它）。解析与告警在
+    # runner_task._resolve_win32_method，这里只放行这几种形状。
+    mouse: str | list[str] | int | None = None
+    keyboard: str | list[str] | int | None = None
+    screencap: str | list[str] | int | None = None
+    input: str | list[str] | int | None = None
 
 
 class MaaFWMacOSController(BaseModel):
@@ -185,17 +189,26 @@ class MaaFWTask(BaseModel):
     repeat_count: Any = None
 
 
+#: repeat_count 展开的上限（前端 ``maafwTaskInstance.ts`` 的
+#: ``MAAFW_MAX_TASK_REPEAT_COUNT`` 同值）。真实项目最多写到 10（MaaYuan）；每份都是
+#: 队列里一个独立实例，写成几万会把用户配置撑爆，超过的按上限展开并由加载器告警。
+MAX_TASK_REPEAT_COUNT = 99
+
+
 def task_repeat_count(task: MaaFWTask) -> int:
     """任务进队列时展开成几份：``repeatable`` 为 true 且 ``repeat_count`` ≥ 2 才展开。
 
     ``repeatable`` 缺省 / 为 false 时忽略 ``repeat_count``；``-1``（MFAA 的「无限」）、
-    0、负数、非整数一律按 1 份（加载器对 repeatable 为 true 的这些写法告警）。
+    0、负数、非整数一律按 1 份（加载器对 repeatable 为 true 的这些写法告警）；超过
+    ``MAX_TASK_REPEAT_COUNT`` 的按上限。
     """
 
     if task.repeatable is not True:
         return 1
     count = coerce_option_count(task.repeat_count)
-    return count if count is not None and count >= 2 else 1
+    if count is None or count < 2:
+        return 1
+    return min(count, MAX_TASK_REPEAT_COUNT)
 
 
 class MaaFWGroup(BaseModel):
@@ -560,6 +573,35 @@ def interface_load_warnings(interface: MaaFWInterface) -> list[str]:
     """
 
     return list(getattr(interface, "_load_warnings", None) or [])
+
+
+#: 归为简体中文的语言键前缀（小写、``_`` 换成 ``-`` 之后比），照 MFAA
+#: ``LanguageHelper.NormalizeLangCode`` / ``IsSimplifiedChinese``。
+_SIMPLIFIED_CHINESE_PREFIXES = ("zh-hans", "zh-cn", "zh-sg")
+
+
+def simplified_chinese_language_file(interface: MaaFWInterface) -> str | None:
+    """``languages`` 里简体中文那份语言文件的相对路径；没有返回 None。
+
+    协议示例与多数项目写 ``zh_cn``，但键名没有强制写法：MaaGakumasu 写的是
+    ``zh-CN`` / ``zh-Hant``，只认 ``zh_cn`` 时它的 ``$key`` 一个也翻不出来。精确的
+    ``zh_cn`` 优先，其余按 MFAA 的口径归一（``zh-CN`` / ``zh_CN`` / ``zh-Hans`` /
+    ``zh-SG`` 都算；繁体与裸 ``zh`` 不算）。
+    """
+
+    languages = interface.languages or {}
+    exact = languages.get("zh_cn")
+    if isinstance(exact, str) and exact.strip():
+        return exact
+    for key, value in languages.items():
+        normalized = str(key).strip().lower().replace("_", "-")
+        if (
+            normalized.startswith(_SIMPLIFIED_CHINESE_PREFIXES)
+            and isinstance(value, str)
+            and value.strip()
+        ):
+            return value
+    return None
 
 
 def iter_pretasks(interface: MaaFWInterface) -> list[MaaFWPretask]:

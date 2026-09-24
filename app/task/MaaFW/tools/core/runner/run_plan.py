@@ -30,6 +30,7 @@ from app.task.MaaFW.tools.core.interface.models import (
     is_pretask_task_name,
     iter_pretasks,
     resolve_task_instance_name,
+    simplified_chinese_language_file,
 )
 from app.task.MaaFW.tools.core.interface.task_config import (
     MaaFWTaskPresetSnapshot,
@@ -73,14 +74,14 @@ _WARNED_LANGUAGE_FILES: set[str] = set()
 # 最高版本，依据（对照 MaaFramework docs/zh_cn/3.3-ProjectInterfaceV2协议.md 的版本表）：
 # - v2.1.0–v2.8.1：import / attach_resource_path、checkbox、option 适用性过滤、preset、
 #   group、PI_* 环境变量、pretask（含 controller / resource 过滤与选项 JSON 参数）、
-#   hotkey 都已实现；未做的只有「应」级的界面行为：resource.hash 不匹配时的提示
-#   （v2.6.0）、setting 设置分区的渲染（v2.8.0）。
+#   hotkey 都已实现；resource.hash（v2.6.0）在 worker 加载 path 之后、attach 之前比对，
+#   不一致只在运行日志告警；未做的只有「应」级的界面行为：setting 设置分区的渲染（v2.8.0）。
 # - v2.9.0–v2.9.2：telemetry 协议写明「并非所有 Client 都会支持」，不上报即合规。
 # - v2.10.0：password 输入——「必须」级的三条都已做到：界面掩码、配置加密存储
 #   （option_secrets）、不把原文写进日志（原生日志复制 / worker 输出 / 失败摘录处替换）。
 # - v2.10.1：checkbox 的 min_count / max_count——界面限制勾选数，运行前不满足就报错。
 # - v2.10.2：welcome 字符串数组——能解析、投影带上每一条；「按数组顺序展示」是「应」级
-#   的界面行为，与 v2.6.0 / v2.8.0 那两条一样不妨碍声明（单字符串的 welcome 也从未展示）。
+#   的界面行为，与 v2.8.0 那条一样不妨碍声明（单字符串的 welcome 也从未展示）。
 # 所以声明 v2.10.2（协议版本表截至 2026-09-08 的最新版本）。
 PI_INTERFACE_VERSION = "v2.10.2"
 PI_CLIENT_LANGUAGE = "zh_cn"
@@ -359,6 +360,12 @@ def _describe_input_value_error(
         return (
             f"任务「{task_label}」的选项「{option_label}」需要填一个{kind}，"
             f"但没有填写、项目也没有给默认值，{skipped}；请在用户配置的任务队列里填写"
+        )
+    if getattr(exc, "secret", False):
+        # password 字段：原值不进日志（PI v2.10.0），只说哪一项填得不对。
+        return (
+            f"任务「{task_label}」的选项「{option_label}」填的值（密码字段，已隐藏）"
+            f"不是{kind}，{skipped}"
         )
     return (
         f"任务「{task_label}」的选项「{option_label}」的值 {exc.value} 不是{kind}，"
@@ -920,6 +927,7 @@ def _build_resource_bundle_plan(
             _resolve_project_path(base_dir, item)
             for item in controller.attach_resource_path or []
         ],
+        hash=(resource.hash or "").strip() or None,
     )
 
 
@@ -1029,10 +1037,8 @@ def _load_maafw_version() -> str:
 def _load_i18n_mapping(
     base_dir: Path, interface_model: MaaFWInterface
 ) -> dict[str, Any]:
-    if not interface_model.languages:
-        return {}
-    language_file = interface_model.languages.get(PI_CLIENT_LANGUAGE)
-    if not isinstance(language_file, str) or not language_file.strip():
+    language_file = simplified_chinese_language_file(interface_model)
+    if language_file is None:
         return {}
     language_path = _resolve_project_path(base_dir, language_file)
     if not language_path.exists or not language_path.isFile:
