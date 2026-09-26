@@ -45,6 +45,15 @@ async def execute_script_task(script_path: Path, task_name: str) -> bool:
         elif script_path.suffix.lower() in [".bat", ".cmd"]:
             # bat/cmd 脚本使用 cmd.exe 执行，并传递 admin 参数跳过权限检查
             cmd = ["cmd.exe", "/c", str(script_path), "admin"]
+        elif script_path.suffix.lower() == ".ps1":
+            cmd = [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+            ]
         elif script_path.suffix.lower() == ".exe":
             cmd = [str(script_path)]
         elif script_path.suffix.lower() == "":

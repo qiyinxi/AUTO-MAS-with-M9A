@@ -22,6 +22,7 @@
 
 import uuid
 import asyncio
+from pathlib import Path
 from typing import Dict, Literal
 
 from .config import (
@@ -44,6 +45,7 @@ from app.task import (
     M9AManager,
     OkwwManager,
 )
+from app.task.general.tools import execute_script_task
 from app.utils.constants import POWER_SIGN_MAP
 
 
@@ -72,6 +74,45 @@ class Task(TaskExecuteBase):
         super().__init__()
         self.task_info = task_info
         self.is_closing = False
+        self.queue_started = False
+
+    @property
+    def is_queue_run(self) -> bool:
+        """是否为以自动代理模式运行的完整队列任务"""
+        return (
+            self.task_info.mode == "AutoProxy"
+            and self.task_info.queue_id is not None
+            and self.task_info.script_id is None
+        )
+
+    async def run_queue_script(self, stage: Literal["Before", "After"]) -> None:
+        """执行队列级额外脚本, 失败时仅提示警告, 不中断队列"""
+
+        queue_uid = uuid.UUID(self.task_info.queue_id)
+        if queue_uid not in Config.QueueConfig:
+            return
+        queue_config = Config.QueueConfig[queue_uid]
+        if not queue_config.get("Info", f"IfScript{stage}Queue"):
+            return
+
+        task_name = "队列前脚本" if stage == "Before" else "队列后脚本"
+        script_path = queue_config.get("Info", f"Script{stage}Queue")
+        if not script_path:
+            logger.warning(f"{task_name}已启用但未设置脚本路径, 跳过执行")
+            await Config.send_websocket_message(
+                id=self.task_info.task_id,
+                type="Info",
+                data={"Warning": f"{task_name}已启用但未设置脚本路径"},
+            )
+            return
+
+        logger.info(f"任务 {self.task_info.task_id} 开始执行{task_name}")
+        if not await execute_script_task(Path(script_path), task_name):
+            await Config.send_websocket_message(
+                id=self.task_info.task_id,
+                type="Info",
+                data={"Warning": f"{task_name}执行失败, 详情请查看日志"},
+            )
 
     async def prepare(self):
 
@@ -130,6 +171,11 @@ class Task(TaskExecuteBase):
 
         for i in range(start_index):
             self.task_info.script_list[i].status = "跳过"
+
+        # 执行队列前脚本
+        if self.is_queue_run:
+            await self.run_queue_script("Before")
+            self.queue_started = True
 
         # 依次运行任务
         for self.task_info.current_index in range(
@@ -195,6 +241,13 @@ class Task(TaskExecuteBase):
     async def final_task(self) -> None:
 
         logger.info(f"任务结束: {self.task_info.task_id}")
+
+        # 执行队列后脚本, 需在完成后操作之前执行
+        if self.is_queue_run and self.queue_started:
+            try:
+                await self.run_queue_script("After")
+            except Exception as e:
+                logger.exception(f"执行队列后脚本时出现异常: {e}")
 
         await Config.send_websocket_message(
             id=str(self.task_info.task_id),

@@ -287,6 +287,22 @@ class QueueConfig(ConfigBase):
                 ]
             ),
         )
+        ## 是否在队列开始前执行脚本
+        self.Info_IfScriptBeforeQueue = ConfigItem(
+            "Info", "IfScriptBeforeQueue", False, BoolValidator()
+        )
+        ## 队列前脚本路径
+        self.Info_ScriptBeforeQueue = ConfigItem(
+            "Info", "ScriptBeforeQueue", "", FileValidator()
+        )
+        ## 是否在队列结束后执行脚本
+        self.Info_IfScriptAfterQueue = ConfigItem(
+            "Info", "IfScriptAfterQueue", False, BoolValidator()
+        )
+        ## 队列后脚本路径
+        self.Info_ScriptAfterQueue = ConfigItem(
+            "Info", "ScriptAfterQueue", "", FileValidator()
+        )
 
         ## Data ------------------------------------------------------------
         ## 上次定时启动时间

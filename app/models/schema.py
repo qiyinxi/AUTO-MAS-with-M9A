@@ -313,6 +313,14 @@ class QueueConfig_Info(BaseModel):
             "KillSelf",
         ]
     ] = Field(default=None, description="完成后操作")
+    IfScriptBeforeQueue: Optional[bool] = Field(
+        default=None, description="是否在队列开始前执行脚本"
+    )
+    ScriptBeforeQueue: Optional[str] = Field(default=None, description="队列前脚本路径")
+    IfScriptAfterQueue: Optional[bool] = Field(
+        default=None, description="是否在队列结束后执行脚本"
+    )
+    ScriptAfterQueue: Optional[str] = Field(default=None, description="队列后脚本路径")
 
 
 class QueueConfig(BaseModel):

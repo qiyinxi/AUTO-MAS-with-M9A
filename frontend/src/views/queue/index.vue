@@ -141,6 +141,49 @@
             </a-col>
           </a-row>
         </div>
+
+        <!-- 额外脚本配置 -->
+        <div class="config-section">
+          <a-row :gutter="24">
+            <a-col v-for="stage in queueScriptStages" :key="stage.key" :span="12">
+              <div class="form-item-vertical">
+                <div class="form-label-wrapper">
+                  <span class="form-label">{{ stage.label }}</span>
+                  <a-tooltip :title="stage.tooltip">
+                    <QuestionCircleOutlined class="help-icon" />
+                  </a-tooltip>
+                </div>
+                <div class="queue-script-row">
+                  <a-switch
+                    v-model:checked="queueScripts[`IfScript${stage.key}Queue`]"
+                    @change="(value: any) => handleConfigChange(`IfScript${stage.key}Queue`, value)"
+                  />
+                  <a-input-group compact class="path-input-group">
+                    <a-input
+                      v-model:value="queueScripts[`Script${stage.key}Queue`]"
+                      placeholder="请选择脚本文件"
+                      :disabled="!queueScripts[`IfScript${stage.key}Queue`]"
+                      size="large"
+                      class="path-input"
+                      readonly
+                    />
+                    <a-button
+                      size="large"
+                      :disabled="!queueScripts[`IfScript${stage.key}Queue`]"
+                      class="path-button"
+                      @click="selectQueueScript(stage.key)"
+                    >
+                      <template #icon>
+                        <FileOutlined />
+                      </template>
+                      选择文件
+                    </a-button>
+                  </a-input-group>
+                </div>
+              </div>
+            </a-col>
+          </a-row>
+        </div>
         <a-divider />
 
         <!-- 定时项管理 -->
@@ -166,12 +209,13 @@ import TimeSetManager from '@/views/queue/components/TimeSetManager.vue'
 import {
   DeleteOutlined,
   EditOutlined,
+  FileOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useAudioPlayer } from '@/composables/useAudioPlayer'
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 
 const logger = window.electronAPI.getLogger('调度队列')
 const { playSound } = useAudioPlayer()
@@ -189,6 +233,33 @@ const currentStartUpEnabled = ref<boolean>(false)
 const currentTimeEnabled = ref<boolean>(false)
 // 新增：完成后操作状态
 const currentAfterAccomplish = ref<string>('NoAction')
+// 队列级额外脚本
+type QueueScriptStage = 'Before' | 'After'
+const queueScriptStages: Array<{ key: QueueScriptStage; label: string; tooltip: string }> = [
+  {
+    key: 'Before',
+    label: '队列前执行脚本',
+    tooltip: '在队列开始运行前执行一次自定义脚本，早于各脚本及其用户的任务前脚本',
+  },
+  {
+    key: 'After',
+    label: '队列后执行脚本',
+    tooltip:
+      '在队列结束后执行一次自定义脚本（无论成功、失败或被中止），晚于各用户的任务后脚本，早于完成后操作（关机等）',
+  },
+]
+const queueScripts = reactive<Record<string, any>>({
+  IfScriptBeforeQueue: false,
+  ScriptBeforeQueue: '',
+  IfScriptAfterQueue: false,
+  ScriptAfterQueue: '',
+})
+const loadQueueScripts = (info: Record<string, any> | null | undefined) => {
+  queueScripts.IfScriptBeforeQueue = info?.IfScriptBeforeQueue ?? false
+  queueScripts.ScriptBeforeQueue = info?.ScriptBeforeQueue ?? ''
+  queueScripts.IfScriptAfterQueue = info?.IfScriptAfterQueue ?? false
+  queueScripts.ScriptAfterQueue = info?.ScriptAfterQueue ?? ''
+}
 // 队列名称编辑状态
 const isEditingQueueName = ref<boolean>(false)
 
@@ -298,6 +369,7 @@ const loadQueueData = async (queueId: string) => {
       currentTimeEnabled.value = queueData.Info?.TimeEnabled ?? false
       // 更新完成后操作状态 - 从API响应中获取
       currentAfterAccomplish.value = queueData.Info?.AfterAccomplish ?? 'NoAction'
+      loadQueueScripts(queueData.Info)
       await new Promise(resolve => setTimeout(resolve, 50))
 
       // 加载定时项和队列项数据 - 添加错误处理
@@ -479,6 +551,31 @@ const handleConfigChange = async (key: string, value: any) => {
   await handleSaveChange(key, value)
 }
 
+// 选择队列前/后脚本文件
+const selectQueueScript = async (stage: QueueScriptStage) => {
+  const stageName = stage === 'Before' ? '队列前' : '队列后'
+  try {
+    const path = await window.electronAPI?.selectFile([
+      { name: '可执行文件', extensions: ['exe', 'bat', 'cmd', 'ps1'] },
+      { name: '脚本文件', extensions: ['py', 'js', 'sh'] },
+      { name: '所有文件', extensions: ['*'] },
+    ])
+
+    if (path && path.length > 0) {
+      queueScripts[`Script${stage}Queue`] = path[0]
+      if (await handleSaveChange(`Script${stage}Queue`, path[0])) {
+        message.success(`${stageName}脚本路径选择成功`)
+      } else {
+        await refreshQueueConfig()
+      }
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    logger.error(`选择${stageName}脚本失败: ${errorMsg}`)
+    message.error('选择文件失败')
+  }
+}
+
 // 添加队列
 const handleAddQueue = async () => {
   try {
@@ -584,6 +681,7 @@ const refreshQueueConfig = async () => {
         currentStartUpEnabled.value = queueData.Info.StartUpEnabled ?? false
         currentTimeEnabled.value = queueData.Info.TimeEnabled ?? false
         currentAfterAccomplish.value = queueData.Info.AfterAccomplish ?? 'NoAction'
+        loadQueueScripts(queueData.Info)
 
         // 更新队列列表中的名称
         const currentQueue = queueList.value.find(queue => queue.id === activeQueueId.value)
@@ -644,6 +742,57 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.queue-script-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.queue-script-row .path-input-group {
+  flex: 1;
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid var(--ant-color-border);
+  transition: all 0.3s ease;
+}
+
+.queue-script-row .path-input-group:hover {
+  border-color: var(--ant-color-primary-hover);
+}
+
+.queue-script-row .path-input-group:focus-within {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 4px rgba(24, 144, 255, 0.1);
+}
+
+.queue-script-row .path-input {
+  flex: 1;
+  border: none !important;
+  border-radius: 0 !important;
+  background: var(--ant-color-bg-container) !important;
+}
+
+.queue-script-row .path-input:focus {
+  box-shadow: none !important;
+}
+
+.queue-script-row .path-button {
+  border: none;
+  border-radius: 0;
+  background: var(--ant-color-primary-bg);
+  color: var(--ant-color-primary);
+  font-weight: 600;
+  padding: 0 20px;
+  transition: all 0.3s ease;
+  border-left: 1px solid var(--ant-color-border-secondary);
+}
+
+.queue-script-row .path-button:hover {
+  background: var(--ant-color-primary);
+  color: white;
+}
+
 .queue-container {
   min-height: 100vh;
   background: var(--ant-color-bg-layout);

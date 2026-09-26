@@ -19,5 +19,21 @@ export type QueueConfig_Info = {
      * 完成后操作
      */
     AfterAccomplish?: ('NoAction' | 'Shutdown' | 'ShutdownForce' | 'Reboot' | 'Hibernate' | 'Sleep' | 'KillSelf' | null);
+    /**
+     * 是否在队列开始前执行脚本
+     */
+    IfScriptBeforeQueue?: (boolean | null);
+    /**
+     * 队列前脚本路径
+     */
+    ScriptBeforeQueue?: (string | null);
+    /**
+     * 是否在队列结束后执行脚本
+     */
+    IfScriptAfterQueue?: (boolean | null);
+    /**
+     * 队列后脚本路径
+     */
+    ScriptAfterQueue?: (string | null);
 };
 
