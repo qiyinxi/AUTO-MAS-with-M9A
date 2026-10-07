@@ -28,6 +28,8 @@ Emulator 2.0 只接受特定大版本，添加路径时必须先探测。探测�
 - 雷电：裸跑 ``ldconsole.exe``，首行形如
   ``dnplayer v14.0.25.1 Command Line Management Interface``
 - MuMu：``MuMuManager.exe version`` 输出 ``{"version": "6.5.9.0"}``
+- 真机（phone）：「安装路径」是用户选的 ``adb.exe``（或它所在的文件夹），版本取
+  ``adb version`` 里的 platform-tools 版本；只要能跑出版本就可添加，不卡大版本
 
 解析与判定是纯函数，可以脱离模拟器测试；只有 :func:`probe_install_path` 会起子进程。
 """
@@ -39,6 +41,8 @@ from pathlib import Path
 
 from app.utils import ProcessRunner, get_logger
 from app.utils.constants import EMULATOR_PATH_BOOK
+
+from .phone import PHONE_TYPE, read_adb_version, resolve_phone_adb
 
 logger = get_logger("Emulator2 版本探测")
 
@@ -151,6 +155,9 @@ def resolve_manager_exe(install_path: str, emulator_type: str) -> Path | None:
     """
     if not install_path:
         return None
+    if emulator_type == PHONE_TYPE:
+        # 真机没有管理器程序，「主程序」就是用户选的 adb.exe
+        return resolve_phone_adb(install_path)
     from app.utils.emulator.tools import find_emulator_manager_path
 
     resolved = Path(find_emulator_manager_path(install_path, emulator_type))
@@ -231,6 +238,9 @@ async def probe_install_path(
             supported=False, reason="not_found", install_path=install_path
         )
 
+    if resolved_type == PHONE_TYPE:
+        return await _probe_phone(install_path)
+
     manager_exe = resolve_manager_exe(install_path, resolved_type)
     if manager_exe is None:
         return DetectResult(
@@ -258,4 +268,33 @@ async def probe_install_path(
         version=version,
         manager_exe=manager_exe.as_posix(),
         install_path=manager_exe.parent.as_posix(),
+    )
+
+
+async def _probe_phone(install_path: str) -> DetectResult:
+    """真机：找到 ``adb.exe`` 并能跑出版本就可添加。安装路径记成 ``adb.exe`` 本身。"""
+    adb_path = resolve_phone_adb(install_path)
+    if adb_path is None:
+        return DetectResult(
+            supported=False,
+            reason="not_found",
+            type=PHONE_TYPE,
+            install_path=install_path,
+        )
+    version = await read_adb_version(adb_path)
+    if version is None:
+        return DetectResult(
+            supported=False,
+            reason="probe_failed",
+            type=PHONE_TYPE,
+            manager_exe=adb_path.as_posix(),
+            install_path=adb_path.as_posix(),
+        )
+    return DetectResult(
+        supported=True,
+        reason="ok",
+        type=PHONE_TYPE,
+        version=version,
+        manager_exe=adb_path.as_posix(),
+        install_path=adb_path.as_posix(),
     )

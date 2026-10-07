@@ -35,11 +35,14 @@
    用户显式移除路径时写入。
 
 ``pathId`` 由规范化安装路径派生，所以「移除路径后重新添加同一路径」会自动沿用原设备号。
+
+真机（:mod:`.phone`）是第 2 条的例外：手机没有「第几个实例」，原生索引就是手机自己的
+序列号，所以它的设备号天然跟着手机走，USB 换无线也不变。
 """
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from typing import Iterable, Literal
 
@@ -75,6 +78,9 @@ class PathRecord:
     alias: str
     type: str
     version: str
+    #: 后端自己要持久化的数据。模拟器的实例由模拟器自己记着，这里一直是空的；
+    #: 真机没有「多开器」可问，认识过哪些手机、它们的无线地址只能记在这里（见 :mod:`.phone`）。
+    extra: dict = field(default_factory=dict, compare=False)
 
     @classmethod
     def create(
@@ -91,22 +97,28 @@ class PathRecord:
     @classmethod
     def from_dict(cls, data: dict) -> "PathRecord":
         install_path = str(data.get("installPath", ""))
+        extra = data.get("extra")
         return cls(
             path_id=str(data.get("pathId") or make_path_id(install_path)),
             install_path=install_path,
             alias=str(data.get("alias", "")),
             type=str(data.get("type", "")),
             version=str(data.get("version", "")),
+            extra=dict(extra) if isinstance(extra, dict) else {},
         )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "pathId": self.path_id,
             "installPath": self.install_path,
             "alias": self.alias,
             "type": self.type,
             "version": self.version,
         }
+        # 空的不写：模拟器路径的持久化形状保持原样
+        if self.extra:
+            data["extra"] = self.extra
+        return data
 
 
 @dataclass(frozen=True)
@@ -272,3 +284,34 @@ class SlotTable:
                 self._records[position] = replace(record, state="active")
                 revived.append(record.slot)
         return revived
+
+    def revive_slot(self, path_id: str, native_index: str) -> str | None:
+        """复活单台设备的墓碑，返回沿用的设备号；没有墓碑返回 ``None``。
+
+        只给真机用：它的原生索引就是手机自己的序列号，同一个号再出现必然是同一台手机，
+        沿用原设备号不会让脚本连到别的设备上。模拟器的原生索引是位置，不能这么做。
+        """
+        target = str(native_index)
+        for position, record in enumerate(self._records):
+            if (
+                record.path_id == path_id
+                and record.native_index == target
+                and record.state == "tombstone"
+            ):
+                self._records[position] = replace(record, state="active")
+                return record.slot
+        return None
+
+    def rename_native(self, path_id: str, old: str, new: str) -> bool:
+        """把一条记录的原生索引改名，设备号不变。
+
+        只给真机用：手动添加的无线地址在连上之前不知道是哪台手机，先用地址占位，
+        第一次连上读到序列号后改成序列号。新名字已经被占时不改，返回 ``False``。
+        """
+        if self.find(path_id, new) is not None:
+            return False
+        for position, record in enumerate(self._records):
+            if record.path_id == path_id and record.native_index == str(old):
+                self._records[position] = replace(record, native_index=str(new))
+                return True
+        return False

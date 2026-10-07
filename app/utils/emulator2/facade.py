@@ -49,13 +49,21 @@ from .ldplayer14 import build_manager as build_ldplayer_manager
 from .master_mode import apply_host_mode, is_master_mode_enabled
 from .mumu6 import MuMu6Manager
 from .mumu6 import build_manager as build_mumu_manager
+from .phone import (
+    PHONE_TYPE,
+    PhoneManager,
+    phone_allowed,
+    phone_unsupported_message,
+)
+from .phone import build_manager as build_phone_manager
 from .settings import InstanceSettings
 from .slots import PathRecord, SlotRecord, SlotTable
 
-#: 一条安装的后端管理器。两家各自继承旧实现, 对门面暴露同一组方法。
-Backend = LDPlayer14Manager | MuMu6Manager
+#: 一条安装的后端管理器。两家模拟器各自继承旧实现, 真机自己驱动 adb, 对门面暴露同一组方法。
+Backend = LDPlayer14Manager | MuMu6Manager | PhoneManager
 
 #: 类型 -> 构造函数。加一家模拟器只要在这里加一行。
+#: 真机不在表里: 它要的是本配置和自己的登记表, 不是管理器程序, 见 :meth:`Emulator2Manager.manager_for`。
 _BACKEND_BUILDERS = {
     "ldplayer": build_ldplayer_manager,
     "mumu": build_mumu_manager,
@@ -119,6 +127,13 @@ class Emulator2Manager(DeviceBase):
         #: ``get_adb_path()`` 签名里没有索引, 多安装时天然有歧义。
         #: 记住最近一次解析命中的安装, 只有一条安装时直接用那条, 否则回退系统 adb。
         self._last_path_id: str | None = None
+        #: 谁在用这个管理器：脚本类型（``CLASS_BOOK`` 的键）或手动操作。真机按它放行,
+        #: 没声明的一律当作不支持真机——旧配置、绕过前端的绑定都靠这条兜住。
+        self.client: str | None = None
+
+    def bind_client(self, client: str) -> None:
+        """声明使用方。调用方统一走 :func:`~.phone.bind_device_client`, 旧管理器上它什么都不做。"""
+        self.client = client
 
     # ---- 解析 -----------------------------------------------------------
 
@@ -178,6 +193,10 @@ class Emulator2Manager(DeviceBase):
                 raise DeviceUnavailableError(
                     "-", f"找不到 {path.alias or path.install_path} 的模拟器程序"
                 )
+            if path.type == PHONE_TYPE:
+                phone = build_phone_manager(self.config, manager_exe, path.extra)
+                self._managers[path.path_id] = phone
+                return phone
             builder = _BACKEND_BUILDERS.get(path.type)
             if builder is None:
                 raise DeviceUnavailableError("-", f"暂不支持的模拟器类型: {path.type}")
@@ -232,7 +251,17 @@ class Emulator2Manager(DeviceBase):
         **模拟器本来就开着时同样生效**——两家原生的带包启动参数在那种情况下会被
         整条吞掉，见 :mod:`.applaunch`。拉不起来只记警告，不影响本方法的返回；
         只有等不到安卓系统启动完成时抛 ``RuntimeError``，见 ``AppLaunchMixin.open``。
+
+        真机只对声明了支持真机的使用方开放（:func:`~.phone.phone_allowed`），其余直接拒绝，
+        不碰设备。真机的「启动」是连上并亮屏，不走模拟器那套宿主层 / 守卫 / 稳定模式。
         """
+        path, _ = self.resolve_slot(idx)
+        if path.type == PHONE_TYPE:
+            if not phone_allowed(self.client):
+                raise RuntimeError(phone_unsupported_message())
+            manager, native_index = await self._dispatch(idx)
+            return await manager.open(native_index, package_name)
+
         manager, native_index = await self._dispatch(idx)
 
         self._apply_host_mode()
@@ -293,6 +322,14 @@ class Emulator2Manager(DeviceBase):
         return await manager.open_store(native_index)
 
     async def close(self, idx: str) -> DeviceStatus:
+        path, _ = self.resolve_slot(idx)
+        if path.type == PHONE_TYPE:
+            if not phone_allowed(self.client):
+                # 启动时已经拒绝了，这里是任务失败后的例行收尾：不碰别人的手机（熄屏也不行）
+                return DeviceStatus.UNKNOWN
+            manager, native_index = await self._dispatch(idx)
+            return await manager.close(native_index)
+
         manager, native_index = await self._dispatch(idx)
         status = await manager.close(native_index)
 
@@ -325,6 +362,9 @@ class Emulator2Manager(DeviceBase):
         manager_exe = self._manager_exe(candidates[0])
         if manager_exe is None:
             return None
+        if candidates[0].type == PHONE_TYPE:
+            # 真机的「主程序」就是用户选的 adb.exe：对它的所有 adb 调用都用这一个
+            return manager_exe
         adb_path = manager_exe.parent / "adb.exe"
         return adb_path if adb_path.exists() else None
 

@@ -25,13 +25,24 @@
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
 
 from app.utils import get_logger
 
 from .detect import DetectResult, probe_install_path
 from .facade import DeviceUnavailableError, Emulator2Manager, dump_paths
 from .guard import capture, dump_baselines
+from .phone import (
+    PENDING_PREFIX,
+    PHONE_SCRIPT_TYPES,
+    PHONE_TYPE,
+    PhoneManager,
+    dump_phones,
+    normalize_address,
+    phone_unsupported_message,
+)
 from .settings import SettingsConflictError, validate_changes
 from .slots import PathRecord, SlotTable, make_path_id
 
@@ -143,7 +154,7 @@ async def capture_baselines(emulator_id: str) -> dict:
 
     baselines: dict[str, dict[str, int]] = {}
     for record in manager.slots.records:
-        if record.state != "active":
+        if record.state != "active" or _is_phone_slot(manager, record):
             continue
         try:
             settings = await manager.read_settings(record.slot)
@@ -215,6 +226,63 @@ def find_affected_scripts(emulator_id: str, slots: list[str]) -> list[AffectedSc
     return affected
 
 
+def _is_phone_slot(manager: Emulator2Manager, record) -> bool:
+    """这个设备号是不是一台真机。真机没有模拟器设置，批量设置、稳定模式、守卫一律跳过它。"""
+    path = manager.path_of(record.path_id)
+    return path is not None and path.type == PHONE_TYPE
+
+
+def script_type_of(script: Any) -> str:
+    """脚本配置对象 → 脚本类型（``CLASS_BOOK`` 的键）。认不出返回类名。"""
+    from app.models.config import CLASS_BOOK
+
+    class_name = type(script).__name__
+    for key, cls in CLASS_BOOK.items():
+        if cls.__name__ == class_name:
+            return key
+    return class_name
+
+
+async def is_phone_device(emulator_id: Any, index: Any) -> bool:
+    """这个设备号是不是真机。不是 Emulator 2.0 配置、设备号无效都返回 ``False``。"""
+    if str(emulator_id) in ("", "-", "None") or str(index) in ("", "-", "None"):
+        return False
+    try:
+        manager = await build_manager(str(emulator_id))
+        path, _ = manager.resolve_slot(str(index))
+    except Exception:  # noqa: BLE001 - 不是 Emulator 2.0 配置或设备号对不上
+        return False
+    return path.type == PHONE_TYPE
+
+
+async def phone_binding_error(script_id: str, patch: dict) -> str | None:
+    """脚本保存时：不支持真机的脚本要绑到真机，返回拒绝原因；否则 ``None``。
+
+    两套绑定字段（``Emulator.Id/Index`` 与 ``Game.EmulatorId/EmulatorIndex``）都看，只在这次
+    带了设备号时检查：脚本页换模拟器配置时先单独存 Id、再存 Index，单存 Id 那次拿旧设备号
+    去新配置里查会误拦。没查到的由运行时门面 ``open`` 兜底拒绝。
+    """
+    from app.core import Config
+
+    try:
+        script = Config.ScriptConfig[uuid.UUID(str(script_id))]
+    except Exception:  # noqa: BLE001 - 找不到脚本交给后面的保存逻辑报
+        return None
+    if script_type_of(script) in PHONE_SCRIPT_TYPES:
+        return None
+    for group, id_field, index_field in _BINDING_FIELDS:
+        changes = patch.get(group) if isinstance(patch, dict) else None
+        if not isinstance(changes, dict) or index_field not in changes:
+            continue
+        try:
+            emulator_id = changes.get(id_field, script.get(group, id_field))
+        except Exception:  # noqa: BLE001 - 脚本类型没有这组字段
+            continue
+        if await is_phone_device(emulator_id, changes[index_field]):
+            return phone_unsupported_message()
+    return None
+
+
 async def search(emulator_id: str | None = None) -> list[SearchItem]:
     """自动搜索本机模拟器，并逐条判定能否加入 Emulator 2.0。
 
@@ -257,18 +325,69 @@ async def search(emulator_id: str | None = None) -> list[SearchItem]:
     return items
 
 
-def _default_alias(install_path: str) -> str:
-    from pathlib import Path
-
-    name = Path(install_path).name
+def _default_alias(install_path: str, emulator_type: str = "") -> str:
+    path = Path(install_path)
+    if emulator_type == PHONE_TYPE:
+        # 真机的安装路径是 adb.exe 本身，取它所在的文件夹名（通常是 platform-tools）
+        path = path.parent
+    name = path.name
     return name or install_path
 
 
+def _sync_phone_path(
+    manager: Emulator2Manager, path: PathRecord, backend: PhoneManager, info: dict
+) -> list:
+    """把真机后端这一轮认出来的变化落到设备号表与路径记录上，返回新分配的设备号记录。
+
+    三件事，顺序不能乱：
+
+    1. 手动加的地址第一次连上读到序列号：设备号表里的占位名改成序列号（设备号不变），
+       ``info`` 的键跟着改；
+    2. 以前移除过的手机又出现：复活它原来的设备号，而不是另分一个——原生索引就是
+       手机自己的序列号，同一个号必然是同一台手机；
+    3. 其余新出现的手机分配新设备号。
+
+    登记表有变化时把它写回路径记录（``manager.paths``），由调用方落盘。
+    """
+    for old, new in list(backend.renames.items()):
+        if manager.slots.rename_native(path.path_id, old, new):
+            backend.rename_record(old, new)
+            if old in info:
+                info[new] = info.pop(old)
+            logger.info(f"无线地址 {old} 已认出是真机 {new}，设备号不变")
+        else:
+            backend.renames.pop(old, None)
+
+    for native_index in info:
+        slot = manager.slots.revive_slot(path.path_id, native_index)
+        if slot is not None:
+            logger.info(f"真机 {native_index} 重新出现，沿用设备号 #{slot}")
+
+    added = manager.slots.sync_path(path.path_id, list(info))
+
+    if backend.dirty:
+        manager.paths = [
+            replace(item, extra={**item.extra, **dump_phones(backend.export_records())})
+            if item.path_id == path.path_id
+            else item
+            for item in manager.paths
+        ]
+        backend.dirty = False
+    return added
+
+
 async def add_path(
-    emulator_id: str, install_path: str, alias: str | None = None
+    emulator_id: str,
+    install_path: str,
+    alias: str | None = None,
+    emulator_type: str | None = None,
 ) -> dict:
-    """添加一条模拟器路径：探测版本 → 落库 → 为它的实例分配设备号。"""
-    result: DetectResult = await probe_install_path(install_path)
+    """添加一条模拟器路径：探测版本 → 落库 → 为它的实例分配设备号。
+
+    ``emulator_type`` 为空时按目录猜是哪一家；真机（``phone``）必须显式指定——
+    雷电、MuMu 的安装目录里也有 adb.exe，按文件猜分不出来。
+    """
+    result: DetectResult = await probe_install_path(install_path, emulator_type)
     if not result.supported:
         return {"ok": False, "reason": result.reason, "version": result.version}
 
@@ -282,7 +401,7 @@ async def add_path(
     record = PathRecord(
         path_id=path_id,
         install_path=resolved_path,
-        alias=alias or _default_alias(resolved_path),
+        alias=alias or _default_alias(resolved_path, result.type),
         type=result.type,
         version=result.version,
     )
@@ -292,13 +411,28 @@ async def add_path(
     revived = manager.slots.revive_path(path_id)
     manager.paths = paths
 
-    native_indexes = await manager.enumerate_native(record)
     added_slots: list[dict] = []
-    if native_indexes is not None:
-        for slot_record in manager.slots.sync_path(path_id, native_indexes):
-            added_slots.append(
+    if record.type == PHONE_TYPE:
+        # 真机没有可枚举的实例：问一次 adb，把已经插着的手机收进来。问不动也不影响添加
+        try:
+            backend = await manager.manager_for(record)
+            info = await backend.getInfo(None)
+        except Exception as e:  # noqa: BLE001 - 路径已经加好，枚举失败只记下来
+            logger.warning(f"添加真机路径后枚举设备失败: {e}")
+        else:
+            added = _sync_phone_path(manager, record, backend, info)
+            added_slots = [
                 {"slot": slot_record.slot, "nativeIndex": slot_record.native_index}
-            )
+                for slot_record in added
+            ]
+            paths = manager.paths
+    else:
+        native_indexes = await manager.enumerate_native(record)
+        if native_indexes is not None:
+            for slot_record in manager.slots.sync_path(path_id, native_indexes):
+                added_slots.append(
+                    {"slot": slot_record.slot, "nativeIndex": slot_record.native_index}
+                )
 
     await _save(emulator_id, paths, manager.slots)
     return {
@@ -352,6 +486,8 @@ async def create_instance(
     path = manager.path_of(path_id)
     if path is None:
         return {"ok": False, "reason": "path_not_found"}
+    if path.type == PHONE_TYPE:
+        return {"ok": False, "reason": "unsupported"}
 
     backend = await manager.manager_for(path)
     native_index = await backend.create_instance(name)
@@ -426,6 +562,9 @@ async def delete_instance(emulator_id: str, slot: str) -> dict:
     if path is None:
         return {"ok": False, "reason": "path_not_found"}
 
+    if path.type == PHONE_TYPE:
+        return await _forget_phone(emulator_id, manager, path, record)
+
     backend = await manager.manager_for(path)
     try:
         await backend.delete_instance(record.native_index)
@@ -436,6 +575,65 @@ async def delete_instance(emulator_id: str, slot: str) -> dict:
     manager.slots.tombstone_slot(str(slot))
     await _save(emulator_id, manager.paths, manager.slots)
     return {"ok": True, "reason": "ok"}
+
+
+async def _forget_phone(
+    emulator_id: str, manager: Emulator2Manager, path: PathRecord, record
+) -> dict:
+    """移除一台真机：从登记表删掉（连同记住的无线地址），设备号写墓碑。
+
+    不断开 adb 连接，也不碰手机。它之后又插上 USB 或被重新添加时，沿用原来的设备号
+    （见 :func:`_sync_phone_path`）。
+    """
+    backend = await manager.manager_for(path)
+    backend.forget(record.native_index)
+    manager.slots.tombstone_slot(record.slot)
+    manager.paths = [
+        replace(item, extra={**item.extra, **dump_phones(backend.export_records())})
+        if item.path_id == path.path_id
+        else item
+        for item in manager.paths
+    ]
+    await _save(emulator_id, manager.paths, manager.slots)
+    return {"ok": True, "reason": "ok"}
+
+
+async def add_phone_address(emulator_id: str, path_id: str, address: str) -> dict:
+    """给真机路径添加一个无线调试地址，返回它分到的设备号。
+
+    地址当场连一次认认是哪台手机：认得出且这台手机已有设备号（插过 USB）就沿用；
+    认不出（关机、不在同一网络、端口不对）也照样添加，显示为离线，启动时再连。
+    手动添加的地址不做回环过滤——用户明确加的就收。
+    """
+    normalized = normalize_address(address)
+    if normalized is None:
+        return {"ok": False, "reason": "invalid_address"}
+
+    manager = await build_manager(emulator_id)
+    path = manager.path_of(path_id)
+    if path is None:
+        return {"ok": False, "reason": "path_not_found"}
+    if path.type != PHONE_TYPE:
+        return {"ok": False, "reason": "not_phone"}
+
+    backend = await manager.manager_for(path)
+    native_index = await backend.add_address(normalized)
+    renamed_to = backend.renames.get(native_index)
+    # 以前加过、一直没连上的地址这次认出来了：设备号表里的占位名一并改成序列号
+    info = {record_id: None for record_id in backend.records}
+    _sync_phone_path(manager, path, backend, info)
+    if renamed_to is not None and native_index not in backend.records:
+        native_index = renamed_to
+    slot_record = manager.slots.find(path_id, native_index)
+
+    await _save(emulator_id, manager.paths, manager.slots)
+    return {
+        "ok": True,
+        "reason": "ok",
+        "slot": slot_record.slot if slot_record else "",
+        "address": normalized,
+        "identified": not native_index.startswith(PENDING_PREFIX),
+    }
 
 
 #: 同一条安装下并发读设置的上限。雷电是读文件，MuMu 每台是一个子进程；
@@ -473,7 +671,13 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
                 )
             continue
 
-        if manager.slots.sync_path(path.path_id, list(info)):
+        phone = isinstance(backend, PhoneManager)
+        if phone:
+            before = (dump_paths(manager.paths), manager.slots.to_json())
+            _sync_phone_path(manager, path, backend, info)
+            if (dump_paths(manager.paths), manager.slots.to_json()) != before:
+                dirty = True
+        elif manager.slots.sync_path(path.path_id, list(info)):
             dirty = True
 
         # 枚举成功但没有这台 = 已经确认它不在了（多半是在模拟器自己的多开器里删掉的）。
@@ -491,25 +695,27 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
         ]
 
         overviews: dict[str, tuple] = {}
-        if with_settings:
+        if with_settings and not phone:
+            # 真机没有模拟器设置可读
             overviews = await _read_overviews(backend, records)
 
         for record in records:
             settings, stable, unsafe = overviews.get(
                 record.native_index, ({}, False, [])
             )
-            devices.append(
-                _device_row(
-                    path,
-                    record.slot,
-                    record.native_index,
-                    info[record.native_index],
-                    "ok",
-                    settings,
-                    stable,
-                    unsafe,
-                )
+            row = _device_row(
+                path,
+                record.slot,
+                record.native_index,
+                info[record.native_index],
+                "ok",
+                settings,
+                stable,
+                unsafe,
             )
+            if phone:
+                row["phone"] = backend.describe(record.native_index)
+            devices.append(row)
 
     if dirty:
         await _save(emulator_id, manager.paths, manager.slots)
@@ -523,6 +729,8 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
             for path in manager.paths
         ],
         "devices": devices,
+        # 脚本页的实例下拉据此把真机置灰：放行名单只在后端维护一份
+        "phoneScriptTypes": sorted(PHONE_SCRIPT_TYPES),
     }
 
 
@@ -607,7 +815,11 @@ async def apply_stable_mode(emulator_id: str, slots: list[str] | None = None) ->
     targets = (
         [str(slot) for slot in slots]
         if slots
-        else [r.slot for r in manager.slots.records if r.state == "active"]
+        else [
+            r.slot
+            for r in manager.slots.records
+            if r.state == "active" and not _is_phone_slot(manager, r)
+        ]
     )
 
     results: list[dict] = []
@@ -647,7 +859,8 @@ async def apply_settings_to_all(emulator_id: str, changes: dict) -> dict:
 
     results: list[dict] = []
     for record in manager.slots.records:
-        if record.state != "active":
+        if record.state != "active" or _is_phone_slot(manager, record):
+            # 真机没有模拟器设置，「全部设备」不包括它
             continue
         try:
             await manager.write_settings(record.slot, cleaned, expected=None)
