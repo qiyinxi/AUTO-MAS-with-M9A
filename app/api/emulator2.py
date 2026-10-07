@@ -40,6 +40,10 @@ from app.models.schema import (
     Emulator2PathRemoveIn,
     Emulator2PathRemoveOut,
     Emulator2PathRemovePreviewOut,
+    Emulator2PhoneAddressAddIn,
+    Emulator2PhoneAddressAddOut,
+    Emulator2PhoneRestoreIn,
+    Emulator2PhoneRestoreOut,
     Emulator2SearchIn,
     Emulator2SearchOut,
     Emulator2SettingsApplyAllIn,
@@ -102,7 +106,10 @@ async def add_path(payload: Emulator2PathAddIn = Body(...)) -> Emulator2PathAddO
     """
     try:
         result = await service.add_path(
-            payload.emulatorId, payload.installPath, payload.alias
+            payload.emulatorId,
+            payload.installPath,
+            payload.alias,
+            emulator_type=payload.type,
         )
     except Exception as e:
         logger.opt(exception=True).warning(f"add_path失败: {type(e).__name__}: {e}")
@@ -231,7 +238,7 @@ async def preview_delete_instance(
 async def delete_instance(
     payload: Emulator2InstanceDeleteIn = Body(...),
 ) -> Emulator2InstanceDeleteOut:
-    """删除一个实例。实例必须先关闭。
+    """删除一个实例。实例必须先关闭。真机是「不再纳管这台手机」，不碰手机本身。
 
     设备号不写墓碑——以后在同一原生索引重建实例仍然是这个设备号；
     在那之前该设备号显示为「未找到」，绑定它的脚本下一次执行直接失败。
@@ -244,6 +251,56 @@ async def delete_instance(
         )
         return Emulator2InstanceDeleteOut(**_error(e))
     return Emulator2InstanceDeleteOut(**result)
+
+
+@router.post(
+    "/phones/address/add",
+    tags=["Add"],
+    summary="添加真机的无线调试地址",
+    response_model=Emulator2PhoneAddressAddOut,
+    status_code=200,
+)
+async def add_phone_address(
+    payload: Emulator2PhoneAddressAddIn = Body(...),
+) -> Emulator2PhoneAddressAddOut:
+    """给真机路径登记一个无线调试地址，返回这台手机的设备号。
+
+    当场连一次认认是哪台手机：同一台手机插过 USB 的话设备号不变。连不上也照样添加，
+    显示为离线，启动时再连。删除走「删除实例」接口。
+    """
+    try:
+        result = await service.add_phone_address(
+            payload.emulatorId, payload.pathId, payload.address
+        )
+    except Exception as e:
+        logger.opt(exception=True).warning(
+            f"add_phone_address失败: {type(e).__name__}: {e}"
+        )
+        return Emulator2PhoneAddressAddOut(**_error(e))
+    return Emulator2PhoneAddressAddOut(**result)
+
+
+@router.post(
+    "/phones/restore",
+    tags=["Action"],
+    summary="恢复纳管移除过的真机",
+    response_model=Emulator2PhoneRestoreOut,
+    status_code=200,
+)
+async def restore_phone(
+    payload: Emulator2PhoneRestoreIn = Body(...),
+) -> Emulator2PhoneRestoreOut:
+    """把用户移除过的手机重新纳管，沿用它移除前的设备号。"""
+    try:
+        result = await service.restore_phone(
+            payload.emulatorId, payload.pathId, payload.serial
+        )
+    except Exception as e:
+        logger.opt(exception=True).warning(
+            f"restore_phone失败: {type(e).__name__}: {e}"
+        )
+        return Emulator2PhoneRestoreOut(**_error(e))
+    return Emulator2PhoneRestoreOut(**result)
 
 
 @router.post(

@@ -15,11 +15,13 @@ import {
   LoadingOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  MobileOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   PoweroffOutlined,
   SearchOutlined,
   SettingOutlined,
+  WifiOutlined,
 } from '@ant-design/icons-vue'
 
 import { Emulator20Service, EmulatorOperateIn, Service } from '@/api'
@@ -53,6 +55,10 @@ import type {
   Emulator2SearchItem,
   Emulator2SettingField,
 } from '@/api'
+import { PHONE_PATH_TYPE, useEmulator2PhoneApi } from '@/composables/useEmulator2PhoneApi'
+import { isPhoneDevice, phoneActionAvailability, phoneConnection, phoneReason } from './phoneLogic'
+import PhoneAddressDialog from './components/PhoneAddressDialog.vue'
+import PhonePathDialog from './components/PhonePathDialog.vue'
 
 /** ``active``：所在页签是否被选中。不在前台的页签不轮询，也不用抢子进程。 */
 const props = withDefaults(defineProps<{ emulatorId: string; active?: boolean }>(), {
@@ -98,6 +104,49 @@ const removeSlots = ref<string[]>([])
 const removeAffected = ref<Emulator2AffectedScript[]>([])
 
 const addableResults = computed(() => searchResults.value.filter(item => item.supported))
+
+// ---- 真机 ----
+//
+// 真机是 Emulator 2.0 里的一种「路径」：路径是用户选的 adb.exe，设备是插着或加过无线地址的手机。
+// 它没有实例可新建、没有模拟器设置，所以新建实例与批量设置只看模拟器那部分。
+
+const phonePathOpen = ref(false)
+const phoneAddressOpen = ref(false)
+const phonePaths = computed(() => paths.value.filter(path => path.type === PHONE_PATH_TYPE))
+const emulatorPaths = computed(() => paths.value.filter(path => path.type !== PHONE_PATH_TYPE))
+const emulatorDevices = computed(() => devices.value.filter(device => !isPhoneDevice(device)))
+
+const onPhoneAdded = async () => {
+  invalidateEmulatorDeviceOptions()
+  await loadDevices({ silent: true })
+}
+
+const connectionLabel = (device: Emulator2DeviceItem) =>
+  t(`emulator2.phone.connection.${phoneConnection(device) || 'none'}`)
+
+/** 正在恢复的手机序列号，按钮转圈用 */
+const restoring = ref('')
+const { restorePhone } = useEmulator2PhoneApi()
+
+const restoreIgnored = async (path: Emulator2PathItem, serial: string) => {
+  restoring.value = serial
+  try {
+    const response = await restorePhone(props.emulatorId, path.pathId, serial)
+    if (!response || response.code !== 200 || !response.ok) {
+      // code=200 但 ok=false 时 message 是通用的「操作成功」，不能拿来当错误原因
+      message.error(
+        response && response.code !== 200
+          ? response.message
+          : t('emulator2.phone.toast.restoreFailed')
+      )
+      return
+    }
+    message.success(t('emulator2.phone.toast.restoreOk', { slot: response.slot ?? '' }))
+    await onPhoneAdded()
+  } finally {
+    restoring.value = ''
+  }
+}
 
 /** 模拟器类型 → 用户看得懂的名字。界面上不该出现 ldplayer / mumu 这种内部名。 */
 const typeLabel = (type: string | undefined) => {
@@ -308,14 +357,14 @@ const createPathId = ref('')
 const createName = ref('')
 
 const pathSelectOptions = computed(() =>
-  paths.value.map(item => ({
+  emulatorPaths.value.map(item => ({
     value: item.pathId,
     label: item.alias + ' (' + typeLabel(item.type) + ')',
   }))
 )
 
 const openCreate = () => {
-  createPathId.value = paths.value[0]?.pathId ?? ''
+  createPathId.value = emulatorPaths.value[0]?.pathId ?? ''
   createName.value = ''
   createOpen.value = true
 }
@@ -373,6 +422,10 @@ const deleteOpen = ref(false)
 const deleting = ref(false)
 const deleteTarget = ref<Emulator2DeviceItem | null>(null)
 const deleteAffected = ref<Emulator2AffectedScript[]>([])
+/** 真机的「删除」是不再纳管这台手机，措辞不同 */
+const deleteIsPhone = computed(() =>
+  deleteTarget.value ? isPhoneDevice(deleteTarget.value) : false
+)
 
 const openDelete = async (device: Emulator2DeviceItem) => {
   deleteTarget.value = device
@@ -394,6 +447,7 @@ const openDelete = async (device: Emulator2DeviceItem) => {
 const confirmDelete = async () => {
   if (!deleteTarget.value) return
   const slot = deleteTarget.value.slot
+  const phone = isPhoneDevice(deleteTarget.value)
 
   // 同样不把用户堵在弹窗里：关掉弹窗，那一行原地转圈显示「删除中」
   deleteOpen.value = false
@@ -408,7 +462,7 @@ const confirmDelete = async () => {
       message.error(response.message)
       return
     }
-    message.success(t('emulator2.toast.deleteOk'))
+    message.success(phone ? t('emulator2.phone.toast.removeOk') : t('emulator2.toast.deleteOk'))
     invalidateEmulatorDeviceOptions()
     // 确认没了才从列表里去掉；后端已经给该设备号写了墓碑，重新拉也不会再出现
     devices.value = devices.value.filter(item => item.slot !== slot)
@@ -659,8 +713,13 @@ const NO_ACTIONS = {
   delete: false,
 }
 
-const actionsOf = (row: DeviceRow) =>
-  row.pendingKey ? NO_ACTIONS : actionAvailability(row, pending.value.get(row.slot), now.value)
+const actionsOf = (row: DeviceRow) => {
+  if (row.pendingKey) return NO_ACTIONS
+  const item = pending.value.get(row.slot)
+  return isPhoneDevice(row)
+    ? phoneActionAvailability(row, item, now.value)
+    : actionAvailability(row, item, now.value)
+}
 
 const OPERATION_OF: Record<string, PendingOp> = {
   [EmulatorOperateIn.operate.OPEN]: 'open',
@@ -805,12 +864,21 @@ const blockedReason = (device: DeviceRow) => {
 }
 
 /** 设备状态 → Tag。availability 优先：这次没枚举到就不该显示成离线。 */
-const deviceStatus = (device: DeviceRow) => {
+const deviceStatus = (device: DeviceRow): { color: string; text: string; tip?: string } => {
   if (device.availability === 'unavailable') {
     return { color: 'default', text: t('emulator2.status.unavailable') }
   }
   if (device.availability === 'missing') {
     return { color: 'warning', text: t('emulator2.status.missing') }
+  }
+  // 真机连着但用不了（未授权、无响应……）：直接说原因，比一个「错误」有用
+  const reason = isPhoneDevice(device) && !pending.value.has(device.slot) ? phoneReason(device) : ''
+  if (reason) {
+    return {
+      color: reason === 'offline' ? 'warning' : 'error',
+      text: t(`emulator2.phone.reason.${reason}`),
+      tip: t(`emulator2.phone.reasonTip.${reason}`),
+    }
   }
   const map: Record<number, { color: string; text: string }> = {
     [DeviceStatus.ONLINE]: { color: 'success', text: t('emulator.deviceStatus.online') },
@@ -988,15 +1056,25 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
     >
       <div class="section-header" style="margin-top: 0">
         <span class="section-hint">{{ t('emulator2.pathsHint') }}</span>
-        <a-button size="small" type="primary" ghost :icon="h(SearchOutlined)" @click="openSearch">
-          {{ t('emulator2.searchAndAdd') }}
-        </a-button>
+        <a-space :size="8">
+          <a-button size="small" :icon="h(MobileOutlined)" @click="phonePathOpen = true">
+            {{ t('emulator2.phone.addPath') }}
+          </a-button>
+          <a-button size="small" type="primary" ghost :icon="h(SearchOutlined)" @click="openSearch">
+            {{ t('emulator2.searchAndAdd') }}
+          </a-button>
+        </a-space>
       </div>
 
       <a-empty v-if="!paths.length" :description="t('emulator2.noPath')">
-        <a-button type="primary" :icon="h(PlusOutlined)" @click="openSearch">
-          {{ t('emulator2.searchAndAdd') }}
-        </a-button>
+        <a-space :size="8">
+          <a-button :icon="h(MobileOutlined)" @click="phonePathOpen = true">
+            {{ t('emulator2.phone.addPath') }}
+          </a-button>
+          <a-button type="primary" :icon="h(PlusOutlined)" @click="openSearch">
+            {{ t('emulator2.searchAndAdd') }}
+          </a-button>
+        </a-space>
       </a-empty>
 
       <div v-else class="path-grid">
@@ -1021,6 +1099,23 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
               })
             }}
           </div>
+          <!-- 移除过的手机不再自动纳管，在这里找回 -->
+          <div v-if="path.ignoredPhones?.length" class="ignored-phones">
+            <div class="path-sub">{{ t('emulator2.phone.ignoredTitle') }}</div>
+            <div v-for="phone in path.ignoredPhones" :key="phone.serial" class="ignored-row">
+              <span class="ignored-name">
+                {{ phone.model ? `${phone.model} (${phone.serial})` : phone.serial }}
+              </span>
+              <a-button
+                size="small"
+                type="link"
+                :loading="restoring === phone.serial"
+                @click="restoreIgnored(path, phone.serial)"
+              >
+                {{ t('emulator2.phone.restore') }}
+              </a-button>
+            </div>
+          </div>
         </a-card>
       </div>
     </a-modal>
@@ -1033,11 +1128,19 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
       </h3>
       <a-space :size="8">
         <a-button
+          v-if="phonePaths.length"
+          size="small"
+          :icon="h(WifiOutlined)"
+          @click="phoneAddressOpen = true"
+        >
+          {{ t('emulator2.phone.addAddress') }}
+        </a-button>
+        <a-button
           size="small"
           type="primary"
           ghost
           :icon="h(PlusOutlined)"
-          :disabled="!paths.length"
+          :disabled="!emulatorPaths.length"
           @click="openCreate"
         >
           {{ t('emulator2.createInstance') }}
@@ -1045,7 +1148,7 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
         <a-button
           size="small"
           :icon="h(SettingOutlined)"
-          :disabled="!devices.length"
+          :disabled="!emulatorDevices.length"
           @click="openBatch"
         >
           {{ t('emulator2.batchSettings') }}
@@ -1074,7 +1177,10 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
             <template v-if="column.key === 'source'">
               <div class="source-cell">
                 <a-tag color="purple">{{ typeLabel(record.realType) }}</a-tag>
-                <span class="source-sub">
+                <span v-if="isPhoneDevice(record)" class="source-sub">
+                  {{ record.alias }} · {{ connectionLabel(record) }}
+                </span>
+                <span v-else class="source-sub">
                   {{ record.alias }} ·
                   {{ t('emulator2.nativeIndex', { index: record.nativeIndex }) }}
                 </span>
@@ -1089,13 +1195,15 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
                 <LoadingOutlined style="margin-right: 4px" />
                 {{ rowLabel(record) }}
               </a-tag>
-              <a-tag v-else :color="deviceStatus(record).color">
-                <LoadingOutlined
-                  v-if="isTransitional(statusOf(record))"
-                  style="margin-right: 4px"
-                />
-                {{ deviceStatus(record).text }}
-              </a-tag>
+              <a-tooltip v-else :title="deviceStatus(record).tip">
+                <a-tag :color="deviceStatus(record).color">
+                  <LoadingOutlined
+                    v-if="isTransitional(statusOf(record))"
+                    style="margin-right: 4px"
+                  />
+                  {{ deviceStatus(record).text }}
+                </a-tag>
+              </a-tooltip>
             </template>
             <template v-else-if="column.key === 'resolution'">
               <span v-if="settingsLoaded || record.pendingKey">{{ resolutionText(record) }}</span>
@@ -1121,7 +1229,9 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space :size="4">
-                <a-tooltip :title="t('emulator2.start')">
+                <a-tooltip
+                  :title="isPhoneDevice(record) ? t('emulator2.phone.start') : t('emulator2.start')"
+                >
                   <a-button
                     size="small"
                     type="text"
@@ -1131,7 +1241,9 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
                     @click="operate(record, EmulatorOperateIn.operate.OPEN)"
                   />
                 </a-tooltip>
-                <a-tooltip :title="t('emulator2.stop')">
+                <a-tooltip
+                  :title="isPhoneDevice(record) ? t('emulator2.phone.stop') : t('emulator2.stop')"
+                >
                   <a-button
                     size="small"
                     type="text"
@@ -1141,52 +1253,59 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
                     @click="operate(record, EmulatorOperateIn.operate.CLOSE)"
                   />
                 </a-tooltip>
-                <a-tooltip :title="t('emulator2.show')">
-                  <a-button
-                    size="small"
-                    type="text"
-                    :icon="h(EyeOutlined)"
-                    :loading="pending.get(record.slot)?.op === 'show'"
-                    :disabled="!actionsOf(record).show"
-                    @click="operate(record, EmulatorOperateIn.operate.SHOW)"
-                  />
-                </a-tooltip>
-                <a-tooltip :title="t('emulator2.hide')">
-                  <a-button
-                    size="small"
-                    type="text"
-                    :icon="h(EyeInvisibleOutlined)"
-                    :loading="pending.get(record.slot)?.op === 'hide'"
-                    :disabled="!actionsOf(record).hide"
-                    @click="operate(record, EmulatorOperateIn.operate.HIDE)"
-                  />
-                </a-tooltip>
-                <a-tooltip :title="t('emulator2.openStore')">
-                  <a-button
-                    size="small"
-                    type="text"
-                    :icon="h(AppstoreOutlined)"
-                    :loading="pending.get(record.slot)?.op === 'store'"
-                    :disabled="!actionsOf(record).store"
-                    @click="openStore(record)"
-                  />
-                </a-tooltip>
+                <!-- 真机没有窗口、游戏中心和模拟器设置，这几个按钮不出现 -->
+                <template v-if="!isPhoneDevice(record)">
+                  <a-tooltip :title="t('emulator2.show')">
+                    <a-button
+                      size="small"
+                      type="text"
+                      :icon="h(EyeOutlined)"
+                      :loading="pending.get(record.slot)?.op === 'show'"
+                      :disabled="!actionsOf(record).show"
+                      @click="operate(record, EmulatorOperateIn.operate.SHOW)"
+                    />
+                  </a-tooltip>
+                  <a-tooltip :title="t('emulator2.hide')">
+                    <a-button
+                      size="small"
+                      type="text"
+                      :icon="h(EyeInvisibleOutlined)"
+                      :loading="pending.get(record.slot)?.op === 'hide'"
+                      :disabled="!actionsOf(record).hide"
+                      @click="operate(record, EmulatorOperateIn.operate.HIDE)"
+                    />
+                  </a-tooltip>
+                  <a-tooltip :title="t('emulator2.openStore')">
+                    <a-button
+                      size="small"
+                      type="text"
+                      :icon="h(AppstoreOutlined)"
+                      :loading="pending.get(record.slot)?.op === 'store'"
+                      :disabled="!actionsOf(record).store"
+                      @click="openStore(record)"
+                    />
+                  </a-tooltip>
+                  <a-tooltip
+                    :title="
+                      actionsOf(record).settings ? t('emulator2.settings') : blockedReason(record)
+                    "
+                  >
+                    <a-button
+                      size="small"
+                      type="text"
+                      :icon="h(SettingOutlined)"
+                      :disabled="!actionsOf(record).settings"
+                      @click="openSettings(record)"
+                    />
+                  </a-tooltip>
+                </template>
                 <a-tooltip
                   :title="
-                    actionsOf(record).settings ? t('emulator2.settings') : blockedReason(record)
-                  "
-                >
-                  <a-button
-                    size="small"
-                    type="text"
-                    :icon="h(SettingOutlined)"
-                    :disabled="!actionsOf(record).settings"
-                    @click="openSettings(record)"
-                  />
-                </a-tooltip>
-                <a-tooltip
-                  :title="
-                    actionsOf(record).delete ? t('emulator2.deleteInstance') : blockedReason(record)
+                    !actionsOf(record).delete
+                      ? blockedReason(record)
+                      : isPhoneDevice(record)
+                        ? t('emulator2.phone.remove')
+                        : t('emulator2.deleteInstance')
                   "
                 >
                   <a-button
@@ -1309,7 +1428,7 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
       <a-alert
         type="warning"
         show-icon
-        :message="t('emulator2.batchWarning', { count: devices.length })"
+        :message="t('emulator2.batchWarning', { count: emulatorDevices.length })"
         style="margin-bottom: 12px"
       />
       <a-form layout="vertical">
@@ -1426,23 +1545,27 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
     <!-- 删除实例 -->
     <a-modal
       v-model:open="deleteOpen"
-      :title="t('emulator2.deleteTitle')"
+      :title="deleteIsPhone ? t('emulator2.phone.removeTitle') : t('emulator2.deleteTitle')"
       width="600px"
       :confirm-loading="deleting"
-      :ok-text="t('emulator2.deleteInstance')"
+      :ok-text="deleteIsPhone ? t('emulator2.phone.remove') : t('emulator2.deleteInstance')"
       :ok-button-props="{ danger: true }"
       @ok="confirmDelete"
     >
       <p v-if="deleteTarget">
         <strong>#{{ deleteTarget.slot }}</strong>
-        — {{ deleteTarget.alias }} ·
-        {{ t('emulator2.nativeIndex', { index: deleteTarget.nativeIndex }) }}
+        — {{ deleteIsPhone ? deleteTarget.title : deleteTarget.alias }} ·
+        {{
+          deleteIsPhone
+            ? connectionLabel(deleteTarget)
+            : t('emulator2.nativeIndex', { index: deleteTarget.nativeIndex })
+        }}
       </p>
       <a-alert
         type="warning"
         show-icon
         :message="
-          t('emulator2.deleteWarning', {
+          t(deleteIsPhone ? 'emulator2.phone.removeWarning' : 'emulator2.deleteWarning', {
             slot: deleteTarget ? '#' + deleteTarget.slot : '',
             count: deleteAffected.length,
           })
@@ -1466,6 +1589,15 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
         </template>
       </a-list>
     </a-modal>
+
+    <!-- 添加真机（ADB）路径 / 无线设备 -->
+    <PhonePathDialog v-model:open="phonePathOpen" :emulator-id="emulatorId" @added="onPhoneAdded" />
+    <PhoneAddressDialog
+      v-model:open="phoneAddressOpen"
+      :emulator-id="emulatorId"
+      :paths="phonePaths"
+      @added="onPhoneAdded"
+    />
 
     <!-- 添加模拟器 -->
     <a-modal
@@ -1642,6 +1774,27 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
 .path-sub {
   font-size: 12px;
   color: var(--ant-color-text-tertiary);
+}
+
+.ignored-phones {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ant-color-border-secondary);
+}
+
+.ignored-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ignored-name {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .path-line {

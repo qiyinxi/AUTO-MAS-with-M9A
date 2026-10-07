@@ -220,6 +220,7 @@
                     v-for="item in emulatorDeviceOptions"
                     :key="item.value"
                     :value="item.value"
+                    :disabled="item.disabled"
                   >
                     {{ item.label }}
                   </a-select-option>
@@ -313,7 +314,7 @@ const {
   emulatorDeviceOptions,
   clearEmulatorDeviceOptions,
   loadEmulatorDeviceOptions,
-} = useEmulatorDeviceOptions()
+} = useEmulatorDeviceOptions('BAAH')
 
 // 模拟器相关状态：模拟器的启动与关闭由本软件调度，BAAH 只负责连接
 const emulatorLoading = ref(false)

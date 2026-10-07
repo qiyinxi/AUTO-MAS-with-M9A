@@ -69,6 +69,7 @@ from app.utils.constants import (
     UTC4,
     game_now,
 )
+from app.utils.emulator2.phone import PHONE_TYPE
 from app.utils.io import mark_native_config_injected, read_file, write_file
 
 from . import api_service as maa_api
@@ -811,6 +812,33 @@ def _build_activity_priority_fight(
         **activity_fight,
     }
     return activity_fight
+
+
+def _configure_phone_connection(
+    default_set: dict, connect_settings: dict, adb_path: str
+) -> None:
+    """设备是真机时的 MAA 连接配置：用 MAS 同一个 adb，按通用方式连，不开模拟器专属扩展。
+
+    键名照 MAA v6.18 实测：新版 ``gui.new.json`` 的 ``ConnectSettings`` 里是 ``Config`` /
+    ``AdbPath`` / ``AutoDetect`` / ``AlwaysAutoDetect`` / ``Extras.<模拟器>.IsEnabled``，
+    ``General`` 是 ``resource/config.json`` 连接配置里的「通用模式」。旧版 ``gui.json`` 只写
+    ``MAA.dll`` 里确认存在的三个键；连接配置在旧键里叫什么没核实，不写。
+    不开自动检测：它会去找本机模拟器，把地址换掉。
+    """
+    default_set["Connect.AdbPath"] = adb_path
+    default_set["Connect.AutoDetect"] = "False"
+    default_set["Connect.MuMu12Extras.Enabled"] = "False"
+
+    connect_settings["Config"] = "General"
+    connect_settings["AdbPath"] = adb_path
+    connect_settings["AutoDetect"] = False
+    connect_settings["AlwaysAutoDetect"] = False
+    extras = connect_settings.get("Extras")
+    if isinstance(extras, dict):
+        for name in ("LDPlayer", "MuMuEmulator12"):
+            extra = extras.get(name)
+            if isinstance(extra, dict):
+                extra["IsEnabled"] = False
 
 
 class AutoProxyTask(ScriptAutoProxyBase):
@@ -1836,6 +1864,16 @@ class AutoProxyTask(ScriptAutoProxyBase):
             default_set["Connect.Address"] = emulator_info.adb_address
             current_gui.setdefault("ConnectSettings", {})["Address"] = (
                 emulator_info.adb_address
+            )
+
+        device = self.emulator_manager.resolve_device(
+            str(self.script_config.get("Emulator", "Index"))
+        )
+        if device is not None and device.emulator_type == PHONE_TYPE:
+            _configure_phone_connection(
+                default_set,
+                current_gui.setdefault("ConnectSettings", {}),
+                device.manager_path,
             )
 
         post_actions = MAA_TASK_TRANSITION_METHOD_BOOK[

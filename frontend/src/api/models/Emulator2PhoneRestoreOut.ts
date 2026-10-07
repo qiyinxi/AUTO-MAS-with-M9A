@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type Emulator2InstanceCreateOut = {
+export type Emulator2PhoneRestoreOut = {
     /**
      * 状态码
      */
@@ -16,20 +16,16 @@ export type Emulator2InstanceCreateOut = {
      */
     message?: string;
     /**
-     * 是否新建成功
+     * 是否恢复成功
      */
     ok?: boolean;
     /**
-     * 失败原因枚举; unsupported 表示该路径是真机, 不能新建实例
+     * 失败原因枚举: path_not_found 找不到路径 / not_phone 不是真机路径 / not_ignored 这台手机不在已移除名单里
      */
     reason?: string;
     /**
-     * 新实例分到的设备号
+     * 恢复后的设备号, 沿用移除前的
      */
     slot?: string;
-    /**
-     * 模拟器自己的实例索引
-     */
-    nativeIndex?: string;
 };
 

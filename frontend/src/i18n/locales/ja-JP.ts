@@ -2221,6 +2221,7 @@ export default {
       mumu: 'MuMu Player',
       ldplayer: 'LDPlayer',
       emulator2: '自動認識（推奨）',
+      phone: '実機',
     },
     deviceStatus: {
       online: 'オンライン',
@@ -2316,9 +2317,71 @@ export default {
     },
   },
   emulator2: {
+    phone: {
+      addPath: '実機（ADB）を追加',
+      pathTitle: '実機（ADB）を追加',
+      pathHint:
+        'Android SDK Platform-Tools の adb.exe、またはそれがあるフォルダーを選んでください。実機の接続、アプリ起動、MAA はすべてこの adb を使います。',
+      pathLabel: 'adb.exe',
+      pathPlaceholder: 'platform-tools の adb.exe',
+      browse: '参照',
+      pathReason: {
+        not_found: 'ここに adb.exe がありません',
+        probe_failed: 'この adb.exe は実行できません',
+        already_added: 'この adb は追加済みです',
+      },
+      addAddress: 'ワイヤレスデバイスを追加',
+      addressTitle: 'ワイヤレスデバイスを追加',
+      addressLabel: 'ワイヤレスデバッグのアドレス',
+      addressPlaceholder: 'IP:ポート（例: 192.168.1.20:5555）',
+      addressHint:
+        '開発者向けオプションでワイヤレスデバッグをオンにすると表示される IP とポートです。Android 11 以降はオンにするたびにポートが変わるので、変わったら追加し直してください。',
+      addressPath: 'adb',
+      addressReason: {
+        invalid_address: 'アドレスの形式が正しくありません（IP:ポート）',
+        path_not_found: '実機のパスが見つかりません',
+        not_phone: '実機のパスではありません',
+      },
+      connection: {
+        usb: 'USB',
+        wifi: 'ワイヤレス',
+        none: '未接続',
+      },
+      reason: {
+        unauthorized: '未承認',
+        offline: '応答なし',
+        no_permissions: '権限なし',
+        mode: '特殊モード',
+      },
+      reasonTip: {
+        unauthorized: '端末に表示されるダイアログでこのパソコンからのデバッグを許可してください',
+        offline: 'ケーブルを挿し直すか、端末でデバッグをオフにしてからオンにしてください',
+        no_permissions: '端末の USB 接続モードとパソコンのドライバーを確認してください',
+        mode: 'デバイスが通常のシステムで動作していません',
+      },
+      start: '接続して画面をオン',
+      stop: '画面をオフ',
+      remove: 'デバイスを削除',
+      removeTitle: '実機を削除',
+      removeWarning:
+        'デバイス {slot} が一覧から消え、{count} 件のマネージドスクリプトに影響します。接続したままでも自動では再登録されません。接続も端末もそのままです。戻すには「エミュレーターを管理」の実機パスで「復元」を押すか、ワイヤレスアドレスを追加し直してください。デバイス番号は変わりません。',
+      onlyFor: '実機は現在 {scripts} のみ対応しています',
+      ignoredTitle: '削除したデバイス',
+      restore: '復元',
+      toast: {
+        pathAdded: '実機（ADB）を追加しました',
+        addressAdded: 'デバイス #{slot} として追加しました',
+        addressPending:
+          'デバイス #{slot} として追加しました。今は接続できないため、起動時に接続します',
+        addFailed: '追加に失敗しました',
+        removeOk: '実機を削除しました',
+        restoreOk: 'デバイス #{slot} として復元しました',
+        restoreFailed: '復元に失敗しました',
+      },
+    },
     pathsTitle: 'エミュレーター',
     pathsHint:
-      '複数追加でき、インスタンスは 1 つの表にまとめて管理します。LDPlayer 14 と MuMu 6 に対応しています。',
+      '複数追加でき、インスタンスは 1 つの表にまとめて管理します。LDPlayer 14、MuMu 6 と実機（ADB）に対応しています。',
     noPath: 'エミュレーターが追加されていません',
     searchAndAdd: '自動検索して追加',
     removePath: 'パスを削除',

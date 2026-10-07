@@ -688,6 +688,7 @@
                     v-for="item in emulatorDeviceOptions"
                     :key="item.value"
                     :value="item.value"
+                    :disabled="item.disabled"
                   >
                     {{ item.label }}
                   </a-select-option>
@@ -1315,7 +1316,7 @@ const {
   emulatorDeviceOptions,
   clearEmulatorDeviceOptions,
   loadEmulatorDeviceOptions,
-} = useEmulatorDeviceOptions()
+} = useEmulatorDeviceOptions('General')
 
 const formData = reactive({
   name: '',

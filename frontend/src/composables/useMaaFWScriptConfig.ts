@@ -3,6 +3,7 @@ import { computed, ref, type Ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { Emulator20Service, Service, type ComboBoxItem } from '@/api'
 import type { MaaFWInterfacePreviewData, MaaFWScriptConfig } from '@/types/script'
+import { PHONE_TYPE, markPhoneOptions, type DeviceSelectOption } from '@/views/Emulator/phoneLogic'
 
 const logger = window.electronAPI.getLogger('MaaFW脚本编辑')
 
@@ -150,6 +151,16 @@ export function useMaaFWControlConfig(
   // 但选中具体设备后类型是确定的，EmulatorExtras 能力就能按它查，不必再写「运行时判定」
   const emulator2DeviceTypeBySlot = ref<Record<string, string>>({})
   const emulator2DeviceTypeCache = new Map<string, Record<string, string>>()
+  // 能用真机的脚本类型（后端放行名单）。MFW 页（含各特调）按 MaaFW 算，不在名单里时真机置灰
+  const phoneScriptTypes = ref<string[]>([])
+  const selectableDeviceOptions = computed<DeviceSelectOption[]>(() =>
+    markPhoneOptions(
+      emulatorDeviceOptions.value,
+      value => value !== null && emulator2DeviceTypeBySlot.value[value] === PHONE_TYPE,
+      phoneScriptTypes.value.includes('MaaFW'),
+      t('emulator2.phone.onlyFor', { scripts: phoneScriptTypes.value.join(' / ') })
+    )
+  )
 
   // ---- Controller / Resource helpers ----
 
@@ -407,6 +418,7 @@ export function useMaaFWControlConfig(
         withSettings: false,
       })
       if (response?.code !== 200) return
+      phoneScriptTypes.value = response.phoneScriptTypes ?? []
       const typeBySlot: Record<string, string> = {}
       for (const device of response.devices ?? []) {
         if (device.slot && device.realType) typeBySlot[device.slot] = device.realType
@@ -460,7 +472,7 @@ export function useMaaFWControlConfig(
     emulatorOptionsReady,
     emulatorDeviceLoading,
     emulatorOptions,
-    emulatorDeviceOptions,
+    emulatorDeviceOptions: selectableDeviceOptions,
     emulatorTypeById,
     isMultiEmulatorConfig,
     controllerOptions,

@@ -31,6 +31,7 @@ from app.models.schema import DeviceInfo as SchemaDeviceInfo
 from app.models.schema import WSEmulatorOperationData, WSTaskNoticeData
 from app.utils import EMULATOR_TYPE_BOOK, get_logger
 from app.utils.constants import EMULATOR_SPLASH_ADS_PATH_BOOK
+from app.utils.emulator2.phone import MANUAL_CLIENT, bind_device_client
 
 from .config import Config
 from .ws import Publisher, protocol
@@ -98,6 +99,8 @@ class _EmulatorManager:
             temp_emulator = await self.get_emulator_instance(emulator_id)
             if temp_emulator is None:
                 raise KeyError(f"未找到UUID为 {emulator_id} 的模拟器配置")
+            # 用户在模拟器页手动点的：真机据此放行（脚本只有声明支持真机的才行）
+            bind_device_client(temp_emulator, MANUAL_CLIENT)
 
             if operate == "open":
                 await temp_emulator.open(index)

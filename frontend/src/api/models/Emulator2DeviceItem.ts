@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { Emulator2PhoneInfo } from './Emulator2PhoneInfo';
 import type { Emulator2SettingField } from './Emulator2SettingField';
 export type Emulator2DeviceItem = {
     /**
@@ -52,5 +53,9 @@ export type Emulator2DeviceItem = {
      * 还没进入安全状态的项
      */
     stableUnsafe?: Array<string>;
+    /**
+     * 真机的附加信息, 模拟器为 null
+     */
+    phone?: (Emulator2PhoneInfo | null);
 };
 

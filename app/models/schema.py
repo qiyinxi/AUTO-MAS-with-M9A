@@ -5525,8 +5525,14 @@ class Emulator2DevicesIn(BaseModel):
 
 class Emulator2PathAddIn(BaseModel):
     emulatorId: str = Field(..., description="配置ID")
-    installPath: str = Field(..., description="模拟器安装目录")
+    installPath: str = Field(
+        ..., description="模拟器安装目录; 真机为 adb.exe 或它所在的文件夹"
+    )
     alias: Optional[str] = Field(default=None, description="安装别名")
+    type: Optional[str] = Field(
+        default=None,
+        description="设备类型, 留空按目录猜; 真机(phone)必须指定, 雷电 / MuMu 目录里也有 adb.exe",
+    )
 
 
 class Emulator2SlotAssignment(BaseModel):
@@ -5589,7 +5595,10 @@ class Emulator2InstanceCreateIn(BaseModel):
 
 class Emulator2InstanceCreateOut(OutBase):
     ok: bool = Field(default=False, description="是否新建成功")
-    reason: str = Field(default="", description="失败原因枚举")
+    reason: str = Field(
+        default="",
+        description="失败原因枚举; unsupported 表示该路径是真机, 不能新建实例",
+    )
     slot: str = Field(default="", description="新实例分到的设备号")
     nativeIndex: str = Field(default="", description="模拟器自己的实例索引")
 
@@ -5693,6 +5702,11 @@ class Emulator2SettingsApplyAllOut(OutBase):
     failCount: int = Field(default=0, description="失败台数")
 
 
+class Emulator2IgnoredPhone(BaseModel):
+    serial: str = Field(..., description="手机序列号")
+    model: str = Field(default="", description="手机型号")
+
+
 class Emulator2PathItem(BaseModel):
     pathId: str = Field(..., description="路径标识")
     installPath: str = Field(..., description="安装目录")
@@ -5700,6 +5714,29 @@ class Emulator2PathItem(BaseModel):
     type: str = Field(default="", description="模拟器类型")
     version: str = Field(default="", description="版本号")
     slots: List[str] = Field(default_factory=list, description="该路径占用的设备号")
+    ignoredPhones: List[Emulator2IgnoredPhone] = Field(
+        default_factory=list,
+        description="真机路径下用户移除过的手机, 不再自动纳管, 可以恢复; 模拟器路径为空",
+    )
+
+
+class Emulator2PhoneInfo(BaseModel):
+    """真机的附加信息。模拟器没有这一项。"""
+
+    serial: str = Field(default="", description="手机序列号; 还没连上过的无线地址为空")
+    model: str = Field(default="", description="手机型号")
+    connection: str = Field(
+        default="", description="当前连接方式: usb / wifi / 空串表示没有连接"
+    )
+    adbState: str = Field(
+        default="", description="adb 报告的连接状态, 如 device / unauthorized / offline"
+    )
+    reason: str = Field(
+        default="",
+        description="不可用的原因码: unauthorized 未授权调试 / offline 无响应 / "
+        "no_permissions 无访问权限 / mode 处于特殊模式; 空串表示没有问题",
+    )
+    wifiAddress: str = Field(default="", description="记住的无线调试地址")
 
 
 class Emulator2DeviceItem(BaseModel):
@@ -5727,6 +5764,9 @@ class Emulator2DeviceItem(BaseModel):
     stableUnsafe: List[str] = Field(
         default_factory=list, description="还没进入安全状态的项"
     )
+    phone: Optional[Emulator2PhoneInfo] = Field(
+        default=None, description="真机的附加信息, 模拟器为 null"
+    )
 
 
 class Emulator2DevicesOut(OutBase):
@@ -5735,6 +5775,48 @@ class Emulator2DevicesOut(OutBase):
     )
     devices: List[Emulator2DeviceItem] = Field(
         default_factory=list, description="合并后的设备列表"
+    )
+    phoneScriptTypes: List[str] = Field(
+        default_factory=list, description="能绑定真机的脚本类型, 其余脚本选真机会被拒绝"
+    )
+
+
+class Emulator2PhoneRestoreIn(BaseModel):
+    emulatorId: str = Field(..., description="配置ID")
+    pathId: str = Field(..., description="真机路径标识")
+    serial: str = Field(..., description="要恢复纳管的手机序列号")
+
+
+class Emulator2PhoneRestoreOut(OutBase):
+    ok: bool = Field(default=False, description="是否恢复成功")
+    reason: str = Field(
+        default="",
+        description="失败原因枚举: path_not_found 找不到路径 / not_phone 不是真机路径 / "
+        "not_ignored 这台手机不在已移除名单里",
+    )
+    slot: str = Field(default="", description="恢复后的设备号, 沿用移除前的")
+
+
+class Emulator2PhoneAddressAddIn(BaseModel):
+    emulatorId: str = Field(..., description="配置ID")
+    pathId: str = Field(..., description="真机路径标识")
+    address: str = Field(
+        ..., description="无线调试地址 IP:端口, 只写 IP 时按 5555 端口"
+    )
+
+
+class Emulator2PhoneAddressAddOut(OutBase):
+    ok: bool = Field(default=False, description="是否添加成功")
+    reason: str = Field(
+        default="",
+        description="失败原因枚举: invalid_address 地址格式不对 / path_not_found 找不到路径 / "
+        "not_phone 不是真机路径",
+    )
+    slot: str = Field(default="", description="这台手机的设备号")
+    address: str = Field(default="", description="规范化后的地址")
+    identified: bool = Field(
+        default=False,
+        description="添加时是否已连上并认出是哪台手机; 否则显示为离线, 启动时再连",
     )
 
 
