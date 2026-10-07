@@ -17,6 +17,8 @@ import type { Emulator2PathRemoveOut } from '../models/Emulator2PathRemoveOut';
 import type { Emulator2PathRemovePreviewOut } from '../models/Emulator2PathRemovePreviewOut';
 import type { Emulator2PhoneAddressAddIn } from '../models/Emulator2PhoneAddressAddIn';
 import type { Emulator2PhoneAddressAddOut } from '../models/Emulator2PhoneAddressAddOut';
+import type { Emulator2PhoneRestoreIn } from '../models/Emulator2PhoneRestoreIn';
+import type { Emulator2PhoneRestoreOut } from '../models/Emulator2PhoneRestoreOut';
 import type { Emulator2SearchIn } from '../models/Emulator2SearchIn';
 import type { Emulator2SearchOut } from '../models/Emulator2SearchOut';
 import type { Emulator2SettingsApplyAllIn } from '../models/Emulator2SettingsApplyAllIn';
@@ -217,6 +219,26 @@ export class Emulator20Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/emulator2/phones/address/add',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 恢复纳管移除过的真机
+     * 把用户移除过的手机重新纳管，沿用它移除前的设备号。
+     * @param requestBody
+     * @returns Emulator2PhoneRestoreOut Successful Response
+     * @throws ApiError
+     */
+    public static restorePhoneApiEmulator2PhonesRestorePost(
+        requestBody: Emulator2PhoneRestoreIn,
+    ): CancelablePromise<Emulator2PhoneRestoreOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/emulator2/phones/restore',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

@@ -55,7 +55,7 @@ import type {
   Emulator2SearchItem,
   Emulator2SettingField,
 } from '@/api'
-import { PHONE_PATH_TYPE } from '@/composables/useEmulator2PhoneApi'
+import { PHONE_PATH_TYPE, useEmulator2PhoneApi } from '@/composables/useEmulator2PhoneApi'
 import { isPhoneDevice, phoneActionAvailability, phoneConnection, phoneReason } from './phoneLogic'
 import PhoneAddressDialog from './components/PhoneAddressDialog.vue'
 import PhonePathDialog from './components/PhonePathDialog.vue'
@@ -123,6 +123,30 @@ const onPhoneAdded = async () => {
 
 const connectionLabel = (device: Emulator2DeviceItem) =>
   t(`emulator2.phone.connection.${phoneConnection(device) || 'none'}`)
+
+/** 正在恢复的手机序列号，按钮转圈用 */
+const restoring = ref('')
+const { restorePhone } = useEmulator2PhoneApi()
+
+const restoreIgnored = async (path: Emulator2PathItem, serial: string) => {
+  restoring.value = serial
+  try {
+    const response = await restorePhone(props.emulatorId, path.pathId, serial)
+    if (!response || response.code !== 200 || !response.ok) {
+      // code=200 但 ok=false 时 message 是通用的「操作成功」，不能拿来当错误原因
+      message.error(
+        response && response.code !== 200
+          ? response.message
+          : t('emulator2.phone.toast.restoreFailed')
+      )
+      return
+    }
+    message.success(t('emulator2.phone.toast.restoreOk', { slot: response.slot ?? '' }))
+    await onPhoneAdded()
+  } finally {
+    restoring.value = ''
+  }
+}
 
 /** 模拟器类型 → 用户看得懂的名字。界面上不该出现 ldplayer / mumu 这种内部名。 */
 const typeLabel = (type: string | undefined) => {
@@ -1075,6 +1099,23 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
               })
             }}
           </div>
+          <!-- 移除过的手机不再自动纳管，在这里找回 -->
+          <div v-if="path.ignoredPhones?.length" class="ignored-phones">
+            <div class="path-sub">{{ t('emulator2.phone.ignoredTitle') }}</div>
+            <div v-for="phone in path.ignoredPhones" :key="phone.serial" class="ignored-row">
+              <span class="ignored-name">
+                {{ phone.model ? `${phone.model} (${phone.serial})` : phone.serial }}
+              </span>
+              <a-button
+                size="small"
+                type="link"
+                :loading="restoring === phone.serial"
+                @click="restoreIgnored(path, phone.serial)"
+              >
+                {{ t('emulator2.phone.restore') }}
+              </a-button>
+            </div>
+          </div>
         </a-card>
       </div>
     </a-modal>
@@ -1733,6 +1774,27 @@ defineExpose({ reload: loadAll, applyStableMode, captureBaselines, openPaths })
 .path-sub {
   font-size: 12px;
   color: var(--ant-color-text-tertiary);
+}
+
+.ignored-phones {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ant-color-border-secondary);
+}
+
+.ignored-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ignored-name {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .path-line {

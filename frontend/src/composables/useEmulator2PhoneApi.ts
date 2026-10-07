@@ -3,13 +3,14 @@ import {
   Emulator20Service,
   type Emulator2PathAddOut,
   type Emulator2PhoneAddressAddOut,
+  type Emulator2PhoneRestoreOut,
 } from '@/api'
 
 /** Emulator 2.0 路径记录里真机的类型键（与后端 ``PHONE_TYPE`` 一致） */
 export const PHONE_PATH_TYPE = 'phone'
 
 /**
- * Emulator 2.0 真机的两个写接口：添加真机（ADB）路径、添加无线调试地址。
+ * Emulator 2.0 真机的写接口：添加真机（ADB）路径、添加无线调试地址、恢复移除过的手机。
  *
  * 业务失败（``code !== 200`` 或 ``ok=false``）原样交回响应，由调用方按原因码给提示；
  * 只有请求本身失败才写 ``error`` 并返回 ``null``。
@@ -49,5 +50,14 @@ export const useEmulator2PhoneApi = () => {
       })
     )
 
-  return { loading, error, addPhonePath, addPhoneAddress }
+  const restorePhone = (emulatorId: string, pathId: string, serial: string) =>
+    run<Emulator2PhoneRestoreOut>(() =>
+      Emulator20Service.restorePhoneApiEmulator2PhonesRestorePost({
+        emulatorId,
+        pathId,
+        serial,
+      })
+    )
+
+  return { loading, error, addPhonePath, addPhoneAddress, restorePhone }
 }

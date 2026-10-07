@@ -91,6 +91,7 @@ export type { Emulator2DeviceItem } from './models/Emulator2DeviceItem';
 export type { Emulator2DevicesIn } from './models/Emulator2DevicesIn';
 export type { Emulator2DevicesOut } from './models/Emulator2DevicesOut';
 export type { Emulator2GuardCaptureOut } from './models/Emulator2GuardCaptureOut';
+export type { Emulator2IgnoredPhone } from './models/Emulator2IgnoredPhone';
 export type { Emulator2InstanceCreateIn } from './models/Emulator2InstanceCreateIn';
 export type { Emulator2InstanceCreateOut } from './models/Emulator2InstanceCreateOut';
 export type { Emulator2InstanceDeleteIn } from './models/Emulator2InstanceDeleteIn';
@@ -105,6 +106,8 @@ export type { Emulator2PathRemovePreviewOut } from './models/Emulator2PathRemove
 export type { Emulator2PhoneAddressAddIn } from './models/Emulator2PhoneAddressAddIn';
 export type { Emulator2PhoneAddressAddOut } from './models/Emulator2PhoneAddressAddOut';
 export type { Emulator2PhoneInfo } from './models/Emulator2PhoneInfo';
+export type { Emulator2PhoneRestoreIn } from './models/Emulator2PhoneRestoreIn';
+export type { Emulator2PhoneRestoreOut } from './models/Emulator2PhoneRestoreOut';
 export type { Emulator2SearchIn } from './models/Emulator2SearchIn';
 export type { Emulator2SearchItem } from './models/Emulator2SearchItem';
 export type { Emulator2SearchOut } from './models/Emulator2SearchOut';
