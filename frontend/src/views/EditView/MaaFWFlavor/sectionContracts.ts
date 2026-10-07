@@ -23,6 +23,7 @@ import type {
   MaaFWTaskSnapshot,
   ScriptType,
 } from '@/types/script'
+import type { DeviceSelectOption } from '@/views/Emulator/phoneLogic'
 import type { MfwReuseChoice } from '@/views/scripts/components/scriptCreateFlow'
 import type { MaaFWUpdateProgressState } from '../Script/MaaFWScriptEdit/updateProgress'
 import type { MaaFWPresetQueueEntry } from '../User/maafwPresetQueue'
@@ -88,7 +89,8 @@ export interface MaaFWScriptControlSectionProps {
   emulatorOptionsReady: boolean
   emulatorDeviceLoading: boolean
   emulatorOptions: ComboBoxItem[]
-  emulatorDeviceOptions: ComboBoxItem[]
+  /** 真机在不支持它的脚本里 `disabled` */
+  emulatorDeviceOptions: DeviceSelectOption[]
   emulatorTypeById: Record<string, EmulatorType>
   controllerOptions: MaaFWControllerInfo[]
   effectiveControllerName: string

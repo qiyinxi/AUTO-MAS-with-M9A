@@ -158,6 +158,8 @@ export const mergeSettings = (
       adbAddress: old.adbAddress,
       availability: old.availability,
       title: old.title,
+      // 真机的连接方式与原因和状态是同一次查询的结果，跟着状态走
+      phone: old.phone,
     }
   })
 }
