@@ -25,6 +25,7 @@
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from .phone import (
     PHONE_SCRIPT_TYPES,
     PHONE_TYPE,
     PhoneManager,
-    dump_phones,
+    load_ignored,
     normalize_address,
     phone_unsupported_message,
 )
@@ -335,17 +336,26 @@ def _default_alias(install_path: str, emulator_type: str = "") -> str:
 
 
 def _sync_phone_path(
-    manager: Emulator2Manager, path: PathRecord, backend: PhoneManager, info: dict
+    manager: Emulator2Manager,
+    path: PathRecord,
+    backend: PhoneManager,
+    info: dict,
+    *,
+    slot_bound: Callable[[str], bool] = lambda slot: True,
 ) -> list:
     """把真机后端这一轮认出来的变化落到设备号表与路径记录上，返回新分配的设备号记录。
 
-    三件事，顺序不能乱：
+    四件事，顺序不能乱：
 
     1. 手动加的地址第一次连上读到序列号：设备号表里的占位名改成序列号（设备号不变），
        ``info`` 的键跟着改；
-    2. 以前移除过的手机又出现：复活它原来的设备号，而不是另分一个——原生索引就是
-       手机自己的序列号，同一个号必然是同一台手机；
-    3. 其余新出现的手机分配新设备号。
+    2. 用户恢复（或亲手重新添加地址找回）的手机：复活它原来的设备号，而不是另分一个——
+       原生索引就是手机自己的序列号，同一个号必然是同一台手机。移除过的手机在已忽略
+       名单里，不会自己出现在 ``info`` 里，所以这一步只会复活用户要找回的；
+    3. 其余新出现的手机分配新设备号；
+    4. 手动加的地址认出是一台已经有设备号的手机：占位那个号没有脚本绑着就并掉（写墓碑），
+       有绑定就保留，两个号指向同一台手机，日志里提示。``slot_bound`` 判断某个设备号
+       有没有脚本绑着；拿不准时按「有」处理，宁可留着重复也不弄断绑定。
 
     登记表有变化时把它写回路径记录（``manager.paths``），由调用方落盘。
     """
@@ -361,19 +371,59 @@ def _sync_phone_path(
     for native_index in info:
         slot = manager.slots.revive_slot(path.path_id, native_index)
         if slot is not None:
-            logger.info(f"真机 {native_index} 重新出现，沿用设备号 #{slot}")
+            logger.info(f"真机 {native_index} 恢复纳管，沿用设备号 #{slot}")
 
     added = manager.slots.sync_path(path.path_id, list(info))
 
+    for pending_id, serialno in list(backend.merges.items()):
+        backend.merges.pop(pending_id, None)
+        duplicate = manager.slots.find(path.path_id, pending_id)
+        target = manager.slots.find(path.path_id, serialno)
+        if duplicate is None or duplicate.state != "active" or target is None:
+            continue
+        if slot_bound(duplicate.slot):
+            logger.warning(
+                f"设备 #{duplicate.slot}（{pending_id.removeprefix('tcp:')}）和设备 "
+                f"#{target.slot} 是同一台手机，#{duplicate.slot} 还有脚本绑着，两个设备号都保留"
+            )
+            continue
+        backend.forget(pending_id, ignore=False)
+        manager.slots.tombstone_slot(duplicate.slot)
+        info.pop(pending_id, None)
+        logger.info(
+            f"设备 #{duplicate.slot}（{pending_id.removeprefix('tcp:')}）认出是设备 "
+            f"#{target.slot} 那台手机，已归并到设备 #{target.slot}"
+        )
+
     if backend.dirty:
-        manager.paths = [
-            replace(item, extra={**item.extra, **dump_phones(backend.export_records())})
-            if item.path_id == path.path_id
-            else item
-            for item in manager.paths
-        ]
-        backend.dirty = False
+        _write_phone_extra(manager, path, backend)
     return added
+
+
+def _write_phone_extra(
+    manager: Emulator2Manager, path: PathRecord, backend: PhoneManager
+) -> None:
+    """真机登记表写回路径记录的 ``extra``，由调用方落盘。"""
+    manager.paths = [
+        replace(item, extra={**item.extra, **backend.export_extra()})
+        if item.path_id == path.path_id
+        else item
+        for item in manager.paths
+    ]
+    backend.dirty = False
+
+
+def _bound_checker(emulator_id: str) -> Callable[[str], bool]:
+    """某个设备号有没有脚本绑着。查不了按「有」处理。"""
+
+    def check(slot: str) -> bool:
+        try:
+            return bool(find_affected_scripts(emulator_id, [slot]))
+        except Exception as e:  # noqa: BLE001 - 见 docstring
+            logger.warning(f"查询设备 #{slot} 的脚本绑定失败，按有绑定处理: {e}")
+            return True
+
+    return check
 
 
 async def add_path(
@@ -420,7 +470,9 @@ async def add_path(
         except Exception as e:  # noqa: BLE001 - 路径已经加好，枚举失败只记下来
             logger.warning(f"添加真机路径后枚举设备失败: {e}")
         else:
-            added = _sync_phone_path(manager, record, backend, info)
+            added = _sync_phone_path(
+                manager, record, backend, info, slot_bound=_bound_checker(emulator_id)
+            )
             added_slots = [
                 {"slot": slot_record.slot, "nativeIndex": slot_record.native_index}
                 for slot_record in added
@@ -580,22 +632,38 @@ async def delete_instance(emulator_id: str, slot: str) -> dict:
 async def _forget_phone(
     emulator_id: str, manager: Emulator2Manager, path: PathRecord, record
 ) -> dict:
-    """移除一台真机：从登记表删掉（连同记住的无线地址），设备号写墓碑。
+    """移除一台真机：从登记表删掉（连同记住的无线地址），身份记进已忽略名单，设备号写墓碑。
 
-    不断开 adb 连接，也不碰手机。它之后又插上 USB 或被重新添加时，沿用原来的设备号
-    （见 :func:`_sync_phone_path`）。
+    不断开 adb 连接，也不碰手机。之后它插着 USB 也不会再被自动收进来；用户在「管理模拟器」
+    里点「恢复」（:func:`restore_phone`），或亲手重新添加它的无线地址，才重新纳管，设备号不变。
     """
     backend = await manager.manager_for(path)
     backend.forget(record.native_index)
     manager.slots.tombstone_slot(record.slot)
-    manager.paths = [
-        replace(item, extra={**item.extra, **dump_phones(backend.export_records())})
-        if item.path_id == path.path_id
-        else item
-        for item in manager.paths
-    ]
+    _write_phone_extra(manager, path, backend)
     await _save(emulator_id, manager.paths, manager.slots)
     return {"ok": True, "reason": "ok"}
+
+
+async def restore_phone(emulator_id: str, path_id: str, serial: str) -> dict:
+    """恢复纳管一台移除过的真机，沿用它原来的设备号。"""
+    manager = await build_manager(emulator_id)
+    path = manager.path_of(path_id)
+    if path is None:
+        return {"ok": False, "reason": "path_not_found"}
+    if path.type != PHONE_TYPE:
+        return {"ok": False, "reason": "not_phone"}
+
+    backend = await manager.manager_for(path)
+    if not backend.restore(serial):
+        return {"ok": False, "reason": "not_ignored"}
+    info = {record_id: None for record_id in backend.records}
+    _sync_phone_path(
+        manager, path, backend, info, slot_bound=_bound_checker(emulator_id)
+    )
+    slot_record = manager.slots.find(path_id, serial)
+    await _save(emulator_id, manager.paths, manager.slots)
+    return {"ok": True, "reason": "ok", "slot": slot_record.slot if slot_record else ""}
 
 
 async def add_phone_address(emulator_id: str, path_id: str, address: str) -> dict:
@@ -621,7 +689,9 @@ async def add_phone_address(emulator_id: str, path_id: str, address: str) -> dic
     renamed_to = backend.renames.get(native_index)
     # 以前加过、一直没连上的地址这次认出来了：设备号表里的占位名一并改成序列号
     info = {record_id: None for record_id in backend.records}
-    _sync_phone_path(manager, path, backend, info)
+    _sync_phone_path(
+        manager, path, backend, info, slot_bound=_bound_checker(emulator_id)
+    )
     if renamed_to is not None and native_index not in backend.records:
         native_index = renamed_to
     slot_record = manager.slots.find(path_id, native_index)
@@ -674,7 +744,9 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
         phone = isinstance(backend, PhoneManager)
         if phone:
             before = (dump_paths(manager.paths), manager.slots.to_json())
-            _sync_phone_path(manager, path, backend, info)
+            _sync_phone_path(
+                manager, path, backend, info, slot_bound=_bound_checker(emulator_id)
+            )
             if (dump_paths(manager.paths), manager.slots.to_json()) != before:
                 dirty = True
         elif manager.slots.sync_path(path.path_id, list(info)):
@@ -725,6 +797,10 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
             {
                 **path.to_dict(),
                 "slots": manager.slots.slots_of(path.path_id),
+                "ignoredPhones": [
+                    {"serial": serial, "model": model}
+                    for serial, model in load_ignored(path.extra).items()
+                ],
             }
             for path in manager.paths
         ],

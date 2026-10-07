@@ -5702,6 +5702,11 @@ class Emulator2SettingsApplyAllOut(OutBase):
     failCount: int = Field(default=0, description="失败台数")
 
 
+class Emulator2IgnoredPhone(BaseModel):
+    serial: str = Field(..., description="手机序列号")
+    model: str = Field(default="", description="手机型号")
+
+
 class Emulator2PathItem(BaseModel):
     pathId: str = Field(..., description="路径标识")
     installPath: str = Field(..., description="安装目录")
@@ -5709,6 +5714,10 @@ class Emulator2PathItem(BaseModel):
     type: str = Field(default="", description="模拟器类型")
     version: str = Field(default="", description="版本号")
     slots: List[str] = Field(default_factory=list, description="该路径占用的设备号")
+    ignoredPhones: List[Emulator2IgnoredPhone] = Field(
+        default_factory=list,
+        description="真机路径下用户移除过的手机, 不再自动纳管, 可以恢复; 模拟器路径为空",
+    )
 
 
 class Emulator2PhoneInfo(BaseModel):
@@ -5770,6 +5779,22 @@ class Emulator2DevicesOut(OutBase):
     phoneScriptTypes: List[str] = Field(
         default_factory=list, description="能绑定真机的脚本类型, 其余脚本选真机会被拒绝"
     )
+
+
+class Emulator2PhoneRestoreIn(BaseModel):
+    emulatorId: str = Field(..., description="配置ID")
+    pathId: str = Field(..., description="真机路径标识")
+    serial: str = Field(..., description="要恢复纳管的手机序列号")
+
+
+class Emulator2PhoneRestoreOut(OutBase):
+    ok: bool = Field(default=False, description="是否恢复成功")
+    reason: str = Field(
+        default="",
+        description="失败原因枚举: path_not_found 找不到路径 / not_phone 不是真机路径 / "
+        "not_ignored 这台手机不在已移除名单里",
+    )
+    slot: str = Field(default="", description="恢复后的设备号, 沿用移除前的")
 
 
 class Emulator2PhoneAddressAddIn(BaseModel):

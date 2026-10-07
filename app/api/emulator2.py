@@ -42,6 +42,8 @@ from app.models.schema import (
     Emulator2PathRemovePreviewOut,
     Emulator2PhoneAddressAddIn,
     Emulator2PhoneAddressAddOut,
+    Emulator2PhoneRestoreIn,
+    Emulator2PhoneRestoreOut,
     Emulator2SearchIn,
     Emulator2SearchOut,
     Emulator2SettingsApplyAllIn,
@@ -276,6 +278,29 @@ async def add_phone_address(
         )
         return Emulator2PhoneAddressAddOut(**_error(e))
     return Emulator2PhoneAddressAddOut(**result)
+
+
+@router.post(
+    "/phones/restore",
+    tags=["Action"],
+    summary="恢复纳管移除过的真机",
+    response_model=Emulator2PhoneRestoreOut,
+    status_code=200,
+)
+async def restore_phone(
+    payload: Emulator2PhoneRestoreIn = Body(...),
+) -> Emulator2PhoneRestoreOut:
+    """把用户移除过的手机重新纳管，沿用它移除前的设备号。"""
+    try:
+        result = await service.restore_phone(
+            payload.emulatorId, payload.pathId, payload.serial
+        )
+    except Exception as e:
+        logger.opt(exception=True).warning(
+            f"restore_phone失败: {type(e).__name__}: {e}"
+        )
+        return Emulator2PhoneRestoreOut(**_error(e))
+    return Emulator2PhoneRestoreOut(**result)
 
 
 @router.post(

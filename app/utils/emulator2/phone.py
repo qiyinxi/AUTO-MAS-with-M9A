@@ -70,12 +70,12 @@ DEFAULT_TCP_PORT = 5555
 #: 单条 adb 命令的超时。设备本地查询，卡住基本只会是 adb 服务自己没起来。
 _ADB_TIMEOUT = 20.0
 
-#: ``adb connect`` 一次的超时。实测不可达地址要 21 秒才回（Windows 的 TCP 重传上限）。
+#: ``adb connect`` 一次的超时上限。实测不可达地址要 21 秒才回（Windows 的 TCP 重传上限）。
+#: 实际取它与剩余预算的较小者，见 :meth:`_PhoneCore._connect_wireless`。
 _CONNECT_TIMEOUT = 25.0
 
-#: 启动时连无线的总预算上限。``MaxWaitTime`` 默认 300 秒，是留给「模拟器开机」的；手机本来
-#: 就开着，连不上多半是不在同一网络或端口变了，按 300 秒死等只会白白拖住整条代理流程。
-_CONNECT_BUDGET_CAP = 30.0
+#: 剩余预算不到这么多就不再发起新的 ``adb connect``：连一次 TCP 握手加 adb 认证都不够
+_CONNECT_MIN_ATTEMPT_SECONDS = 3.0
 
 #: 两次 ``adb connect`` 之间的间隔
 _CONNECT_RETRY_SECONDS = 2.0
@@ -100,6 +100,9 @@ _HOST_PORT = re.compile(
     r"^(?P<host>\[[0-9a-fA-F:.]+\]|[^\s:/\\\[\]]+):(?P<port>\d{1,5})$"
 )
 _HOST_ONLY = re.compile(r"^(?:\[[0-9a-fA-F:.]+\]|[^\s:/\\\[\]]+)$")
+
+#: 设备身份允许的字符：``ro.serialno`` 与 adb 序列号（含 ``host:port``）都落在这里面
+_SERIAL_CHARS = re.compile(r"[A-Za-z0-9._:\-\[\]]+")
 
 #: 状态 → 不在线的原因码（前端按原因码取文案）
 _STATE_REASONS = {
@@ -380,8 +383,29 @@ def load_phones(extra: dict | None) -> list[PhoneRecord]:
     return [record for record in records if record.id]
 
 
-def dump_phones(records: list[PhoneRecord]) -> dict:
-    return {"phones": [record.to_dict() for record in records]}
+def load_ignored(extra: dict | None) -> dict[str, str]:
+    """用户移除过的手机：{身份: 型号}。自动发现与轮询都跳过它们。"""
+    ignored = (extra or {}).get("ignored")
+    if not isinstance(ignored, list):
+        return {}
+    return {
+        str(item.get("id")): str(item.get("model", ""))
+        for item in ignored
+        if isinstance(item, dict) and item.get("id")
+    }
+
+
+def dump_phones(
+    records: list[PhoneRecord], ignored: dict[str, str] | None = None
+) -> dict:
+    """登记表 → 路径记录 ``extra`` 里的那两项。"""
+    return {
+        "phones": [record.to_dict() for record in records],
+        "ignored": [
+            {"id": record_id, "model": model}
+            for record_id, model in (ignored or {}).items()
+        ],
+    }
 
 
 @dataclass(frozen=True)
@@ -483,16 +507,25 @@ class _PhoneCore(DeviceBase):
     store_package: str | None = None
 
     def __init__(
-        self, config: EmulatorConfig, adb_path: Path, records: list[PhoneRecord]
+        self,
+        config: EmulatorConfig,
+        adb_path: Path,
+        records: list[PhoneRecord],
+        ignored: dict[str, str] | None = None,
     ) -> None:
         self.config = config
         self.adb_path = adb_path
         self.records: dict[str, PhoneRecord] = {record.id: record for record in records}
+        #: 用户移除过的手机 {身份: 型号}：自动发现跳过，界面上可以恢复
+        self.ignored: dict[str, str] = dict(ignored or {})
         #: 登记表有没有变过（新发现的手机、新地址、型号）。服务层据此决定要不要落盘。
         self.dirty = False
         #: 占位原生索引 → 读到的序列号。只提议、不生效：设备号表由服务层改，改成了再
         #: 调 :meth:`rename_record`。在那之前照旧用占位那个名字，和设备号表保持一致。
         self.renames: dict[str, str] = {}
+        #: 占位原生索引 → 已有记录的身份：手动加的地址连上后认出是一台已经有设备号的手机。
+        #: 能不能把占位那个设备号并掉要看有没有脚本绑着它，由服务层决定。
+        self.merges: dict[str, str] = {}
         self.presence: dict[str, PhonePresence] = {}
 
     # ---- adb ------------------------------------------------------------
@@ -500,11 +533,16 @@ class _PhoneCore(DeviceBase):
     def get_adb_path(self) -> Path | None:
         return self.adb_path
 
-    async def _adb(self, *args: str, timeout: float = _ADB_TIMEOUT) -> tuple[int, str]:
-        """跑一条 adb 命令。**不抛异常**：执行不了返回 ``(-1, 错误文本)``。"""
+    async def _adb(
+        self, *args: str, timeout: float = _ADB_TIMEOUT, merge_stderr: bool = True
+    ) -> tuple[int, str]:
+        """跑一条 adb 命令。**不抛异常**：执行不了返回 ``(-1, 错误文本)``。
+
+        ``merge_stderr=False`` 只取标准输出，给「输出就是一个值」的查询用（``getprop``）。
+        """
         try:
             result = await ProcessRunner.run_process(
-                self.adb_path, *args, timeout=timeout, if_merge_std=True
+                self.adb_path, *args, timeout=timeout, if_merge_std=merge_stderr
             )
         except Exception as e:  # noqa: BLE001 - 见 docstring
             return -1, f"{type(e).__name__}: {e}"
@@ -532,22 +570,50 @@ class _PhoneCore(DeviceBase):
             return cached
         if not device.online:
             return None
-        code, serialno = await self._shell(device.serial, "getprop", "ro.serialno")
-        if code != 0:
+        code, serialno = await self._getprop(device.serial, "ro.serialno")
+        if code != 0 or serialno is None:
             return None
-        identity = serialno.strip()
-        if not identity or any(char.isspace() for char in identity):
-            # 有的机器 ro.serialno 是空的：按约定退回 adb 序列号
-            identity = device.serial
-        code, model = await self._shell(device.serial, "getprop", "ro.product.model")
-        result = (identity, model.strip() if code == 0 else device.model)
+        identity = (
+            serialno or device.serial
+        )  # 有的机器 ro.serialno 是空的：退回 adb 序列号
+        if not _SERIAL_CHARS.fullmatch(identity):
+            # 读出来的不像序列号（混进了别的输出）：当作这次查不动，不缓存
+            logger.debug(f"{device.serial} 的 ro.serialno 认不出: {identity!r}")
+            return None
+        code, model = await self._getprop(device.serial, "ro.product.model")
+        result = (identity, model if code == 0 and model else device.model)
         _IDENTITY_CACHE[key] = result
         return result
+
+    async def _getprop(self, serial: str, name: str) -> tuple[int, str | None]:
+        """读一个属性：只取标准输出的最后一个非空行。
+
+        老设备的 ``adb shell`` 会把设备端的 stderr 混进 stdout（``WARNING: linker: …`` 之类），
+        所以即使不合并本机的 stderr，也只认最后一行。命令失败返回 ``(返回码, None)``。
+        """
+        code, output = await self._adb(
+            "-s", serial, "shell", "getprop", name, merge_stderr=False
+        )
+        if code != 0:
+            return code, None
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        return code, lines[-1] if lines else ""
 
     # ---- 登记表 ---------------------------------------------------------
 
     def export_records(self) -> list[PhoneRecord]:
         return list(self.records.values())
+
+    def export_extra(self) -> dict:
+        """要写回路径记录 ``extra`` 的内容。"""
+        return dump_phones(self.export_records(), self.ignored)
+
+    def _unignore(self, serialno: str, model: str = "") -> None:
+        """把一台移除过的手机重新纳管。设备号表里它的墓碑由服务层复活，号码不变。"""
+        old_model = self.ignored.pop(serialno, "")
+        if serialno not in self.records:
+            self.records[serialno] = PhoneRecord(id=serialno, model=model or old_model)
+        self.dirty = True
 
     def _update(self, record_id: str, **changes: str) -> None:
         record = self.records[record_id]
@@ -571,7 +637,16 @@ class _PhoneCore(DeviceBase):
         return None
 
     async def _match(self, device: AdbDevice) -> str | None:
-        """一条 adb 连接 → 它属于哪条记录。必要时登记新手机。"""
+        """一条 adb 连接 → 它属于哪条记录。必要时登记新手机。
+
+        自动登记只对 USB：网络连接（``host:port``、mDNS 名字）只有对得上已有记录——
+        用户添加过的地址，或已经认识的身份——才归并，陌生的一律不收（Genymotion、云手机、
+        别的工具 ``adb connect`` 进来的设备都不该进设备表）。用户移除过的身份也跳过，
+        除非是用户手动添加的地址连上后认出了它，那就当作用户要找回它。
+
+        身份按 ``ro.serialno`` 认，两台序列号相同的设备会被当成同一台——这是按身份绑定的
+        固有局限，正常的手机序列号各不相同。
+        """
         address_owner = self._owner_of_address(device.serial)
         if address_owner is None and is_emulator_serial(device.serial):
             # 本机模拟器不自动收，也不去问它的序列号；用户明确添加的地址不在此列
@@ -585,7 +660,7 @@ class _PhoneCore(DeviceBase):
             owner = self._owner_of_usb(device.serial)
             if owner is not None:
                 return owner
-            if device.is_tcp:
+            if device.is_tcp or device.serial in self.ignored:
                 return None
             if device.state in ("unauthorized", "no permissions"):
                 # 新插上、还没点「允许」的手机也要列出来，用户才知道该去手机上点一下。
@@ -598,12 +673,27 @@ class _PhoneCore(DeviceBase):
             return None
 
         serialno, model = identity
+        manual = address_owner is not None and self.records[address_owner].pending
+        if serialno in self.ignored:
+            if not manual:
+                return None
+            logger.info(
+                f"手动添加的无线地址 {device.serial} 认出是移除过的真机 {serialno}，重新纳管"
+            )
+            self._unignore(serialno, model)
+
         if address_owner is not None and address_owner != serialno:
-            if self.records[address_owner].pending:
-                # 手动加的地址第一次连上：这台就是它。设备号表还没改名之前照旧用占位名
-                if serialno not in self.records:
+            if manual:
+                # 手动加的地址第一次连上。设备号表还没改之前照旧用占位名
+                if serialno in self.records:
+                    # 这台手机已经有设备号了：地址记到它身上（离线时它才连得回来），
+                    # 占位那个号并不并掉由服务层看有没有脚本绑着它
+                    if _HOST_PORT.match(device.serial):
+                        self._update(serialno, wifi=device.serial, model=model)
+                    self.merges[address_owner] = serialno
+                else:
                     self.renames[address_owner] = serialno
-                    self._update(address_owner, model=model)
+                self._update(address_owner, model=model)
                 return address_owner
             # 这个地址现在是另一台手机了（路由器把 IP 分给了别人）：旧记录的地址作废
             self._update(address_owner, wifi="")
@@ -618,13 +708,12 @@ class _PhoneCore(DeviceBase):
                 self._update(serialno, usb_serial=device.serial, model=model)
             return serialno
 
+        if device.is_tcp:
+            # 陌生的网络连接：不是用户加的地址，也不是认识的手机，不收
+            return None
+
         self.records[serialno] = PhoneRecord(
-            id=serialno,
-            model=model,
-            usb_serial="" if device.is_tcp else device.serial,
-            wifi=device.serial
-            if device.is_tcp and _HOST_PORT.match(device.serial)
-            else "",
+            id=serialno, model=model, usb_serial=device.serial
         )
         self.dirty = True
         logger.info(f"发现新的真机: {self.records[serialno].title}（{device.serial}）")
@@ -655,12 +744,27 @@ class _PhoneCore(DeviceBase):
         self.renames.pop(old, None)
         self.dirty = True
 
-    def forget(self, record_id: str) -> bool:
-        """不再纳管这台手机。不断开连接：连接是用户的，不是 MAS 的。"""
-        if self.records.pop(record_id, None) is None:
+    def forget(self, record_id: str, *, ignore: bool = True) -> bool:
+        """不再纳管这台手机。不断开连接：连接是用户的，不是 MAS 的。
+
+        ``ignore=True``（用户点「移除」）时把身份记进已忽略名单：之后自动发现和轮询都跳过它，
+        要找回在界面上「恢复」或重新添加它的无线地址。只有地址、还没认出是谁的占位记录
+        没有身份可记，直接删掉。``ignore=False`` 给归并重复设备号用。
+        """
+        record = self.records.pop(record_id, None)
+        if record is None:
             return False
+        if ignore and not record.pending:
+            self.ignored[record.id] = record.model
         self.presence.pop(record_id, None)
         self.dirty = True
+        return True
+
+    def restore(self, serialno: str) -> bool:
+        """把移除过的手机恢复纳管。不在已忽略名单里返回 ``False``。"""
+        if serialno not in self.ignored:
+            return False
+        self._unignore(serialno)
         return True
 
     async def add_address(self, address: str) -> str:
@@ -680,29 +784,34 @@ class _PhoneCore(DeviceBase):
                 identity = await self.identify(device)
 
         owner = self._owner_of_address(address)
-        if owner is not None:
-            owner_record = self.records[owner]
-            if identity is None or owner == identity[0]:
-                # 已经记着这个地址（离线也无妨）：不重复登记
-                if identity is not None:
-                    self._update(owner, model=identity[1])
-                return owner
-            if owner_record.pending:
-                # 以前加过、一直没连上的地址这次认出来了：和刷新时一样，提议改名、设备号不变
-                if identity[0] not in self.records:
-                    self.renames[owner] = identity[0]
-                    self._update(owner, model=identity[1])
-                return owner
-            # 这个地址现在是另一台手机了：旧记录的地址作废，以这次为准
-            self._update(owner, wifi="")
-
         if identity is None:
+            if owner is not None:
+                # 已经记着这个地址（离线也无妨）：不重复登记
+                return owner
             record_id = f"{PENDING_PREFIX}{address}"
             self.records[record_id] = PhoneRecord(id=record_id, wifi=address)
             self.dirty = True
             return record_id
 
         serialno, model = identity
+        if serialno in self.ignored:
+            # 用户亲手加的地址认出了移除过的手机：当作要找回它，沿用原设备号
+            logger.info(f"无线地址 {address} 认出是移除过的真机 {serialno}，重新纳管")
+            self._unignore(serialno, model)
+
+        if owner is not None and owner != serialno:
+            if self.records[owner].pending:
+                # 以前加过、一直没连上的地址这次认出来了：和刷新时一样处理
+                if serialno in self.records:
+                    self.merges[owner] = serialno
+                else:
+                    self.renames[owner] = serialno
+                    self._update(owner, model=model)
+                    return owner
+            else:
+                # 这个地址现在是另一台手机了：旧记录的地址作废，以这次为准
+                self._update(owner, wifi="")
+
         if serialno in self.records:
             self._update(serialno, wifi=address, model=model)
         else:
@@ -807,8 +916,15 @@ class _PhoneCore(DeviceBase):
             return DeviceStatus.UNKNOWN
         if presence is None or presence.device is None or not presence.device.online:
             return DeviceStatus.OFFLINE
-        await self._shell(presence.device.serial, "input", "keyevent", "KEYCODE_SLEEP")
-        logger.info(f"真机 {record.title} 已熄屏")
+        code, output = await self._shell(
+            presence.device.serial, "input", "keyevent", "KEYCODE_SLEEP"
+        )
+        if code != 0:
+            logger.warning(
+                f"真机 {record.title} 熄屏失败（返回码 {code}）: {output.strip()}"
+            )
+        else:
+            logger.info(f"真机 {record.title} 已熄屏")
         return presence.status
 
     async def _wait_device(self, address: str, deadline: float) -> AdbDevice | None:
@@ -829,22 +945,34 @@ class _PhoneCore(DeviceBase):
     async def _connect_wireless(self, record: PhoneRecord) -> AdbDevice:
         """按记住的无线地址连回来，连上即返回。
 
-        预算取 ``MaxWaitTime``，但不超过 :data:`_CONNECT_BUDGET_CAP`；地址解析不了这种
-        不会自己好的情况立刻放弃。连不上时抛 ``RuntimeError``，消息说清是哪种连不上。
+        预算就是 ``MaxWaitTime``：每次 ``adb connect`` 的超时取单次上限与剩余预算的较小者，
+        剩余预算不够一次像样的尝试（:data:`_CONNECT_MIN_ATTEMPT_SECONDS`）就不再发起；
+        地址解析不了这种不会自己好的情况立刻放弃。连不上时抛 ``RuntimeError``，
+        消息说清是哪种连不上。
         """
         address = record.wifi
         max_wait = float(self.config.get("Info", "MaxWaitTime"))
-        budget_end = time.monotonic() + min(max_wait, _CONNECT_BUDGET_CAP)
+        budget_end = time.monotonic() + max_wait
         outcome, output = CONNECT_FAILED, ""
-        logger.info(f"真机 {record.title} 不在线，尝试连接无线地址 {address}")
+        logger.info(
+            f"真机 {record.title} 不在线，尝试连接无线地址 {address}（最多等 {max_wait:.0f} 秒）"
+        )
+        attempted = False
         while True:
-            code, output = await self._adb("connect", address, timeout=_CONNECT_TIMEOUT)
-            outcome = classify_connect(output) if code != -1 else CONNECT_FAILED
+            remaining = budget_end - time.monotonic()
+            if attempted and remaining < _CONNECT_MIN_ATTEMPT_SECONDS:
+                break
+            attempted = True
+            code, output = await self._adb(
+                "connect", address, timeout=max(min(_CONNECT_TIMEOUT, remaining), 0.1)
+            )
+            if code == -1:
+                # 被我们自己的超时掐掉 = 这段时间里对方一直没应答，和 adb 报的超时是一回事
+                outcome = CONNECT_UNREACHABLE if "Timeout" in output else CONNECT_FAILED
+            else:
+                outcome = classify_connect(output)
             if outcome == CONNECT_CONNECTED:
-                device = await self._wait_device(
-                    address,
-                    max(budget_end, time.monotonic() + _CONNECT_SETTLE_SECONDS),
-                )
+                device = await self._wait_device(address, budget_end)
                 if device is not None and device.online:
                     logger.info(f"真机 {record.title} 已通过无线连接（{address}）")
                     return device
@@ -887,7 +1015,10 @@ class _PhoneCore(DeviceBase):
         await asyncio.sleep(_UI_SETTLE_SECONDS)
         if state.showing is None:
             # 读不出状态时不上滑：手机其实已解锁的话，上滑会划到游戏界面里
-            logger.warning(f"读不出真机 {title} 的锁屏状态，按已解锁继续")
+            logger.warning(
+                f"读不出真机 {title} 的锁屏状态（这台手机的 dumpsys 里没有认得的锁屏字段），"
+                "按未锁屏继续；如果手机其实锁着，后续脚本会连上但点不动"
+            )
             return
 
         state = await self._keyguard(serial)
@@ -969,7 +1100,7 @@ async def read_adb_version(adb_path: Path) -> str | None:
 def build_manager(
     config: EmulatorConfig, adb_path: Path, extra: dict | None
 ) -> PhoneManager:
-    return PhoneManager(config, adb_path, load_phones(extra))
+    return PhoneManager(config, adb_path, load_phones(extra), load_ignored(extra))
 
 
 __all__ = [
@@ -988,6 +1119,7 @@ __all__ = [
     "classify_connect",
     "dump_phones",
     "is_emulator_serial",
+    "load_ignored",
     "load_phones",
     "normalize_address",
     "parse_adb_devices_long",
