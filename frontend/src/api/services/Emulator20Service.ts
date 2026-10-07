@@ -15,6 +15,8 @@ import type { Emulator2PathAddOut } from '../models/Emulator2PathAddOut';
 import type { Emulator2PathRemoveIn } from '../models/Emulator2PathRemoveIn';
 import type { Emulator2PathRemoveOut } from '../models/Emulator2PathRemoveOut';
 import type { Emulator2PathRemovePreviewOut } from '../models/Emulator2PathRemovePreviewOut';
+import type { Emulator2PhoneAddressAddIn } from '../models/Emulator2PhoneAddressAddIn';
+import type { Emulator2PhoneAddressAddOut } from '../models/Emulator2PhoneAddressAddOut';
 import type { Emulator2SearchIn } from '../models/Emulator2SearchIn';
 import type { Emulator2SearchOut } from '../models/Emulator2SearchOut';
 import type { Emulator2SettingsApplyAllIn } from '../models/Emulator2SettingsApplyAllIn';
@@ -178,7 +180,7 @@ export class Emulator20Service {
     }
     /**
      * 删除模拟器实例
-     * 删除一个实例。实例必须先关闭。
+     * 删除一个实例。实例必须先关闭。真机是「不再纳管这台手机」，不碰手机本身。
      *
      * 设备号不写墓碑——以后在同一原生索引重建实例仍然是这个设备号；
      * 在那之前该设备号显示为「未找到」，绑定它的脚本下一次执行直接失败。
@@ -192,6 +194,29 @@ export class Emulator20Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/emulator2/instances/delete',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 添加真机的无线调试地址
+     * 给真机路径登记一个无线调试地址，返回这台手机的设备号。
+     *
+     * 当场连一次认认是哪台手机：同一台手机插过 USB 的话设备号不变。连不上也照样添加，
+     * 显示为离线，启动时再连。删除走「删除实例」接口。
+     * @param requestBody
+     * @returns Emulator2PhoneAddressAddOut Successful Response
+     * @throws ApiError
+     */
+    public static addPhoneAddressApiEmulator2PhonesAddressAddPost(
+        requestBody: Emulator2PhoneAddressAddIn,
+    ): CancelablePromise<Emulator2PhoneAddressAddOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/emulator2/phones/address/add',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

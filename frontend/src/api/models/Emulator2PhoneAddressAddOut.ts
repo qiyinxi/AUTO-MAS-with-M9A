@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type Emulator2InstanceCreateOut = {
+export type Emulator2PhoneAddressAddOut = {
     /**
      * 状态码
      */
@@ -16,20 +16,24 @@ export type Emulator2InstanceCreateOut = {
      */
     message?: string;
     /**
-     * 是否新建成功
+     * 是否添加成功
      */
     ok?: boolean;
     /**
-     * 失败原因枚举; unsupported 表示该路径是真机, 不能新建实例
+     * 失败原因枚举: invalid_address 地址格式不对 / path_not_found 找不到路径 / not_phone 不是真机路径
      */
     reason?: string;
     /**
-     * 新实例分到的设备号
+     * 这台手机的设备号
      */
     slot?: string;
     /**
-     * 模拟器自己的实例索引
+     * 规范化后的地址
      */
-    nativeIndex?: string;
+    address?: string;
+    /**
+     * 添加时是否已连上并认出是哪台手机; 否则显示为离线, 启动时再连
+     */
+    identified?: boolean;
 };
 

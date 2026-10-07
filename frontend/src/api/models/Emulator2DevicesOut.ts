@@ -25,5 +25,9 @@ export type Emulator2DevicesOut = {
      * 合并后的设备列表
      */
     devices?: Array<Emulator2DeviceItem>;
+    /**
+     * 能绑定真机的脚本类型, 其余脚本选真机会被拒绝
+     */
+    phoneScriptTypes?: Array<string>;
 };
 
