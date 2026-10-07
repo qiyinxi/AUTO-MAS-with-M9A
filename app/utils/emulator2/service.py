@@ -798,8 +798,8 @@ async def list_devices(emulator_id: str, *, with_settings: bool = True) -> dict:
                 **path.to_dict(),
                 "slots": manager.slots.slots_of(path.path_id),
                 "ignoredPhones": [
-                    {"serial": serial, "model": model}
-                    for serial, model in load_ignored(path.extra).items()
+                    {"serial": record.id, "model": record.model}
+                    for record in load_ignored(path.extra).values()
                 ],
             }
             for path in manager.paths

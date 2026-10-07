@@ -383,27 +383,36 @@ def load_phones(extra: dict | None) -> list[PhoneRecord]:
     return [record for record in records if record.id]
 
 
-def load_ignored(extra: dict | None) -> dict[str, str]:
-    """用户移除过的手机：{身份: 型号}。自动发现与轮询都跳过它们。"""
+def load_ignored(extra: dict | None) -> dict[str, PhoneRecord]:
+    """用户移除过的手机：{身份: 记录}。自动发现与轮询都跳过它们。
+
+    记录里留着型号和最近可用的无线地址，恢复时原样还回去，没插 USB 也能按原地址连回来。
+    旧条目没有地址字段，按无地址处理。
+    """
     ignored = (extra or {}).get("ignored")
     if not isinstance(ignored, list):
         return {}
-    return {
-        str(item.get("id")): str(item.get("model", ""))
+    records = [
+        PhoneRecord(
+            id=str(item.get("id")),
+            model=str(item.get("model") or ""),
+            wifi=str(item.get("wifi") or ""),
+        )
         for item in ignored
         if isinstance(item, dict) and item.get("id")
-    }
+    ]
+    return {record.id: record for record in records}
 
 
 def dump_phones(
-    records: list[PhoneRecord], ignored: dict[str, str] | None = None
+    records: list[PhoneRecord], ignored: dict[str, PhoneRecord] | None = None
 ) -> dict:
     """登记表 → 路径记录 ``extra`` 里的那两项。"""
     return {
         "phones": [record.to_dict() for record in records],
         "ignored": [
-            {"id": record_id, "model": model}
-            for record_id, model in (ignored or {}).items()
+            {"id": record.id, "model": record.model, "wifi": record.wifi}
+            for record in (ignored or {}).values()
         ],
     }
 
@@ -511,13 +520,13 @@ class _PhoneCore(DeviceBase):
         config: EmulatorConfig,
         adb_path: Path,
         records: list[PhoneRecord],
-        ignored: dict[str, str] | None = None,
+        ignored: dict[str, PhoneRecord] | None = None,
     ) -> None:
         self.config = config
         self.adb_path = adb_path
         self.records: dict[str, PhoneRecord] = {record.id: record for record in records}
-        #: 用户移除过的手机 {身份: 型号}：自动发现跳过，界面上可以恢复
-        self.ignored: dict[str, str] = dict(ignored or {})
+        #: 用户移除过的手机 {身份: 记录（型号、无线地址）}：自动发现跳过，界面上可以恢复
+        self.ignored: dict[str, PhoneRecord] = dict(ignored or {})
         #: 登记表有没有变过（新发现的手机、新地址、型号）。服务层据此决定要不要落盘。
         self.dirty = False
         #: 占位原生索引 → 读到的序列号。只提议、不生效：设备号表由服务层改，改成了再
@@ -609,10 +618,13 @@ class _PhoneCore(DeviceBase):
         return dump_phones(self.export_records(), self.ignored)
 
     def _unignore(self, serialno: str, model: str = "") -> None:
-        """把一台移除过的手机重新纳管。设备号表里它的墓碑由服务层复活，号码不变。"""
-        old_model = self.ignored.pop(serialno, "")
+        """把一台移除过的手机重新纳管。设备号表里它的墓碑由服务层复活，号码不变。
+
+        移除前记住的无线地址一并还回去：没插 USB 也能按原地址连回来（地址后来变了照旧要重新添加）。
+        """
+        old = self.ignored.pop(serialno, None) or PhoneRecord(id=serialno)
         if serialno not in self.records:
-            self.records[serialno] = PhoneRecord(id=serialno, model=model or old_model)
+            self.records[serialno] = replace(old, model=model or old.model)
         self.dirty = True
 
     def _update(self, record_id: str, **changes: str) -> None:
@@ -755,7 +767,10 @@ class _PhoneCore(DeviceBase):
         if record is None:
             return False
         if ignore and not record.pending:
-            self.ignored[record.id] = record.model
+            # 只留型号和无线地址：USB 序列号恢复后插上会重新记
+            self.ignored[record.id] = PhoneRecord(
+                id=record.id, model=record.model, wifi=record.wifi
+            )
         self.presence.pop(record_id, None)
         self.dirty = True
         return True
