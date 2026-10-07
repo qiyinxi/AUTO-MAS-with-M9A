@@ -104,6 +104,7 @@
     @start-maa-end-config="handleStartMaaEndConfig"
     @start-maa-end-user-config="handleStartMaaEndUserConfig"
     @start-okww-config="handleStartOkwwConfig"
+    @start-whimbox-config="handleStartWhimboxConfig"
     @toggle-user-status="handleToggleUserStatus"
     @scripts-reordered="handleScriptsReordered"
   />
@@ -114,6 +115,9 @@
     :submitting="addLoading || templateLoading"
     :template-loading="templateLoading"
     :template-error="templateError"
+    :template-page="templatePage"
+    :template-page-size="TEMPLATE_PAGE_SIZE"
+    :template-total="templateTotal"
     :mfw-sources="mfwSources"
     :mfw-sources-loading="mfwSourcesLoading"
     :mfw-sources-error="mfwSourcesError"
@@ -140,23 +144,34 @@ import ScriptCreateDialog from '@/views/scripts/components/ScriptCreateDialog.vu
 import type { Script, ScriptType, User } from '@/types/script'
 import {
   getScriptEditSegment,
+  isMfwFamily,
   type ScriptCreateRequest,
+  type TemplateRequest,
 } from '@/views/scripts/components/scriptCreateFlow'
+import { maafwRouteLocation } from '@/router/maafwFlavorRoutes'
 import { useScriptApi } from '@/composables/useScriptApi'
 import { useUserApi } from '@/composables/useUserApi'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { onTaskRuntimeEvent } from '@/composables/useTaskRuntimeState'
 import {
   WS_TASK_COMPLETED,
+  WS_TASK_CONFIG_DISCARDED,
   WS_TASK_NOTICE,
   type WSTaskCompletedData,
+  type WSTaskConfigDiscardedData,
   type WSTaskNoticeData,
 } from '@/services/websocket/types'
-import { useTemplateApi, type WebConfigTemplate } from '@/composables/useTemplateApi'
+import {
+  TEMPLATE_PAGE_SIZE,
+  useTemplateApi,
+  type ShareTemplateItem,
+} from '@/composables/useTemplateApi'
 import { useMaaFWEmbeddedApi } from '@/composables/useMaaFWEmbeddedApi'
 import type { MaaFWEmbeddedSourceItem } from '@/api'
 import { Service } from '@/api/services/Service'
 import { TaskCreateIn } from '@/api/models/TaskCreateIn'
 import DocLink from '@/components/DocLink.vue'
+import { showConfigDiscardWarning } from '@/utils/configSessionDiscard'
 import { MAS_DOC_URLS } from '@/utils/openExternal'
 import { filterScriptsByKeyword } from '@/views/scripts/scriptSearch'
 
@@ -170,7 +185,7 @@ const router = useRouter()
 const { addScript, deleteScript, getScriptsWithUsers } = useScriptApi()
 const { updateUser, deleteUser } = useUserApi()
 const { subscribe, unsubscribe } = useWebSocket()
-const { getWebConfigTemplates, importScriptFromWeb, error: templateError } = useTemplateApi()
+const { getShareTemplates, importScriptFromTemplate, error: templateError } = useTemplateApi()
 const { listEmbeddedSources, cloneEmbedded } = useMaaFWEmbeddedApi()
 
 const scripts = ref<Script[]>([])
@@ -183,7 +198,10 @@ const scriptTableRef = ref<InstanceType<typeof ScriptTable> | null>(null)
 // 增加：标记是否已经完成过一次脚本列表加载（成功或失败都算一次）
 const loadedOnce = ref(false)
 const scriptCreateVisible = ref(false)
-const templates = ref<WebConfigTemplate[]>([])
+const templates = ref<ShareTemplateItem[]>([])
+const templatePage = ref(1)
+const templateTotal = ref(0)
+let templateRequestId = 0
 const addLoading = ref(false)
 const copyingScriptId = ref<string | null>(null)
 const templateLoading = ref(false)
@@ -193,7 +211,7 @@ const mfwSourcesLoading = ref(false)
 const mfwSourcesError = ref<string | null>(null)
 
 // 配置会话遮罩：同一时刻只会有一个配置会话在前台
-type ConfigMaskKind = 'MAA' | 'SRC' | 'MaaEnd' | 'Okww'
+type ConfigMaskKind = 'MAA' | 'SRC' | 'MaaEnd' | 'Okww' | 'Whimbox'
 const configMask = ref<{ kind: ConfigMaskKind; script: Script; user: User | null } | null>(null)
 const clearConfigMask = () => {
   configMask.value = null
@@ -236,6 +254,14 @@ const configMaskView = computed(() => {
         tip: t('scripts.mask.okwwUnlockTip'),
         button: t('scripts.mask.saveSettings'),
       }
+    case 'Whimbox':
+      return {
+        iconColor: 'var(--ant-color-primary)',
+        title: t('scripts.mask.whimboxTitle'),
+        description: t('scripts.mask.whimboxDesc'),
+        tip: t('scripts.mask.whimboxUnlockTip'),
+        button: t('scripts.mask.saveSettings'),
+      }
     default:
       return null
   }
@@ -256,43 +282,56 @@ const handleSaveConfigMask = () => {
     case 'Okww':
       void handleSaveOkwwConfig(mask.script)
       break
+    case 'Whimbox':
+      void handleSaveWhimboxConfig(mask.script)
+      break
   }
 }
 
-const scriptEditPathMap: Record<ScriptType, string> = {
-  MAA: 'maa',
-  General: 'general',
-  Okww: 'okww',
-  OkNte: 'oknte',
-  SRC: 'src',
-  MaaEnd: 'maaend',
-  M9A: 'm9a',
-  MaaFW: 'maafw',
-  HSR: 'hsr',
-  BetterGI: 'bettergi',
-  ZzzOd: 'zzzod',
-  BAAH: 'baah',
-}
-
-const getScriptEditPath = (type: ScriptType) => scriptEditPathMap[type]
+// 与新建流程同一张表（MaaFW 与各特调的后缀取自特调注册表）
+const getScriptEditPath = (type: ScriptType) => getScriptEditSegment(type)
 
 // 配置会话超时：30 分钟没保存就自动断开
 const CONFIG_SESSION_TIMEOUT_MS = 30 * 60 * 1000
+// 丢弃帧由任务收尾过程发出，与停止响应分属两条链路：停止后等一个回合再判定改动是否生效
+const DISCARD_FRAME_GRACE_MS = 300
 
-// WebSocket连接管理：scriptId/userId -> { subscriptionIds, taskId, timeoutId }
-const activeConnections = ref<
-  Map<
-    string,
-    { subscriptionIds: string[]; taskId: string; timeoutId?: ReturnType<typeof setTimeout> }
-  >
->(new Map())
+// 配置会话的连接记录（键为 scriptId/userId）
+type ConfigSessionConnection = {
+  subscriptionIds: string[]
+  taskId: string
+  timeoutId?: ReturnType<typeof setTimeout>
+  /** 后端下发的丢弃原因（structure/unreadable/not_written），改动未被丢弃为 null */
+  discardedReason: string | null
+  /** 丢弃提示是否已弹过：完成帧与停止响应都会走到会话结束，只提示一次 */
+  discardWarned: boolean
+}
+
+// WebSocket连接管理：scriptId/userId -> ConfigSessionConnection
+const activeConnections = ref<Map<string, ConfigSessionConnection>>(new Map())
+
+// 定时队列等别处发起的任务结束后，用户的代理状态已在后端更新，防抖后重新拉一次列表；
+// removed 是断线期间结束、没收到完成通知的任务
+const TASK_COMPLETED_RELOAD_DELAY_MS = 1000
+let taskCompletedReloadTimer: ReturnType<typeof setTimeout> | undefined
+let disposeTaskRuntimeListener: (() => void) | undefined
 
 onMounted(() => {
   loadScripts()
+  disposeTaskRuntimeListener = onTaskRuntimeEvent(event => {
+    const ended =
+      event.type === 'removed' ||
+      (event.type === 'completed' && event.state.mode !== 'ScriptConfig')
+    if (!ended) return
+    clearTimeout(taskCompletedReloadTimer)
+    taskCompletedReloadTimer = setTimeout(() => void loadScripts(), TASK_COMPLETED_RELOAD_DELAY_MS)
+  })
 })
 
 // 离开页面时释放全部配置会话订阅并清掉超时定时器，不会在其他页面弹出提示
 onUnmounted(() => {
+  disposeTaskRuntimeListener?.()
+  clearTimeout(taskCompletedReloadTimer)
   for (const connection of activeConnections.value.values()) {
     for (const subscriptionId of connection.subscriptionIds) {
       unsubscribe(subscriptionId)
@@ -347,11 +386,10 @@ const navigateToCreatedScript = (
   data?: Record<string, unknown>
 ) => {
   const route = {
-    // MFW 新建后进分步引导（M9A 是 MaaFW 的特调类型，同一套引导）；其余类型直接进编辑页
-    path:
-      type === 'MaaFW' || type === 'M9A'
-        ? `/scripts/${scriptId}/setup/maafw`
-        : `/scripts/${scriptId}/edit/${getScriptEditSegment(type)}`,
+    // MFW 家族新建后进各自类型的分步引导（同一个页面）；其余类型直接进编辑页
+    ...(isMfwFamily(type)
+      ? maafwRouteLocation(type, 'setup', { id: scriptId })
+      : { path: `/scripts/${scriptId}/edit/${getScriptEditSegment(type)}` }),
     ...(data
       ? {
           state: {
@@ -391,9 +429,16 @@ const handleSubmitScriptCreate = async (request: ScriptCreateRequest) => {
     }
 
     if (request.kind === 'general-template') {
-      const imported = await importScriptFromWeb(result.scriptId, request.template.downloadUrl)
-      if (!imported) return
-      message.success(t('scripts.toast.createdFromTemplate', { name: request.template.configName }))
+      const imported = await importScriptFromTemplate(result.scriptId, request.template)
+      // 导入失败就把刚建出来的空脚本删掉，不给用户留一个没有配置的壳
+      if (!imported) {
+        await deleteScript(result.scriptId)
+        await loadScripts()
+        return
+      }
+      message.success(
+        t('scripts.toast.createdFromTemplate', { name: request.template.displayName })
+      )
       await loadScripts()
       scriptCreateVisible.value = false
       navigateToCreatedScript(result.scriptId, 'General')
@@ -426,20 +471,34 @@ const loadMfwSources = async () => {
   }
 }
 
-const loadTemplates = async () => {
+const loadTemplates = async (query: TemplateRequest = { page: 1, keyword: '' }) => {
+  const requestId = ++templateRequestId
   templateLoading.value = true
   try {
-    templates.value = await getWebConfigTemplates()
+    const result = await getShareTemplates({
+      page: query.page,
+      pageSize: TEMPLATE_PAGE_SIZE,
+      keyword: query.keyword,
+    })
+    // 快速改关键字时请求可能乱序返回，只认最后一次
+    if (requestId !== templateRequestId) return
+    templates.value = result.items
+    templatePage.value = result.page
+    templateTotal.value = result.total
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
     logger.error(`加载模板列表失败: ${errorMsg}`)
   } finally {
-    templateLoading.value = false
+    if (requestId === templateRequestId) templateLoading.value = false
   }
 }
 
 const handleEditScript = (script: Script) => {
-  router.push(`/scripts/${script.id}/edit/${getScriptEditPath(script.type)}`)
+  router.push(
+    isMfwFamily(script.type)
+      ? maafwRouteLocation(script.type, 'script', { id: script.id })
+      : `/scripts/${script.id}/edit/${getScriptEditPath(script.type)}`
+  )
 }
 
 const handleDeleteScript = async (script: Script) => {
@@ -467,16 +526,15 @@ const handleCopyScript = async (script: Script) => {
 
 const handleAddUser = (script: Script) => {
   // 根据脚本类型跳转到对应的用户添加页面
-  if (script.type === 'MAA') {
+  if (isMfwFamily(script.type)) {
+    // MaaFW 与各特调共用一个用户页，路由按特调注册表生成
+    router.push(maafwRouteLocation(script.type, 'userAdd', { scriptId: script.id }))
+  } else if (script.type === 'MAA') {
     router.push(`/scripts/${script.id}/users/add/maa`)
   } else if (script.type === 'SRC') {
     router.push(`/scripts/${script.id}/users/add/src`)
   } else if (script.type === 'MaaEnd') {
     router.push(`/scripts/${script.id}/users/add/maaend`)
-  } else if (script.type === 'M9A') {
-    router.push(`/scripts/${script.id}/users/add/m9a`)
-  } else if (script.type === 'MaaFW') {
-    router.push(`/scripts/${script.id}/users/add/maafw`)
   } else if (script.type === 'Okww') {
     router.push(`/scripts/${script.id}/users/add/okww`)
   } else if (script.type === 'OkNte') {
@@ -489,6 +547,8 @@ const handleAddUser = (script: Script) => {
     router.push(`/scripts/${script.id}/users/add/zzzod`)
   } else if (script.type === 'BAAH') {
     router.push(`/scripts/${script.id}/users/add/baah`)
+  } else if (script.type === 'Whimbox') {
+    router.push(`/scripts/${script.id}/users/add/whimbox`)
   } else {
     router.push(`/scripts/${script.id}/users/add/general`)
   }
@@ -499,16 +559,17 @@ const handleEditUser = (user: User) => {
   const script = scripts.value.find(s => s.users.some(u => u.id === user.id))
   if (script) {
     // 根据脚本类型跳转到对应的用户编辑页面
-    if (script.type === 'MAA') {
+    if (isMfwFamily(script.type)) {
+      // MaaFW 与各特调共用一个用户页，路由按特调注册表生成
+      router.push(
+        maafwRouteLocation(script.type, 'userEdit', { scriptId: script.id, userId: user.id })
+      )
+    } else if (script.type === 'MAA') {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/maa`)
     } else if (script.type === 'SRC') {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/src`)
     } else if (script.type === 'MaaEnd') {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/maaend`)
-    } else if (script.type === 'M9A') {
-      router.push(`/scripts/${script.id}/users/${user.id}/edit/m9a`)
-    } else if (script.type === 'MaaFW') {
-      router.push(`/scripts/${script.id}/users/${user.id}/edit/maafw`)
     } else if (script.type === 'Okww') {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/okww`)
     } else if (script.type === 'OkNte') {
@@ -521,6 +582,8 @@ const handleEditUser = (user: User) => {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/zzzod`)
     } else if (script.type === 'BAAH') {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/baah`)
+    } else if (script.type === 'Whimbox') {
+      router.push(`/scripts/${script.id}/users/${user.id}/edit/whimbox`)
     } else {
       router.push(`/scripts/${script.id}/users/${user.id}/edit/general`)
     }
@@ -563,6 +626,21 @@ const clearConfigSession = (
   clearState()
 }
 
+// 结束一次配置会话：释放订阅与遮罩，必要时补一次「改动被丢弃」提示。
+// 返回改动是否生效（false 表示后端已丢弃，调用方不该再提示「已保存」）。
+const finishConfigSession = (
+  targetId: string,
+  connection: ConfigSessionConnection,
+  clearState: () => void
+) => {
+  clearConfigSession(targetId, connection.subscriptionIds, clearState)
+  if (connection.discardedReason && !connection.discardWarned) {
+    connection.discardWarned = true
+    showConfigDiscardWarning(t, connection.discardedReason)
+  }
+  return connection.discardedReason === null
+}
+
 // 会话超时定时器挂在连接记录上，会话结束或页面卸载时一并清掉
 const scheduleConfigSessionTimeout = (
   targetId: string,
@@ -584,7 +662,7 @@ const startConfigSession = async (
   label: string,
   setActiveState: () => void,
   clearState: () => void,
-  onCompleted?: (data: WSTaskCompletedData) => void
+  onCompleted?: (data: WSTaskCompletedData, discardedReason: string | null) => void
 ) => {
   if (activeConnections.value.has(targetId)) {
     message.warning(t('scripts.toast.targetConfiguring'))
@@ -601,30 +679,38 @@ const startConfigSession = async (
 
   setActiveState()
   let sessionEnded = false
-  const subscriptionIds: string[] = []
-  subscriptionIds.push(
+  // 连接记录先建好：丢弃帧与完成帧都可能早于停止响应到达，两个回调都要读到同一份记录
+  const connection: ConfigSessionConnection = {
+    subscriptionIds: [],
+    taskId: response.taskId,
+    discardedReason: null,
+    discardWarned: false,
+  }
+  connection.subscriptionIds.push(
     subscribe({ id: response.taskId, type: WS_TASK_NOTICE }, wsMessage => {
       const data = wsMessage.data as unknown as WSTaskNoticeData
       if (data.level === 'error') {
         message.error(t('scripts.toast.configFailed', { label, error: data.message }))
       }
     }),
+    subscribe({ id: response.taskId, type: WS_TASK_CONFIG_DISCARDED }, wsMessage => {
+      const data = wsMessage.data as unknown as WSTaskConfigDiscardedData
+      connection.discardedReason = data.reason
+      logger.info(`收到配置会话丢弃通知: reason=${data.reason}`)
+    }),
     subscribe({ id: response.taskId, type: WS_TASK_COMPLETED }, wsMessage => {
       sessionEnded = true
-      clearConfigSession(targetId, subscriptionIds, clearState)
-      onCompleted?.(wsMessage.data as unknown as WSTaskCompletedData)
+      finishConfigSession(targetId, connection, clearState)
+      onCompleted?.(wsMessage.data as unknown as WSTaskCompletedData, connection.discardedReason)
     })
   )
   if (sessionEnded) {
-    for (const subscriptionId of subscriptionIds) {
+    for (const subscriptionId of connection.subscriptionIds) {
       unsubscribe(subscriptionId)
     }
     return false
   }
-  activeConnections.value.set(targetId, {
-    subscriptionIds,
-    taskId: response.taskId,
-  })
+  activeConnections.value.set(targetId, connection)
   return true
 }
 
@@ -640,12 +726,13 @@ const stopConfigSession = async (targetId: string, label: string, clearState: ()
   if (response.code !== 200) {
     throw new Error(response.message || t('scripts.toast.saveFailedRaw', { label }))
   }
-  clearConfigSession(targetId, connection.subscriptionIds, clearState)
-  return true
+  // 丢弃帧先于停止响应写出，但到达顺序不保证，等一个回合再判定改动是否生效
+  await new Promise(resolve => setTimeout(resolve, DISCARD_FRAME_GRACE_MS))
+  return finishConfigSession(targetId, connection, clearState)
 }
 
-// MAA / SRC 脚本级配置会话：走通用的 start/stop，带 sessionEnded 竞态守卫
-const handleStartScriptConfig = async (script: Script, kind: 'MAA' | 'SRC') => {
+// 脚本级配置会话（MAA / SRC / Whimbox）：走通用的 start/stop，带 sessionEnded 竞态守卫
+const handleStartScriptConfig = async (script: Script, kind: 'MAA' | 'SRC' | 'Whimbox') => {
   try {
     const started = await startConfigSession(
       script.id,
@@ -654,8 +741,10 @@ const handleStartScriptConfig = async (script: Script, kind: 'MAA' | 'SRC') => {
         configMask.value = { kind, script, user: null }
       },
       clearConfigMask,
-      data => {
+      (data, discardedReason) => {
         logger.info(`脚本 ${script.name} 配置任务已结束`)
+        // 改动被丢弃时弹窗已说明去向，再提示「已完成」互相矛盾
+        if (discardedReason) return
         if (data.outcome === 'success') {
           message.success(t('scripts.toast.configDone', { name: script.name }))
         }
@@ -674,7 +763,7 @@ const handleStartScriptConfig = async (script: Script, kind: 'MAA' | 'SRC') => {
   }
 }
 
-const handleSaveScriptConfig = async (script: Script, kind: 'MAA' | 'SRC') => {
+const handleSaveScriptConfig = async (script: Script, kind: 'MAA' | 'SRC' | 'Whimbox') => {
   try {
     const saved = await stopConfigSession(script.id, kind, clearConfigMask)
     if (saved) message.success(t('scripts.toast.configSaved', { name: script.name }))
@@ -689,6 +778,9 @@ const handleStartMAAConfig = (script: Script) => handleStartScriptConfig(script,
 const handleSaveMAAConfig = (script: Script) => handleSaveScriptConfig(script, 'MAA')
 const handleStartSRCConfig = (script: Script) => handleStartScriptConfig(script, 'SRC')
 const handleSaveSRCConfig = (script: Script) => handleSaveScriptConfig(script, 'SRC')
+// 奇想盒：无参数拉起原生 app（下载跑图路线、配置模型/键位等都在那边做，MAS 零写入）
+const handleStartWhimboxConfig = (script: Script) => handleStartScriptConfig(script, 'Whimbox')
+const handleSaveWhimboxConfig = (script: Script) => handleSaveScriptConfig(script, 'Whimbox')
 
 const handleStartMaaEndConfig = async (script: Script, user: User | null = null) => {
   try {

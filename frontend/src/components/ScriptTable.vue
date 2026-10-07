@@ -45,10 +45,11 @@
                     alt="MaaEnd"
                     class="script-logo"
                   />
+                  <!-- MaaFW 与各特调的图标取自特调注册表 -->
                   <img
-                    v-else-if="script.type === 'M9A'"
-                    src="@/assets/M9A.png"
-                    alt="M9A"
+                    v-else-if="isMaaFWFamily(script.type)"
+                    :src="resolveMaaFWFlavor(script.type).logo"
+                    :alt="resolveMaaFWFlavor(script.type).typeTagLabel"
                     class="script-logo"
                   />
                   <img
@@ -70,12 +71,6 @@
                     class="script-logo"
                   />
                   <img
-                    v-else-if="script.type === 'MaaFW'"
-                    src="@/assets/maafw.png"
-                    alt="MFW"
-                    class="script-logo"
-                  />
-                  <img
                     v-else-if="script.type === 'BetterGI'"
                     src="@/assets/bettergi.ico"
                     alt="BetterGI"
@@ -93,12 +88,18 @@
                     alt="BAAH"
                     class="script-logo"
                   />
+                  <img
+                    v-else-if="script.type === 'Whimbox'"
+                    src="@/assets/whimbox.png"
+                    alt="Whimbox"
+                    class="script-logo"
+                  />
                   <img v-else src="@/assets/AUTO-MAS.ico" alt="AUTO-MAS" class="script-logo" />
                 </div>
                 <div class="script-details">
                   <h3 class="script-name">{{ script.name }}</h3>
                   <a-tag :color="getScriptTypeTagColor(script.type)" class="script-type">
-                    {{ getScriptTypeLabel(script.type) }}
+                    {{ getScriptTypeLabel(script) }}
                   </a-tag>
                 </div>
               </div>
@@ -199,6 +200,30 @@
                   </template>
                   {{ t('comp.configuring') }}
                 </a-button>
+                <a-button
+                  v-if="script.type === 'Whimbox' && !props.activeConnections.has(script.id)"
+                  type="primary"
+                  ghost
+                  size="middle"
+                  @click="handleStartWhimboxConfig(script)"
+                >
+                  <template #icon>
+                    <SettingOutlined />
+                  </template>
+                  {{ t('comp.configureWhimbox') }}
+                </a-button>
+                <a-button
+                  v-if="script.type === 'Whimbox' && props.activeConnections.has(script.id)"
+                  type="default"
+                  size="middle"
+                  disabled
+                  style="color: #52c41a; border-color: #52c41a"
+                >
+                  <template #icon>
+                    <SettingOutlined />
+                  </template>
+                  {{ t('comp.configuring') }}
+                </a-button>
                 <a-button type="default" size="middle" @click="handleEdit(script)">
                   <template #icon>
                     <EditOutlined />
@@ -255,7 +280,9 @@
                     size="middle"
                     class="action-button"
                     :disabled="props.searching"
-                    :aria-label="isUsersCollapsed(script.id) ? '展开用户' : '收起用户'"
+                    :aria-label="
+                      isUsersCollapsed(script.id) ? t('comp.expandUsers') : t('comp.collapseUsers')
+                    "
                     @click="toggleUsersCollapsed(script.id)"
                   >
                     <template #icon>
@@ -406,10 +433,10 @@
                             script.type === 'Okww' ||
                             script.type === 'OkNte' ||
                             script.type === 'BetterGI' ||
-                            script.type === 'MaaFW' ||
-                            script.type === 'M9A' ||
+                            isMaaFWFamily(script.type) ||
                             script.type === 'ZzzOd' ||
-                            script.type === 'BAAH'
+                            script.type === 'BAAH' ||
+                            script.type === 'Whimbox'
                           "
                           class="user-info-tags"
                         >
@@ -532,7 +559,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { Script, User } from '../types/script'
+import type { MaaFWScriptConfig, Script, User } from '../types/script'
 import type { MaaEndConfig } from '@/api'
 import {
   CopyOutlined,
@@ -550,6 +577,11 @@ import { message, Modal } from 'ant-design-vue'
 import { useScriptApi } from '@/composables/useScriptApi'
 import { useUserApi } from '@/composables/useUserApi'
 import { parseStatusTagList } from '@/composables/useStatusTag'
+import {
+  isMaaFWFamily,
+  resolveMaaFWFlavor,
+  type MaaFWFlavorType,
+} from '@/composables/useMaaFWFlavor'
 
 const { t } = useI18n()
 
@@ -582,6 +614,8 @@ interface Emits {
   (e: 'startMaaEndUserConfig', script: Script, user: User): void
 
   (e: 'startOkwwConfig', script: Script): void
+
+  (e: 'startWhimboxConfig', script: Script): void
 
   (e: 'toggleUserStatus', user: User): void
 
@@ -726,32 +760,44 @@ const handleStartOkwwConfig = (script: Script) => {
   emit('startOkwwConfig', script)
 }
 
+const handleStartWhimboxConfig = (script: Script) => {
+  emit('startWhimboxConfig', script)
+}
+
 const handleToggleUserStatus = (user: User) => {
   emit('toggleUserStatus', user)
 }
 
-const getScriptTypeLabel = (type: Script['type']) => {
+const getScriptTypeLabel = (script: Script) => {
+  const type = script.type
   if (type === 'Okww') return 'ok-ww'
   if (type === 'OkNte') return 'ok-nte'
+  // MFW 家族显示项目实际的名字（引导页读到 interface 时记进 Info.ProjectLabel），没记过才显示类型
+  if (isMaaFWFamily(type)) {
+    return (script.config as MaaFWScriptConfig).Info?.ProjectLabel?.trim() || type
+  }
   return type
 }
 
-const SCRIPT_TYPE_TAG_COLORS: Record<Script['type'], string> = {
+// MaaFW 与各特调的标签颜色取自特调注册表
+const SCRIPT_TYPE_TAG_COLORS: Record<Exclude<Script['type'], MaaFWFlavorType>, string> = {
   MAA: 'blue',
   SRC: 'purple',
   MaaEnd: 'blue',
-  M9A: 'cyan',
-  MaaFW: 'geekblue',
   Okww: 'blue',
   OkNte: 'blue',
   HSR: 'purple',
   BetterGI: 'gold',
   ZzzOd: 'volcano',
   BAAH: 'magenta',
+  Whimbox: 'pink',
   General: 'green',
 }
 
-const getScriptTypeTagColor = (type: Script['type']) => SCRIPT_TYPE_TAG_COLORS[type] ?? 'green'
+const getScriptTypeTagColor = (type: Script['type']) =>
+  isMaaFWFamily(type)
+    ? resolveMaaFWFlavor(type).typeTagColor
+    : (SCRIPT_TYPE_TAG_COLORS[type] ?? 'green')
 
 const truncateText = (text: string, maxLength: number = 10): string => {
   if (!text || text.length === 0) return '无'
@@ -916,9 +962,9 @@ const getServerDisplayName = (server: string): string => {
   }
 }
 
-// ZzzOd：配置来源标签（用户模式/直控模式）
+// ZzzOd：配置来源标签（独立模式/原生模式）
 const getZzzOdModeLabel = (user: User): string =>
-  user.Info.Mode === '直控' ? '直控模式' : '用户模式'
+  user.Info.Mode === '直控' ? '原生模式' : '独立模式'
 
 const getZzzOdModeTagColor = (user: User): string => (user.Info.Mode === '直控' ? 'gold' : 'blue')
 

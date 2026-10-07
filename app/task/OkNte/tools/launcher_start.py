@@ -16,14 +16,25 @@
 #   You should have received a copy of the GNU Affero General Public License
 #   along with AUTO-MAS. If not, see <https://www.gnu.org/licenses/>.
 
-"""OK-NTE（异环）通过启动器拉起游戏。
+"""OK-NTE（异环）经启动器拉起游戏，按 Game.LaunchMode 分两条路径。
 
 异环客户端直接运行 HTGame.exe 会卡界面，必须经启动器（NTELauncher 下的
-NTEGame.exe / NTEGlobalGame.exe / NTETWGame.exe）启动。本模块对齐 ok-nte
-上游 LauncherTask 的启动流程，交互与截图采用与账号切换一致的前台
-pyautogui + DPI 适配模式，OCR 复用通用工具集 `app.tools.ocr`。
+NTEGame.exe / NTEGlobalGame.exe / NTETWGame.exe）启动。两种启动方式都经由
+启动器，区别只在是否操作启动器界面：
 
-流程::
+- 直接启动（Autoplay，默认）：启动器带 /autoplay 参数自行拉起游戏并完成
+  登录，无需任何 OCR 交互（不操作启动器界面）
+  → wait_autoplay_game / async_wait_autoplay_game；
+- 使用启动器启动（LauncherUi）：只打开启动器界面，再由本模块 OCR 找到并点击
+  「开始游戏」（交互与截图沿用与账号切换一致的前台 pyautogui + DPI 适配模式，
+  OCR 复用通用工具集 app.tools.ocr）
+  → start_game_via_launcher / async_start_game_via_launcher。
+
+流程（直接启动）::
+
+    带 /autoplay 拉起启动器 → 轮询 HTGame.exe 可见窗口出现（游戏就绪，停在标题界面）
+
+流程（使用启动器启动）::
 
     退出屏保 → 拉起启动器 → 等启动器窗口 → OCR 找「开始游戏」/「更新」按钮
     并点击（点「更新」后只点一次，等更新完成按钮变回「开始游戏」再点）
@@ -35,7 +46,6 @@ import ctypes
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -44,6 +54,7 @@ import numpy as np
 import psutil
 from PIL import Image
 
+from app.tools.error_screenshot import save_error_screenshot
 from app.tools.ocr import Box, OCRItem, ocr_image
 from app.utils import get_logger
 from app.utils.platform import IS_WINDOWS
@@ -62,6 +73,14 @@ logger = get_logger("OK-NTE 启动器启动")
 # 游戏客户端与启动器进程名（对齐 ok-nte 上游 src/__init__.py）
 _GAME_PROCESS = "HTGame.exe"
 LAUNCHER_EXES = ("NTEGame.exe", "NTEGlobalGame.exe", "NTETWGame.exe")
+
+# 直接启动（Game.LaunchMode == "Autoplay"）用的启动器参数：带 /autoplay 时启动器
+# 自行拉起游戏并完成登录，无需点击「开始游戏」，也就无需 OCR 交互
+AUTOPLAY_ARG = "/autoplay"
+# 静默启动后等游戏窗口出现的上限（本机实测 36-40s 出窗，留足余量）
+_AUTOPLAY_START_TIMEOUT = 180.0
+# 静默启动等待期间的进度日志间隔：长时间无输出会让用户以为卡死
+_AUTOPLAY_PROGRESS_SECONDS = 15.0
 
 # 截图基准分辨率（16:9），OCR 与点击均在此坐标空间计算后再映射回真实窗口
 _FRAME_WIDTH = 1920
@@ -90,6 +109,11 @@ _DOWNLOAD_PROGRESS_TOKENS = ("%", "MB/s", "剩余时间")
 _UPDATE_ACTIVE_GRACE_SECONDS = 600.0
 # 下载进度签名持续无变化的时长上限：百分比/速度/剩余时间长时间不动视为下载卡死
 _DOWNLOAD_STALL_SECONDS = 300.0
+# 「开始游戏」点击重试：被遮挡等场景点击可能被吞（若用固定次数预算，遮罩消失
+# 后预算已尽只能干等超时），改为按时间间隔重试并保留宽松总上限防死循环；点击
+# 生效时启动器会退出或最小化，按钮消失即停止重试。对齐 ok-ww 启动器方案。
+_START_CLICK_LIMIT = 8
+_START_CLICK_INTERVAL_SECONDS = 12.0
 
 
 @lru_cache(maxsize=1)
@@ -321,26 +345,86 @@ def dismiss_screensaver() -> None:
 
 
 def _save_error_screenshot(launcher_hwnd: int | None) -> None:
-    """保存启动失败时的原始窗口截图，便于排查 OCR 文本漂移。"""
+    """保存启动失败时的窗口截图，便于排查 OCR 文本漂移。"""
     try:
-        screenshot_dir = Path.cwd() / "debug" / "oknte-launcher-start"
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        screenshot_path = screenshot_dir / (
-            f"launcher-error-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.png"
-        )
         target = launcher_hwnd if launcher_hwnd is not None else _find_game_hwnd()
         if target is None:
             return
-        _capture_window_image(target, activate=False).save(
-            screenshot_path, format="PNG"
+        save_error_screenshot(
+            _capture_window_image(target, activate=False),
+            "oknte-launcher-start",
+            "launcher-error",
         )
-        logger.warning(f"启动器启动错误截图已保存: {screenshot_path}")
     except Exception as error:
         # 截图是诊断旁路，失败时不能覆盖原始启动异常
         logger.warning(f"启动器启动错误截图保存失败: {error}")
 
 
 # ── 对外入口 ─────────────────────────────────────────────────────────────
+
+
+def wait_autoplay_game(
+    launcher_path: Path,
+    *,
+    timeout: float | None = None,
+    on_log: Callable[[str], None] | None = None,
+) -> bool:
+    """轮询等待带 /autoplay 静默拉起的异环游戏窗口出现。
+
+    启动器带 /autoplay 参数时无需点击与 OCR 交互，「游戏已就绪」等价于
+    HTGame.exe 出现可见窗口，轮询该窗口即可判定；超时返回 False（调用方按
+    启动失败处理），仅非 Windows 平台抛 RuntimeError。
+
+    Args:
+        launcher_path: 启动器 exe 路径（用于日志标明是哪个启动器静默拉起）。
+        timeout: 等待上限（秒），默认 _AUTOPLAY_START_TIMEOUT。
+        on_log: 流程进度回调（供 MAS 推送调度台日志），默认仅写日志。
+
+    Returns:
+        游戏窗口出现返回 True；超时返回 False。
+
+    Raises:
+        RuntimeError: 非 Windows 平台（窗口轮询依赖 win32gui，退屏保依赖 pyautogui）。
+    """
+
+    if not IS_WINDOWS:
+        raise RuntimeError("OK-NTE 启动器启动仅支持 Windows 平台")
+    # 开工前退出屏保：屏保全屏覆盖会让后续窗口截图变成黑屏（沿用旧点击启动路径与
+    # ok-nte 上游 LauncherTask 的行为）
+    dismiss_screensaver()
+    on_log = on_log or (lambda msg: logger.info(msg))
+    limit = _AUTOPLAY_START_TIMEOUT if timeout is None else timeout
+    started = time.monotonic()
+    deadline = started + limit
+    next_progress = started + _AUTOPLAY_PROGRESS_SECONDS
+    on_log(
+        f"启动器 {launcher_path.name} 已带 {AUTOPLAY_ARG} 静默拉起，"
+        f"正在等待游戏窗口出现（最迟 {limit:g}s）..."
+    )
+    while True:
+        if _find_game_hwnd() is not None:
+            on_log("已检测到异环游戏窗口")
+            return True
+        now = time.monotonic()
+        if now >= deadline:
+            on_log(f"{AUTOPLAY_ARG} 静默启动等待游戏窗口超时（{limit:g}s）")
+            return False
+        if now >= next_progress:
+            on_log(f"正在等待 {AUTOPLAY_ARG} 拉起游戏窗口（{int(now - started)}s）...")
+            next_progress = now + _AUTOPLAY_PROGRESS_SECONDS
+        time.sleep(2)
+
+
+async def async_wait_autoplay_game(
+    launcher_path: Path,
+    *,
+    timeout: float | None = None,
+    on_log: Callable[[str], None] | None = None,
+) -> bool:
+    """async 版本：在后台线程轮询游戏窗口，避免阻塞事件循环。"""
+    return await asyncio.to_thread(
+        wait_autoplay_game, launcher_path, timeout=timeout, on_log=on_log
+    )
 
 
 def start_game_via_launcher(
@@ -389,6 +473,9 @@ def start_game_via_launcher(
         _activate_window(hwnd)
 
         start_clicks = 0
+        last_start_click: float | None = None
+        start_click_exhausted_logged = False
+        exit_wait_polls = 0
         update_clicked = False
         # 点「更新」后按钮是否已离开更新态（被进度 UI 取代过）：用于区分
         # 「更新刚点完、按钮文本尚未切换」与「更新完成、按钮真正变回」
@@ -405,8 +492,13 @@ def start_game_via_launcher(
             try:
                 items = _read_texts(hwnd)
             except RuntimeError:
-                # 启动器点击「开始游戏」后最小化或退出，窗口失效：只等游戏起窗
+                # 启动器点击「开始游戏」后会退出或最小化：只等游戏起窗
                 if start_clicks > 0:
+                    exit_wait_polls += 1
+                    if exit_wait_polls == 1:
+                        on_log("启动器已退出，正在等待游戏窗口出现...")
+                    elif exit_wait_polls % 5 == 0:
+                        on_log("仍在等待游戏窗口出现...")
                     time.sleep(2)
                     continue
                 raise
@@ -443,6 +535,7 @@ def start_game_via_launcher(
                     update_clicked = False
                     start_button_gone = False
                     launcher_upgrade_clicked = False
+                    start_click_exhausted_logged = False
                 time.sleep(2)
                 continue
 
@@ -455,9 +548,12 @@ def start_game_via_launcher(
                 if popup_box is not None:
                     on_log("检测到启动器「提示」弹窗，点击关闭...")
                     _click_box(hwnd, popup_box, after_sleep=2)
-                    # 遮罩期「开始游戏」点击会被吞掉：关掉弹窗后重置点击预算，
-                    # 避免预算在遮罩期耗尽后按钮恢复也无预算可点
+                    # 遮罩期「开始游戏」点击会被吞掉：关掉弹窗后重置点击计数
+                    # 与间隔，立即可重试（耗尽提示标志一并重置，恢复后再次耗尽
+                    # 仍能提示）
                     start_clicks = 0
+                    last_start_click = None
+                    start_click_exhausted_logged = False
                     time.sleep(1)
                     continue
 
@@ -492,12 +588,35 @@ def start_game_via_launcher(
                 # （更新后无重启弹窗时此处是唯一再点入口）
                 on_log("游戏更新完成，按钮已恢复「开始游戏」，继续启动...")
                 start_clicks = 0
+                last_start_click = None
+                start_click_exhausted_logged = False
                 update_clicked = False
                 start_button_gone = False
-            if start_box is not None and start_clicks < 3:
-                on_log("点击启动器「开始游戏」")
+            if start_box is not None and start_clicks >= _START_CLICK_LIMIT:
+                if not start_click_exhausted_logged:
+                    start_click_exhausted_logged = True
+                    on_log(
+                        f"「开始游戏」已点击 {_START_CLICK_LIMIT} 次仍未生效，"
+                        "停止点击并继续等待（可能被遮挡或启动器异常）"
+                    )
+            elif (
+                start_box is not None
+                and start_clicks < _START_CLICK_LIMIT
+                and (
+                    last_start_click is None
+                    or now - last_start_click >= _START_CLICK_INTERVAL_SECONDS
+                )
+            ):
+                if start_clicks == 0:
+                    on_log("点击启动器「开始游戏」")
+                else:
+                    on_log(
+                        f"第 {start_clicks + 1} 次点击「开始游戏」"
+                        "（此前点击未生效，可能被遮挡）"
+                    )
                 _click_box(hwnd, start_box, after_sleep=3)
                 start_clicks += 1
+                last_start_click = now
                 deadline = max(deadline, now + _START_GAME_TIMEOUT)
             elif update_box is not None and not update_clicked:
                 on_log("检测到启动器「更新」按钮，正在更新游戏，等待时间将延长...")

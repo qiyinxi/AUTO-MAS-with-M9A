@@ -22,13 +22,15 @@
           <span class="column-title">{{ t('edit.taskQueue') }}</span>
           <!-- 不用 a-space：列窄下来时级联选择器要能收缩，标题行不能折成两行，否则两栏顶边对不齐 -->
           <div class="column-actions">
+            <!-- 队列为空时空态里已列出模板与预设；但有自定义模板时仍要能进弹窗改名、删除
+                 （模板全部失效时空态卡片的「应用」都是灰的） -->
             <a-button
-              v-if="presetTemplates.length > 0 && orderedTasks.length > 0"
+              v-if="orderedTasks.length > 0 || queueTemplates.length > 0"
               type="link"
               size="small"
               @click="showPresetModalModel = true"
             >
-              {{ t('edit.presetTemplate') }}
+              {{ t('edit.queueTemplate') }}
             </a-button>
             <a-cascader
               v-model:value="addTaskCascaderValueModel"
@@ -41,56 +43,64 @@
               @change="(value: unknown) => emit('addTaskCascaderChange', value)"
             >
               <template #suffixIcon>
-                <PlusOutlined />
+                <MaaFWNewBadge v-if="hasNewTasks" />
+                <PlusOutlined v-else />
               </template>
             </a-cascader>
           </div>
         </div>
         <div class="task-list">
+          <!-- 队列为空：先列我的模板，再列项目预设，哪组没有就不显示那组 -->
           <div
-            v-if="orderedTasks.length === 0 && presetTemplates.length > 0"
+            v-if="
+              orderedTasks.length === 0 && (queueTemplates.length > 0 || presetTemplates.length > 0)
+            "
             class="preset-section"
           >
-            <div
-              v-for="template in presetTemplates"
-              :key="template.preset.name"
-              class="preset-card"
-            >
-              <div class="preset-card-inner">
-                <div class="preset-header">
-                  <div class="preset-icon-wrap">
-                    <ThunderboltOutlined class="preset-icon" />
-                  </div>
-                  <div class="preset-info">
-                    <h3 class="preset-name">{{ getDisplayName(template.preset) }}</h3>
-                    <MaaFWDescriptionView
-                      v-if="template.preset.description"
-                      :content="template.preset.description"
-                      :base-path="previewData.path"
-                      class="preset-desc"
-                    />
-                  </div>
-                  <!-- 「应用预设」就放在标题右边，不再单占一行 -->
+            <template v-if="queueTemplates.length > 0">
+              <div class="preset-group-title">{{ t('edit.queueTemplateMine') }}</div>
+              <MaaFWQueueCard
+                v-for="template in queueTemplates"
+                :key="template.name"
+                kind="template"
+                :title="template.name"
+                :task-count="template.chips.length"
+                :invalid-count="template.invalidCount"
+                :chips="template.chips"
+              >
+                <template #actions>
                   <a-button
                     type="primary"
-                    class="preset-apply-button"
+                    :disabled="template.entries.length === 0"
+                    @click="emit('applyQueueTemplate', template.name)"
+                  >
+                    {{ t('edit.queueTemplateApply') }}
+                  </a-button>
+                </template>
+              </MaaFWQueueCard>
+            </template>
+            <template v-if="presetTemplates.length > 0">
+              <div class="preset-group-title">{{ t('edit.queueTemplatePresets') }}</div>
+              <MaaFWQueueCard
+                v-for="template in presetTemplates"
+                :key="template.preset.name"
+                kind="preset"
+                :title="getDisplayName(template.preset)"
+                :description="template.preset.description"
+                :base-path="previewData.path"
+                :chips="presetChips(template)"
+              >
+                <template #actions>
+                  <a-button
+                    type="primary"
                     :disabled="template.entries.length === 0"
                     @click="emit('applyPresetTemplate', template.preset.name)"
                   >
                     {{ t('edit.applyPreset2') }}
                   </a-button>
-                </div>
-
-                <div class="preset-tasks-preview">
-                  <div v-for="entry in template.entries" :key="entry.id" class="task-chip">
-                    <span class="task-dot"></span>
-                    <span class="task-chip-name">
-                      {{ getDisplayName(entry.task) }}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
+                </template>
+              </MaaFWQueueCard>
+            </template>
           </div>
           <a-empty
             v-else-if="orderedTasks.length === 0"
@@ -110,8 +120,50 @@
             :move="canDragTask"
             @end="emit('taskDragEnd')"
           >
+            <!-- interface 已没有的任务（项目更新改了 name）是虚影：不能拖、不能移，只能删。
+                 注释不能写进 item 插槽里：开发模式下它也算一个子节点，vuedraggable 要求只有一个 -->
             <template #item="{ element: queuedTask, index }">
+              <div
+                v-if="queuedTask.missing"
+                role="button"
+                tabindex="0"
+                class="task-row task-row-missing"
+                :class="{ 'task-row-selected': selectedTaskId === queuedTask.id }"
+                @click="emit('selectTask', queuedTask.id)"
+                @keydown.enter="emit('selectTask', queuedTask.id)"
+              >
+                <HolderOutlined class="task-drag-handle-disabled" aria-hidden="true" />
+                <div class="task-main">
+                  <span class="task-title task-title-missing">
+                    {{ queuedTask.name }}
+                    <span v-if="queuedTask.copyTotal > 1" class="task-copy-index">
+                      #{{ queuedTask.copyIndex }}
+                    </span>
+                  </span>
+                  <span class="task-missing-tag">{{ t('edit.missingTaskTag') }}</span>
+                </div>
+                <a-popconfirm
+                  :title="t('edit.deleteThisTask2')"
+                  :ok-text="t('edit.ok')"
+                  :cancel-text="t('edit.cancel')"
+                  :disabled="interfaceDependentDisabled"
+                  @confirm="emit('deleteTask', queuedTask.id)"
+                >
+                  <a-button
+                    type="text"
+                    size="small"
+                    :disabled="interfaceDependentDisabled"
+                    :aria-label="t('edit.deleteThisTask')"
+                    @click.stop
+                  >
+                    <template #icon>
+                      <CloseOutlined />
+                    </template>
+                  </a-button>
+                </a-popconfirm>
+              </div>
               <button
+                v-else
                 type="button"
                 class="task-row"
                 :class="{ 'task-row-selected': selectedTaskId === queuedTask.id }"
@@ -227,57 +279,63 @@
             </a-button>
           </a-popconfirm>
         </div>
+        <div v-else-if="selectedMissingTask" class="task-option-panel">
+          <div class="selected-task-header">
+            <div>
+              <div class="selected-task-title task-title-missing">
+                {{ selectedMissingTask.name }}
+                <span v-if="selectedMissingTask.copyTotal > 1" class="task-copy-index">
+                  #{{ selectedMissingTask.copyIndex }}
+                </span>
+              </div>
+              <div class="selected-task-meta">{{ t('edit.missingTaskHint') }}</div>
+            </div>
+          </div>
+          <div v-if="missingTaskSettings.length > 0" class="missing-task-settings">
+            <div class="missing-task-settings-title">{{ t('edit.missingTaskSettings') }}</div>
+            <div v-for="row in missingTaskSettings" :key="row.key" class="missing-task-setting">
+              <span class="missing-task-setting-label">{{ row.label }}</span>
+              <span class="missing-task-setting-value">{{ row.value }}</span>
+            </div>
+          </div>
+          <a-popconfirm
+            :title="t('edit.deleteThisTask2')"
+            :ok-text="t('edit.ok')"
+            :cancel-text="t('edit.cancel')"
+            :disabled="interfaceDependentDisabled"
+            @confirm="emit('deleteSelectedTask')"
+          >
+            <a-button
+              danger
+              block
+              class="delete-task-button"
+              :disabled="interfaceDependentDisabled"
+            >
+              <template #icon>
+                <DeleteOutlined />
+              </template>
+              {{ t('edit.deleteThisTask') }}
+            </a-button>
+          </a-popconfirm>
+        </div>
         <div v-else class="task-option-empty">
           <a-empty :description="t('edit.pickTaskLeftConfigure')" />
         </div>
       </a-col>
     </a-row>
 
-    <a-modal
+    <MaaFWQueueTemplateModal
       v-model:open="showPresetModalModel"
-      :title="t('edit.presetTemplate')"
-      :footer="null"
-      width="720px"
-      class="preset-template-modal"
-    >
-      <div v-if="presetTemplates.length > 0" class="preset-section preset-section-modal">
-        <div v-for="template in presetTemplates" :key="template.preset.name" class="preset-card">
-          <div class="preset-card-inner">
-            <div class="preset-header">
-              <div class="preset-icon-wrap">
-                <ThunderboltOutlined class="preset-icon" />
-              </div>
-              <div class="preset-info">
-                <h3 class="preset-name">{{ getDisplayName(template.preset) }}</h3>
-                <MaaFWDescriptionView
-                  v-if="template.preset.description && previewData"
-                  :content="template.preset.description"
-                  :base-path="previewData.path"
-                  class="preset-desc"
-                />
-              </div>
-              <a-button
-                type="primary"
-                class="preset-apply-button"
-                :disabled="template.entries.length === 0"
-                @click="emit('applyPresetTemplate', template.preset.name)"
-              >
-                {{ t('edit.applyPreset2') }}
-              </a-button>
-            </div>
-            <div class="preset-tasks-preview">
-              <div v-for="entry in template.entries" :key="entry.id" class="task-chip">
-                <span class="task-dot"></span>
-                <span class="task-chip-name">
-                  {{ getDisplayName(entry.task) }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <a-empty v-else :description="t('edit.noPresetTemplates')" />
-    </a-modal>
+      :queue-templates="queueTemplates"
+      :preset-templates="presetTemplates"
+      :draft="queueTemplateDraft"
+      :base-path="previewData?.path"
+      @apply-preset-template="presetName => emit('applyPresetTemplate', presetName)"
+      @save-queue-template="name => emit('saveQueueTemplate', name)"
+      @apply-queue-template="name => emit('applyQueueTemplate', name)"
+      @rename-queue-template="(name, nextName) => emit('renameQueueTemplate', name, nextName)"
+      @delete-queue-template="name => emit('deleteQueueTemplate', name)"
+    />
   </div>
 </template>
 
@@ -288,23 +346,24 @@ import draggable from 'vuedraggable'
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
+  CloseOutlined,
   DeleteOutlined,
   HolderOutlined,
   PlusOutlined,
-  ThunderboltOutlined,
 } from '@ant-design/icons-vue'
 import { buildMaaFWAssetUrl } from '@/composables/useMaaFWApi'
 import MaaFWDescriptionView from '../MaaFWDescriptionView.vue'
 import MaaFWTaskOptionEditor from '../MaaFWTaskOptionEditor.vue'
-import type { MaaFWPresetQueueEntry } from '../maafwPresetQueue'
+import MaaFWNewBadge from './MaaFWNewBadge.vue'
+import MaaFWQueueCard from './MaaFWQueueCard.vue'
+import MaaFWQueueTemplateModal from './MaaFWQueueTemplateModal.vue'
+import { describeMaaFWMissingTaskSettings } from '../maafwTaskChanges'
+import type { MaaFWMissingQueuedTask, MaaFWQueueEntry, MaaFWTaskInfo } from '@/types/script'
 import type {
-  MaaFWInterfacePreviewData,
-  MaaFWPresetInfo,
-  MaaFWQueuedTaskItem,
-  MaaFWTaskInfo,
-  MaaFWTaskOptionValue,
-  MaaFWTaskSnapshot,
-} from '@/types/script'
+  MaaFWUserTaskQueueSectionEmits,
+  MaaFWUserTaskQueueSectionProps,
+  PresetTemplate,
+} from '../../MaaFWFlavor/sectionContracts'
 
 const { t } = useI18n()
 
@@ -313,53 +372,16 @@ type DisplayItem = {
   label?: string | null
 }
 
-type AddTaskCascaderOption = {
-  value: string
-  label: string
-  children?: AddTaskCascaderOption[]
-}
-
 type AddTaskCascaderPathOption = {
-  label?: string | number
+  label?: unknown
+  searchText?: string
   value?: string | number
 }
 
-type PresetTemplate = {
-  preset: MaaFWPresetInfo
-  /** 预设里当前可用的各项，重复任务是各自的实例 id */
-  entries: MaaFWPresetQueueEntry[]
-}
+// props / 事件的契约在 sectionContracts（特调替换这个分节时按同一份契约接收）
+const props = defineProps<MaaFWUserTaskQueueSectionProps>()
 
-const props = defineProps<{
-  interfaceLoading: boolean
-  previewData: MaaFWInterfacePreviewData | null
-  interfaceDependentDisabled: boolean
-  availableTasks: MaaFWTaskInfo[]
-  orderedTasks: MaaFWQueuedTaskItem[]
-  addTaskCascaderValue: string[]
-  addTaskCascaderOptions: AddTaskCascaderOption[]
-  presetTemplates: PresetTemplate[]
-  showPresetModal: boolean
-  taskByName: Map<string, MaaFWTaskInfo>
-  selectedTask: MaaFWTaskInfo | null
-  selectedTaskId: string
-  taskSnapshot: MaaFWTaskSnapshot
-  effectiveControllerName: string
-  effectiveResourceName: string
-}>()
-
-const emit = defineEmits<{
-  'update:addTaskCascaderValue': [value: string[]]
-  'update:showPresetModal': [value: boolean]
-  addTaskCascaderChange: [value: unknown]
-  applyPresetTemplate: [presetName: string]
-  reorderTasks: [taskIds: string[]]
-  selectTask: [taskId: string]
-  moveTask: [taskId: string, direction: -1 | 1]
-  taskDragEnd: []
-  taskOptionUpdate: [taskId: string, payload: { optionName: string; value: MaaFWTaskOptionValue }]
-  deleteSelectedTask: []
-}>()
+const emit = defineEmits<MaaFWUserTaskQueueSectionEmits>()
 
 const queuedTaskItemsModel = computed({
   get: () => props.orderedTasks,
@@ -374,6 +396,21 @@ const selectedQueuedTask = computed(
   () => props.orderedTasks.find(item => item.id === props.selectedTaskId) || null
 )
 
+const selectedMissingTask = computed<MaaFWMissingQueuedTask | null>(() => {
+  const item = selectedQueuedTask.value
+  return item?.missing ? item : null
+})
+
+// 虚影任务原来的设置：给用户对照着在新任务里重设
+const missingTaskSettings = computed(() => {
+  const item = selectedMissingTask.value
+  if (!item) return []
+  return describeMaaFWMissingTaskSettings(
+    props.taskSnapshot.taskOptions[item.id],
+    props.previewData?.options || []
+  )
+})
+
 const addTaskCascaderValueModel = computed({
   get: () => props.addTaskCascaderValue,
   set: value => emit('update:addTaskCascaderValue', value),
@@ -386,6 +423,9 @@ const showPresetModalModel = computed({
 
 const getDisplayName = (item: DisplayItem) => item.label || item.name
 
+const presetChips = (template: PresetTemplate) =>
+  template.entries.map(entry => ({ id: entry.id, label: getDisplayName(entry.task) }))
+
 // 右侧副标题：入口名 | 分组名…，原来是队列行里的两个标签
 const selectedTaskMeta = computed(() => {
   const task = props.selectedTask
@@ -397,7 +437,8 @@ const resolveMaaFWAssetUrl = (rawPath?: string | null) => {
   return buildMaaFWAssetUrl(props.previewData?.path, rawPath)
 }
 
-const isPretaskItem = (item?: MaaFWQueuedTaskItem | null) => item?.task.entry === 'MXU_PRETASK'
+const isPretaskItem = (item?: MaaFWQueueEntry | null) =>
+  Boolean(item && !item.missing && item.task.entry === 'MXU_PRETASK')
 
 const canMoveTaskByOffset = (index: number, direction: -1 | 1) => {
   const current = props.orderedTasks[index]
@@ -406,7 +447,7 @@ const canMoveTaskByOffset = (index: number, direction: -1 | 1) => {
 }
 
 const canDragTask = (event: {
-  draggedContext: { element: MaaFWQueuedTaskItem; futureIndex: number }
+  draggedContext: { element: MaaFWQueueEntry; futureIndex: number }
 }) => {
   const pretaskCount = props.orderedTasks.filter(item => isPretaskItem(item)).length
   return isPretaskItem(event.draggedContext.element)
@@ -450,7 +491,7 @@ const filterAddTaskOption = (inputValue: string, path: AddTaskCascaderPathOption
   const keyword = inputValue.trim().toLowerCase()
   if (!keyword) return true
   return path.some(option =>
-    String(option.label || '')
+    String(option.searchText ?? option.label ?? '')
       .toLowerCase()
       .includes(keyword)
   )
@@ -565,106 +606,11 @@ const filterAddTaskOption = (inputValue: string, path: AddTaskCascaderPathOption
   padding: 12px;
 }
 
-.preset-section-modal {
-  max-height: 60vh;
-  overflow: auto;
-  padding: 0;
-}
-
-.preset-card {
-  border: 1px solid var(--ant-color-border-secondary);
-  border-radius: 8px;
-  background: var(--ant-color-bg-container);
-}
-
-.preset-card-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-}
-
-.preset-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-/* 与图标同高（36px）、靠右，不随描述换行下坠 */
-.preset-apply-button {
-  flex: 0 0 auto;
-  height: 36px;
-  align-self: flex-start;
-}
-
-.preset-icon-wrap {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ant-color-primary);
-  background: var(--ant-color-primary-bg);
-  flex: 0 0 auto;
-}
-
-.preset-icon {
-  font-size: 18px;
-}
-
-.preset-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.preset-name {
-  margin: 0 0 4px;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--ant-color-text);
-}
-
-.preset-desc {
+/* 队列为空时的分组小标题：我的模板 / 项目预设 */
+.preset-group-title {
   color: var(--ant-color-text-secondary);
   font-size: 13px;
-}
-
-.preset-tasks-preview {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--ant-color-border-secondary);
-  border-radius: 8px;
-  background: var(--ant-color-fill-quaternary);
-}
-
-.task-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 3px 10px 3px 7px;
-  border-radius: 16px;
-  background: var(--ant-color-bg-container);
-  color: var(--ant-color-text);
-  font-size: 13px;
-}
-
-.task-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ant-color-success);
-  flex: 0 0 auto;
-}
-
-.task-chip-name {
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 600;
 }
 
 .task-row {
@@ -757,6 +703,82 @@ const filterAddTaskOption = (inputValue: string, path: AddTaskCascaderPathOption
   color: var(--ant-color-text-tertiary);
 }
 
+/* 搜索时悬停出现的清除图标和后缀在同一个位置：加号和它一样大看不出来，NEW 标签更宽会露半截 */
+:deep(.add-task-cascader:has(.ant-select-clear):hover .ant-select-arrow) {
+  opacity: 0;
+}
+
+/* interface 已没有的任务：置灰、删除线，只留删除 */
+.task-row-missing {
+  background: var(--ant-color-fill-quaternary);
+}
+
+.task-title-missing {
+  color: var(--ant-color-text-tertiary);
+  font-weight: 400;
+  text-decoration: line-through;
+}
+
+.task-row-missing .task-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-missing-tag {
+  flex: none;
+  padding: 0 7px;
+  border: 1px dashed var(--ant-color-border);
+  border-radius: 4px;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.task-drag-handle-disabled {
+  flex: 0 0 auto;
+  padding: 4px;
+  color: var(--ant-color-text-quaternary);
+  font-size: 16px;
+  opacity: 0.5;
+  cursor: default;
+}
+
+.missing-task-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  background: var(--ant-color-fill-quaternary);
+}
+
+.missing-task-settings-title {
+  color: var(--ant-color-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.missing-task-setting {
+  display: flex;
+  gap: 16px;
+}
+
+.missing-task-setting-label {
+  flex: none;
+  width: 120px;
+  color: var(--ant-color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.missing-task-setting-value {
+  min-width: 0;
+  color: var(--ant-color-text);
+  overflow-wrap: anywhere;
+}
+
 .task-option-panel {
   flex: 1;
   min-height: 0;
@@ -824,7 +846,8 @@ const filterAddTaskOption = (inputValue: string, path: AddTaskCascaderPathOption
   height: 40px;
 }
 
-@media (max-width: 768px) {
+/* 与 :lg 断点对齐：栅格在 992px 以下就折成上下两块，定高要在同一宽度放开，否则两栏叠在 640px 里溢出 */
+@media (max-width: 991px) {
   .column-header {
     flex-direction: column;
     align-items: stretch;

@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, toRaw } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
-import type { ThemeColor, ThemeMode } from '@/composables/useTheme'
-import { useTheme } from '@/composables/useTheme'
 import type { SelectValue } from 'ant-design-vue/es/select'
 import type { GlobalConfig } from '@/api'
 import type { CursorEffect } from '@/types/cursorEffect'
@@ -13,9 +12,11 @@ import { invalidateVoiceSettingsCache } from '@/composables/useAudioPlayer'
 import { setTelemetryEnabled } from '@/utils/sentry'
 import { useUiPreferences } from '@/composables/useUiPreferences'
 import { useUpdateChecker } from '@/composables/useUpdateChecker.ts'
+import { updateInfo } from '@/composables/useVersionService'
 import { useCursorEffectStore } from '@/stores/cursorEffect'
 import { usePerformanceStore } from '@/stores/performance'
 import { Service, type VersionOut } from '@/api'
+import { useAppearanceSettings } from './useAppearanceSettings'
 
 defineOptions({ name: 'SettingsPage' })
 
@@ -29,7 +30,24 @@ import TabAdvanced from './TabAdvanced.vue'
 import TabOthers from './TabOthers.vue'
 
 const { t } = useI18n()
-const { themeMode, themeColor, themeColors, setThemeMode, setThemeColor } = useTheme()
+const {
+  themeMode,
+  themeColor,
+  appearances,
+  appearanceId,
+  activeAppearance,
+  modalContextHolder,
+  appearanceBusy,
+  themeModeOptions,
+  appearanceValue,
+  appearanceOptions,
+  themeColorOptions,
+  handleThemeModeChange,
+  handleThemeColorChange,
+  handleAppearanceChange,
+  handleAppearanceImport,
+  handleAppearanceRemove,
+} = useAppearanceSettings()
 const { loading, getSettings, updateSettings } = useSettingsApi()
 const { syncUiPreferences } = useUiPreferences()
 const cursorEffectStore = useCursorEffectStore()
@@ -43,7 +61,8 @@ const {
 } = useUpdateChecker()
 
 // 活动标签
-const activeKey = ref('basic')
+const route = useRoute()
+const activeKey = ref(route.query.tab === 'function' ? 'function' : 'basic')
 const version = computed(() => import.meta.env.VITE_APP_VERSION || t('setting.versionFailed'))
 const backendUpdateInfo = ref<VersionOut | null>(null)
 
@@ -79,20 +98,6 @@ const voiceTypeOptions = computed(() => [
   { label: t('setting.voice.noisy'), value: 'noisy' },
 ])
 
-const themeModeOptions = computed(() => [
-  { label: t('setting.themeMode.system'), value: 'system' },
-  { label: t('setting.themeMode.light'), value: 'light' },
-  { label: t('setting.themeMode.dark'), value: 'dark' },
-])
-
-const themeColorOptions = computed(() =>
-  Object.entries(themeColors).map(([key, color]) => ({
-    label: t(`setting.color.${key}`),
-    value: key,
-    color,
-  }))
-)
-
 const cursorEffectOptions = computed<{ label: string; value: CursorEffect }[]>(() => [
   { label: t('setting.cursor.none'), value: 'none' },
   { label: t('setting.cursor.sleekLine'), value: 'sleek-line' },
@@ -110,9 +115,7 @@ const ELECTRON_SYNCED_CATEGORIES = new Set<keyof GlobalConfig>([
 // 后端会规范化这些字段的值（加密存储 / URL 校验），保存后要回读；其余字段本地应用即可
 const NORMALIZED_SETTING_KEYS = new Set([
   'Notify.KoishiServerAddress',
-  'Notify.OpenClawWeixinServerAddress',
   'Notify.OpenClawQQClientSecret',
-  'Notify.OpenClawWeixinBotToken',
   'Notify.AuthorizationCode',
   'Update.MirrorChyanCDK',
 ])
@@ -120,11 +123,13 @@ const NORMALIZED_SETTING_KEYS = new Set([
 const syncConfigToElectron = async (data: GlobalConfig) => {
   try {
     if (window.electronAPI?.syncBackendConfig) {
+      // toRaw 剥掉 reactive 代理：Electron IPC 的结构化克隆不支持 Proxy，直接传会报
+      // "An object could not be cloned"（对已是普通对象的入参 toRaw 原样返回）
       await window.electronAPI.syncBackendConfig({
-        UI: data.UI,
-        Start: data.Start,
-        Update: data.Update,
-        Function: data.Function,
+        UI: toRaw(data.UI),
+        Start: toRaw(data.Start),
+        Update: toRaw(data.Update),
+        Function: toRaw(data.Function),
       })
       logger.info('配置已同步到 Electron')
     }
@@ -228,14 +233,11 @@ const handleSettingChange = async (category: keyof GlobalConfig, key: string, va
       message.error(t('setting.toast.updateCheckFailed'))
     }
   }
-}
 
-// 主题
-const handleThemeModeChange = (value: SelectValue) => {
-  if (typeof value === 'string') setThemeMode(value as ThemeMode)
-}
-const handleThemeColorChange = (value: SelectValue) => {
-  if (typeof value === 'string') setThemeColor(value as ThemeColor)
+  // 暂停状态变化时立即清掉标题栏的"检测到更新"旧提示
+  if (category === 'Update' && key === 'PauseUntil') {
+    updateInfo.value = null
+  }
 }
 
 const confirmFluidCursor = () =>
@@ -289,6 +291,12 @@ const openDevTools = () => window.electronAPI?.openDevTools?.()
 // 更新检查 - 使用全局更新检查器
 const checkUpdate = async () => {
   logger.info('使用全局更新检查器进行手动检查')
+
+  // 手动检查立即恢复：先终止暂停、清空截止日期，再做完整检查
+  if (settings.Update?.PauseUntil) {
+    await handleSettingChange('Update', 'PauseUntil', '')
+  }
+
   logger.info(`检查前状态:{
     updateVisible: ${updateVisible.value},
     updateData: ${updateData.value},
@@ -330,7 +338,7 @@ const testNotify = async () => {
     const res = await Service.testNotifyApiSettingTestNotifyPost()
     if (res?.code && res.code !== 200)
       message.warning(res?.message || t('setting.toast.testUnknown'))
-    else message.success(t('setting.toast.testSent'))
+    else message.success(res?.message || t('setting.toast.testSent'))
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
     logger.error(`测试通知发送失败: ${errorMsg}`)
@@ -350,6 +358,7 @@ onMounted(() => {
 
 <template>
   <div class="settings-container">
+    <component :is="modalContextHolder" />
     <div class="settings-header">
       <h1 class="page-title">{{ t('setting.title') }}</h1>
     </div>
@@ -359,7 +368,11 @@ onMounted(() => {
           <TabBasic
             :settings="settings"
             :theme-mode="themeMode"
+            :appearance-value="appearanceValue"
+            :appearance-options="appearanceOptions"
             :theme-color="themeColor"
+            :theme-color-disabled="Boolean(activeAppearance)"
+            :appearance-busy="appearanceBusy"
             :theme-mode-options="themeModeOptions"
             :theme-color-options="themeColorOptions"
             :cursor-effect="cursorEffectStore.effect"
@@ -367,6 +380,9 @@ onMounted(() => {
             :low-performance-mode="performanceStore.lowPerformanceMode"
             :low-performance-mode-saving="performanceStore.saving"
             :handle-theme-mode-change="handleThemeModeChange"
+            :handle-appearance-change="handleAppearanceChange"
+            :handle-appearance-import="handleAppearanceImport"
+            :handle-appearance-remove="handleAppearanceRemove"
             :handle-theme-color-change="handleThemeColorChange"
             :handle-cursor-effect-change="handleCursorEffectChange"
             :handle-low-performance-mode-change="handleLowPerformanceModeChange"

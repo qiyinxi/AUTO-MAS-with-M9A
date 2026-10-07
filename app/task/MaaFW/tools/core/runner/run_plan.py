@@ -26,6 +26,7 @@ from app.task.MaaFW.tools.core.interface.models import (
     build_pretask_task_name,
     checkbox_count_problem,
     find_pretask_by_task_name,
+    hotkey_modifier_count,
     interface_load_warnings,
     is_pretask_task_name,
     iter_pretasks,
@@ -41,6 +42,7 @@ from app.task.MaaFW.tools.core.interface.task_config import (
     normalize_task_execution_payload,
 )
 
+from .hotkey import MaaFWHotkeyError, resolve_hotkey
 from .models import (
     MaaFWPretaskRunPlan,
     MaaFWResolvedPath,
@@ -51,6 +53,7 @@ from .models import (
 )
 from .pipeline_override import (
     MaaFWCheckboxCountError,
+    MaaFWHotkeyValueError,
     MaaFWInputValueError,
     MaaFWPipelineOverrideBuilder,
 )
@@ -62,7 +65,7 @@ from .pipeline_override import (
 # 一启动就 ``ModuleNotFoundError``；就算补上依赖，那个模块还会在导入期往
 # ``Path.cwd()/debug`` 挂一份 app.log 的 sink，让 worker 变成第二个写同一份
 # 轮转日志的进程。数法与 ``app/utils/paths.py`` 的 SOURCE_ROOT 同源，只是从
-# 本文件自己的位置往上数六层。守卫见 tests/task/test_maafw_worker_import_isolation.py。
+# 本文件自己的位置往上数六层。守卫见 tests/task/test_maafw_core.py。
 _SOURCE_ROOT = Path(__file__).resolve().parents[6]
 
 logger = logging.getLogger("automas.maafw.runner.run_plan")
@@ -118,6 +121,10 @@ class MaaFWRunPlanError(ValueError):
     """Raised when a MaaFW project cannot be converted into a runnable plan."""
 
 
+#: 选中的任务一个都跑不了时的报错；宿主据此判断要不要补上「interface 内已无」的任务名。
+NO_RUNNABLE_TASKS_MESSAGE = "当前 controller/resource 下没有可执行任务"
+
+
 def build_maafw_run_plan(
     base_dir: str | Path,
     interface_model: MaaFWInterface | dict[str, Any],
@@ -129,7 +136,15 @@ def build_maafw_run_plan(
     task_ids: list[str] | None = None,
     task_options: dict[str, Any] | None = None,
     managed_env_root: str | Path | None = None,
+    script_hotkeys: dict[str, dict[str, str]] | None = None,
 ) -> MaaFWRunPlan:
+    """``script_hotkeys``：脚本级键位 ``{option 名: {字段名: 组合键}}``（``Game.Hotkeys``）。
+
+    只在生效控制器是 Win32 时叠加到每个任务实际生效的 hotkey 选项上，盖过快照 / 预设里
+    的值；叠加的是副本，``selected_task_options`` 不动。interface 未声明的 option / 字段
+    静默忽略；映射不了的值告警后丢弃，回落到快照 / 默认值。
+    """
+
     interface = _coerce_interface(interface_model)
     resolved_base_dir = Path(base_dir).resolve()
     controller = _select_controller(interface, controller_name)
@@ -179,6 +194,14 @@ def build_maafw_run_plan(
     runnable_tasks: list[MaaFWTaskRunPlan] = []
     skipped_tasks: list[MaaFWSkippedTaskPlan] = []
     input_warnings: list[str] = []
+    hotkey_warnings: list[str] = []
+    # 脚本级键位只对 Win32 生效；按 option 名缓存校验后的字段，告警每个 option 只出一次。
+    apply_script_hotkeys = (
+        isinstance(script_hotkeys, dict)
+        and bool(script_hotkeys)
+        and controller.type == "Win32"
+    )
+    script_hotkey_cache: dict[str, dict[str, str]] = {}
     # 队列元素是任务实例 id：同一个任务可以出现多次，每份各带自己的一套选项。
     for task_id in selected_common_task_ids:
         task_name = resolve_task_instance_name(task_id, task_map)
@@ -206,6 +229,17 @@ def build_maafw_run_plan(
             continue
 
         options = selected_task_options.get(task_id, {})
+        if apply_script_hotkeys and script_hotkeys:
+            options = _overlay_script_hotkeys(
+                pipeline_builder,
+                interface,
+                task.name,
+                options,
+                script_hotkeys,
+                script_hotkey_cache,
+                hotkey_warnings,
+                i18n_mapping,
+            )
         try:
             pipeline_override = pipeline_builder.build_task_pipeline_override(
                 task.name,
@@ -231,6 +265,15 @@ def build_maafw_run_plan(
                 )
             )
         pipeline_builder.input_errors.clear()
+        # 键位下发不了的 hotkey 选项同样只跳过这个选项的覆盖；hotkey 多是 global_option，
+        # 每个任务都会撞上同一个坏值，告警不带任务名、只出一次。
+        for hotkey_error in pipeline_builder.hotkey_errors:
+            warning = _describe_hotkey_value_error(
+                hotkey_error, interface, i18n_mapping
+            )
+            if warning not in hotkey_warnings:
+                hotkey_warnings.append(warning)
+        pipeline_builder.hotkey_errors.clear()
         runnable_tasks.append(
             MaaFWTaskRunPlan(
                 name=task.name,
@@ -247,9 +290,9 @@ def build_maafw_run_plan(
         )
 
     if not runnable_tasks:
-        raise MaaFWRunPlanError("当前 controller/resource 下没有可执行任务")
+        raise MaaFWRunPlanError(NO_RUNNABLE_TASKS_MESSAGE)
 
-    builder_warnings = [*pipeline_builder.warnings, *input_warnings]
+    builder_warnings = [*pipeline_builder.warnings, *input_warnings, *hotkey_warnings]
     for warning in builder_warnings:
         logger.warning("MaaFW 运行计划：%s", warning)
     # 加载 interface 时的告警（preset 引用不存在的 case、缺 import 文件……）以前只进后端
@@ -373,6 +416,134 @@ def _describe_input_value_error(
     )
 
 
+def _hotkey_labels(
+    interface_model: MaaFWInterface,
+    option_name: str,
+    field_name: str,
+    i18n_mapping: dict[str, Any],
+) -> str:
+    """「选项」或「选项」的「字段」，按显示名拼（拼进告警的整句里）。"""
+
+    option = interface_model.option.get(option_name)
+    option_label = (
+        _resolve_i18n_label(option.label, option_name, i18n_mapping)
+        if option is not None
+        else option_name
+    )
+    if not field_name:
+        return f"「{option_label}」"
+    field = next(
+        (
+            item
+            for item in (option.hotkeys or [] if option is not None else [])
+            if item.name == field_name
+        ),
+        None,
+    )
+    field_label = (
+        _resolve_i18n_label(field.label, field_name, i18n_mapping)
+        if field is not None
+        else field_name
+    )
+    return f"「{option_label}」的「{field_label}」"
+
+
+def _describe_hotkey_value_error(
+    exc: MaaFWHotkeyValueError,
+    interface_model: MaaFWInterface,
+    i18n_mapping: dict[str, Any],
+) -> str:
+    """hotkey 的值下发不了时的告警：哪个选项（字段）、什么值、为什么，改用默认还是整项跳过。"""
+
+    target = _hotkey_labels(
+        interface_model, exc.option_name, exc.field_name, i18n_mapping
+    )
+    value = f"的值 {exc.value} " if exc.value is not None else ""
+    if exc.fallback is not None:
+        return (
+            f"快捷键{target}{value}无法使用（{exc.reason}），"
+            f"这一项改用项目默认键位 {exc.fallback}"
+        )
+    return (
+        f"快捷键{target}{value}无法使用（{exc.reason}），"
+        "已跳过该选项的设置，用到它的任务按项目原本的键位跑"
+    )
+
+
+def _overlay_script_hotkeys(
+    pipeline_builder: MaaFWPipelineOverrideBuilder,
+    interface_model: MaaFWInterface,
+    task_name: str,
+    options: dict[str, Any],
+    script_hotkeys: dict[str, dict[str, str]],
+    cache: dict[str, dict[str, str]],
+    warnings: list[str],
+    i18n_mapping: dict[str, Any],
+) -> dict[str, Any]:
+    """把脚本级键位叠到这个任务实际生效的 hotkey 选项上，返回新的选项字典（不改入参）。
+
+    只看 ``active_option_names`` 给出的选项；字段名必须是该 option 的 ``hotkeys[]``
+    里声明的（没声明的是项目更新后的残留，静默忽略）；值按建覆盖的同一套检查过一遍，
+    不过的丢弃并告警，该字段回落到快照 / 默认值。
+    """
+
+    result = options
+    for option_name in pipeline_builder.active_option_names(task_name, options):
+        raw_fields = script_hotkeys.get(option_name)
+        if not isinstance(raw_fields, dict) or not raw_fields:
+            continue
+        option = interface_model.option.get(option_name)
+        if option is None or option.type != "hotkey":
+            continue
+        if option_name not in cache:
+            declared = {item.name for item in option.hotkeys or []}
+            valid_fields: dict[str, str] = {}
+            for field_name, value in raw_fields.items():
+                if field_name not in declared or not isinstance(value, str):
+                    continue
+                try:
+                    pipeline_builder.check_hotkey_value(option_name, field_name, value)
+                except MaaFWHotkeyError as exc:
+                    target = _hotkey_labels(
+                        interface_model, option_name, field_name, i18n_mapping
+                    )
+                    warning = (
+                        f"脚本键位{target}设为 {value} 无法使用（{exc}），"
+                        "已忽略这一项，按任务队列里的设置或项目默认键位跑"
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+                    continue
+                # 修饰键比项目 pipeline 用到的多：值照常下发，多出的修饰键不会按下，说一声。
+                # 脚本页录制时已按同一口径拦住，这里兜住导入或手改的值。
+                needed = hotkey_modifier_count(option, field_name)
+                if len(resolve_hotkey(value, "Win32").modifiers) > needed:
+                    target = _hotkey_labels(
+                        interface_model, option_name, field_name, i18n_mapping
+                    )
+                    extra = (
+                        "项目这一项只按单个按键，修饰键不会按下"
+                        if needed == 0
+                        else f"项目这一项只用到 {needed} 个修饰键，多出的不会按下"
+                    )
+                    warning = f"脚本键位{target}设为 {value}，{extra}"
+                    if warning not in warnings:
+                        warnings.append(warning)
+                valid_fields[field_name] = value
+            cache[option_name] = valid_fields
+        valid_fields = cache[option_name]
+        if not valid_fields:
+            continue
+        existing = result.get(option_name)
+        if result is options:
+            result = dict(options)
+        result[option_name] = {
+            **(existing if isinstance(existing, dict) else {}),
+            **valid_fields,
+        }
+    return result
+
+
 def _coerce_interface(
     interface_model: MaaFWInterface | dict[str, Any],
 ) -> MaaFWInterface:
@@ -477,6 +648,60 @@ def _select_resource(
     if not interface_model.resource:
         raise MaaFWRunPlanError("interface 未声明 resource")
     raise MaaFWRunPlanError(f"没有适用于 controller {controller.name} 的 resource")
+
+
+def resolve_run_selection(
+    interface_model: MaaFWInterface,
+    *,
+    configured_controller: str,
+    emulator_selected: bool,
+    configured_resource: str,
+) -> tuple[str | None, str | None]:
+    """运行时用哪个 controller / resource：``(交给建计划的 controller 名, 实际生效的 resource 名)``。
+
+    这是「脚本资源留空时到底跑哪个资源」的唯一口径：运行前检查、特调装饰，以及特调在
+    保存与启动期整理用户配置时都按它判断，别再各自回落到 ``interface.resource[0]``。
+
+    - controller：脚本上选的且 interface 里有 → 它；否则配了模拟器 → 第一个 Adb；否则原值
+      （可能是 None，建计划时回落到第一个 Adb / Win32）。
+    - resource：脚本上选了就用它；否则取第一个适用于上面那个 controller（None 时按建计划的
+      回落）的资源。找不到返回 None，由建计划报错。
+    """
+
+    configured = str(configured_controller or "").strip()
+    known = {item.name: item for item in interface_model.controller}
+    if configured in known:
+        controller_name: str | None = configured
+    else:
+        adb = next(
+            (item for item in interface_model.controller if item.type == "Adb"), None
+        )
+        # 配置里的 controller 在当前 interface 中已不存在（项目更新改了名字）时也走这里
+        if emulator_selected and adb is not None:
+            controller_name = adb.name
+        else:
+            controller_name = configured or None
+
+    resource = str(configured_resource or "").strip()
+    if resource:
+        return controller_name, resource
+    if controller_name is None:
+        controller = next(
+            (
+                item
+                for item in interface_model.controller
+                if item.type in MAAFW_DIRECT_CONTROLLER_TYPES
+            ),
+            None,
+        )
+    else:
+        controller = known.get(controller_name)
+    if controller is None:
+        return controller_name, None
+    for item in interface_model.resource:
+        if not item.controller or controller.name in item.controller:
+            return controller_name, item.name
+    return controller_name, None
 
 
 def select_snapshot_tasks(

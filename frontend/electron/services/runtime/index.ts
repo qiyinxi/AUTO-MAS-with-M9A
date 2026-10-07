@@ -48,6 +48,7 @@ export {
 } from './client'
 
 export {
+  RUNTIME_BACKUP_SUFFIX,
   RUNTIME_DEVELOPMENT_ROOT_DIRNAME,
   RUNTIME_EXECUTABLE_NAME,
   RUNTIME_EXE_ENV,
@@ -61,6 +62,7 @@ export {
   RuntimeLaunchModeSource,
   RuntimeSupervisedLaunchConfig,
   isPersistedRuntimeLaunchMode,
+  recoverRuntimeBackup,
   resolveDevelopmentRuntimeRoot,
   resolveRuntimeExecutable,
   resolveRuntimeLaunchConfig,

@@ -65,7 +65,7 @@
         </button>
         <button
           class="control-button maximize-button"
-          :title="isMaximized ? '还原' : '最大化'"
+          :title="isMaximized ? t('comp.restoreWindow') : t('comp.maximizeWindow')"
           @click="toggleMaximize"
         >
           <BorderOutlined />
@@ -161,6 +161,7 @@ import {
   updateInfo,
   backendUpdateInfo,
   runtimeBackendUpdateAvailable,
+  runtimeBackendUpdateCommitMessage,
 } from '@/composables/useVersionService'
 import { useUpdateModal } from '@/composables/useUpdateChecker'
 import { useAppInitialization } from '@/composables/useAppInitialization'
@@ -176,7 +177,7 @@ import {
   MinusOutlined,
 } from '@ant-design/icons-vue'
 import { Modal } from 'ant-design-vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import type { RuntimeUpdateRetryAction } from '@/types/electron'
@@ -242,6 +243,7 @@ const updateActions = computed(() => resolveBackendUpdateActions(updateOutcome.v
 
 // 常量数组要放进 computed，否则切换语言后按钮文案不跟着变。
 const retryActionLabels = computed<Record<RuntimeUpdateRetryAction, string>>(() => ({
+  bootstrap: t('comp.backendUpdateRetryBootstrap'),
   'workspace-sync': t('comp.backendUpdateRetryWorkspaceSync'),
   'dependencies-sync': t('comp.backendUpdateRetryDependenciesSync'),
   'dependencies-rebuild': t('comp.backendUpdateRetryDependenciesRebuild'),
@@ -305,11 +307,29 @@ const resolveRuntimeUpdateVersion = (): string => updateInfo.value?.latest_versi
 const handleBackendUpdateClick = () => {
   Modal.confirm({
     title: t('comp.restartBackendUpdate'),
-    content: t(
-      runtimeBackendUpdateAvailable.value
-        ? 'comp.backendUpdateReadyConfirm'
-        : 'comp.backendAboutUpdateWhich'
-    ),
+    content:
+      runtimeBackendUpdateAvailable.value && runtimeBackendUpdateCommitMessage.value
+        ? h('div', [
+            h('p', t('comp.backendUpdateReadyConfirm')),
+            h('strong', t('comp.backendUpdateLatestCommit')),
+            h(
+              'div',
+              {
+                style: {
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'anywhere',
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                },
+              },
+              runtimeBackendUpdateCommitMessage.value
+            ),
+          ])
+        : t(
+            runtimeBackendUpdateAvailable.value
+              ? 'comp.backendUpdateReadyConfirm'
+              : 'comp.backendAboutUpdateWhich'
+          ),
     okText: t('comp.confirm'),
     cancelText: t('comp.cancel'),
     centered: true,
@@ -511,8 +531,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .title-bar {
   height: 32px;
-  background: #ffffff;
-  border-bottom: 1px solid #e8e8e8;
+  background: var(--app-appearance-elevated-surface-bg, var(--ant-color-bg-elevated));
+  border-bottom: 1px solid var(--ant-color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -524,8 +544,8 @@ onBeforeUnmount(() => {
 }
 
 .title-bar-dark {
-  background: #1f1f1f;
-  border-bottom: 1px solid #333;
+  background: var(--app-appearance-elevated-surface-bg, var(--ant-color-bg-elevated));
+  border-bottom: 1px solid var(--ant-color-border);
 }
 
 .title-bar-left {
@@ -580,7 +600,7 @@ onBeforeUnmount(() => {
 .title-text {
   font-size: 13px;
   font-weight: 600;
-  color: #333;
+  color: var(--ant-color-text);
   position: relative;
   z-index: 1;
 }
@@ -595,7 +615,7 @@ onBeforeUnmount(() => {
 }
 
 .title-bar-dark .title-text {
-  color: #fff;
+  color: var(--ant-color-text);
 }
 
 .startup-status {
@@ -607,7 +627,7 @@ onBeforeUnmount(() => {
 }
 
 .title-bar-dark .version-text {
-  color: #ffffff;
+  color: var(--ant-color-text);
 }
 
 .title-bar-center {
@@ -640,13 +660,13 @@ onBeforeUnmount(() => {
   justify-content: center;
   cursor: pointer;
   transition: background-color 0.2s;
-  color: #666;
+  color: var(--ant-color-text-secondary);
   font-size: 12px;
   -webkit-app-region: no-drag;
 }
 
 .title-bar-dark .control-button {
-  color: #ccc;
+  color: var(--ant-color-text-secondary);
 }
 
 .control-button:hover {

@@ -52,6 +52,8 @@ from app.task.MaaFW.tools.core.interface.loader import (
 from app.task.MaaFW.tools.core.interface.preview import (
     interface_display_name,
 )
+from app.task.MaaFW.tools.core.log_redact import mask_home_path
+from app.task.MaaFW.tools.core.project_update.state import redact_text
 from app.task.MaaFW.tools.embedded.embedded_project import (
     EmbeddedProjectError,
     clone_embedded_copy,
@@ -119,8 +121,27 @@ async def _embed_from_source(script_id: str, source_path: str) -> tuple[None, st
         )
     except (KeyError, ValueError, TypeError):
         channel = "stable"
+    try:
+        script_name = str(
+            maafw_script_config(script_id).get("Info", "Name") or script_id[:8]
+        )
+    except (KeyError, ValueError, TypeError):
+        script_name = script_id[:8]
+
+    # 失败原因只回给页面的话，用户发来的日志包里什么都看不到：每种失败都进 app.log。
+    # 来源目录与异常原文里常有用户目录 / URL：用户目录换成 <HOME>、URL 去掉查询串。
+    def log_failure(reason: str, *, exception: bool = False) -> None:
+        line = mask_home_path(
+            redact_text(
+                f"MFW 脚本 {script_id}（{script_name}）从 {source_path} 导入失败"
+                f"（渠道 {channel}）：{reason}"
+            )
+        )
+        (logger.opt(exception=True) if exception else logger).warning(line)
+
     reservation = await try_reserve_project_path(embedded_project_dir(script_id))
     if reservation is None:
+        log_failure(EMBEDDED_COPY_BUSY)
         return None, EMBEDDED_COPY_BUSY
     publish = _embedded_import_publisher(script_id)
     try:
@@ -135,8 +156,10 @@ async def _embed_from_source(script_id: str, source_path: str) -> tuple[None, st
         )
         publish("imported", "success", "导入完成", 100.0)
     except EmbeddedProjectError as exc:
+        log_failure(str(exc))
         return None, str(exc)
     except Exception as exc:  # noqa: BLE001 - 文件系统异常也要原样给用户
+        log_failure(f"{type(exc).__name__}: {exc}", exception=True)
         return None, f"{type(exc).__name__}: {exc}"
     finally:
         await release_project_path(reservation)
@@ -324,6 +347,11 @@ async def reimport_embedded(script_id: str, source_path: str | None) -> MaaFWApi
     if busy := _embedded_busy_reason(script_config):
         return MaaFWApiReply.error(400, busy)
     source = str(source_path or "").strip()
+    # 来源最后要写进 Info.Path，先按它的校验器过一遍（系统目录、AUTO-MAS 自己的目录不收）：
+    # 拖到复制之后才发现，副本已经换成新项目、来源却写不进去，端点还会直接 500。
+    # 校验要碰磁盘（is_dir / resolve），来源在慢网络盘上时别卡住事件循环
+    if path_error := await asyncio.to_thread(_source_path_error, script_config, source):
+        return MaaFWApiReply.error(400, f"重新导入失败: {path_error}")
     copy_dir = embedded_project_dir(script_id)
     # 换树前记下旧副本钉定的 maafw 版本：重导后版本换了，旧 binding 不必再等宽限
     previous_version = await _previous_maafw_version(copy_dir)
@@ -337,6 +365,17 @@ async def reimport_embedded(script_id: str, source_path: str | None) -> MaaFWApi
     # 副本、来源、省了多少这些细节只进运行环境日志（见 embedded_summary_lines），
     # 页面上就是一句「项目已导入」
     return MaaFWApiReply(message="项目已导入", data=data)
+
+
+def _source_path_error(script_config: RuntimeMaaFWConfig, source: str) -> str | None:
+    """这个来源能不能写进 Info.Path；不能就给出校验器的原话。"""
+
+    try:
+        script_config.Info_Path.validator.correct(source)
+    # 路径里的符号链接成环时，Python 3.12 的 Path.resolve 抛 RuntimeError
+    except (ValueError, RuntimeError) as exc:
+        return str(exc)
+    return None
 
 
 async def _previous_maafw_version(copy_dir: Path) -> str | None:
@@ -445,7 +484,53 @@ def embedded_summary_lines(script_id: str) -> list[str]:
         )
     if details:
         lines.append("；".join(details))
+    source = str(status.get("sourcePath") or "")
+    lines.extend(
+        _view_architecture_warnings(
+            Path(str(status["copyPath"])),
+            Path(source) if source and status.get("sourceExists") else None,
+        )
+    )
     return lines
+
+
+def _view_architecture_warnings(view: Path, source: Path | None) -> list[str]:
+    """视图现在的自带 MaaFramework / 原生插件没有本机能加载的那份时的提示，各占一行。
+
+    按视图目录现场算、不读导入报告：更新或切换视图后报告不会重写，读它会在换成本机
+    架构的版本之后仍一直提示。只读 PE 头；插件目录取运行计划同一套解析（清单
+    ``nativePluginPaths`` 优先，缺省 ``plugins/``）。
+    """
+
+    from app.task.MaaFW.tools.core.runner.environment import (
+        describe_plugin_architecture_mismatch,
+        describe_project_runtime_architecture_mismatch,
+    )
+    from app.task.MaaFW.tools.core.runner.run_plan import (
+        MaaFWRunPlanError,
+        _build_native_plugin_paths,
+    )
+
+    messages: list[str] = []
+    try:
+        runtime_message = describe_project_runtime_architecture_mismatch(
+            view, source_path=source
+        )
+    except OSError:
+        runtime_message = None
+    if runtime_message:
+        messages.append(runtime_message)
+    try:
+        plugin_paths = _build_native_plugin_paths(view)
+    except (MaaFWRunPlanError, OSError):
+        plugin_paths = []  # 清单坏了运行前会报清楚，这里只是提示
+    for path_info in plugin_paths:
+        if not path_info.isDir:
+            continue  # 显式文件条目架构不符时 runner 直接报错，不在这里重复
+        plugin_message = describe_plugin_architecture_mismatch(Path(path_info.resolved))
+        if plugin_message:
+            messages.append(plugin_message)
+    return messages
 
 
 def _embedded_source_project(script_id: str) -> tuple[str, str]:
@@ -524,8 +609,23 @@ async def clone_embedded(script_id: str, source_script_id: str) -> MaaFWApiReply
             clone_embedded_copy, source_script_id, script_id
         )
     except EmbeddedProjectError as exc:
+        logger.warning(
+            mask_home_path(
+                redact_text(
+                    f"MFW 脚本 {script_id} 从脚本 {source_script_id} 克隆项目失败：{exc}"
+                )
+            )
+        )
         return MaaFWApiReply.error(400, f"克隆失败: {exc}")
     except Exception as exc:  # noqa: BLE001 - 文件系统异常也要原样给用户
+        logger.opt(exception=True).warning(
+            mask_home_path(
+                redact_text(
+                    f"MFW 脚本 {script_id} 从脚本 {source_script_id} 克隆项目失败："
+                    f"{type(exc).__name__}: {exc}"
+                )
+            )
+        )
         return MaaFWApiReply.error(400, f"克隆失败: {type(exc).__name__}: {exc}")
     finally:
         await release_project_path(target_reservation)

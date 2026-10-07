@@ -161,9 +161,7 @@
             <a-col :span="12">
               <a-form-item>
                 <template #label>
-                  <a-tooltip
-                    title="开启「任务前启动游戏」后，游戏启动成功后在运行 ok-nte 前按用户手机号后 4 位强制切换登录账号；用户未填写账号则不切换。未开启「任务前启动游戏」时本开关不可用"
-                  >
+                  <a-tooltip :title="t('edit.oknteAccountSwitchHint')">
                     <span class="form-label">
                       运行前强制切换账号
                       <QuestionCircleOutlined class="help-icon" />
@@ -180,6 +178,42 @@
                   <a-select-option :value="true">是</a-select-option>
                   <a-select-option :value="false">否</a-select-option>
                 </a-select>
+                <span class="control-hint">{{ t('edit.accountSwitch16x9Only') }}</span>
+              </a-form-item>
+            </a-col>
+          </a-row>
+
+          <a-row :gutter="24">
+            <a-col :span="12">
+              <a-form-item>
+                <template #label>
+                  <span class="form-label">
+                    {{ t('edit.launchType') }}
+                    <a-tooltip :title="t('edit.oknteLaunchTypeHint')">
+                      <QuestionCircleOutlined class="help-icon" />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-radio-group
+                  v-model:value="oknteConfig.Game.LaunchMode"
+                  size="small"
+                  button-style="solid"
+                  :disabled="launchModeDisabled"
+                  @change="handleLaunchModeChange"
+                >
+                  <a-radio-button value="Autoplay">
+                    {{ t('edit.launchDirectly') }}
+                  </a-radio-button>
+                  <a-radio-button value="LauncherUi">
+                    {{ t('edit.oknteLaunchViaLauncher') }}
+                  </a-radio-button>
+                </a-radio-group>
+                <span class="control-hint">
+                  {{ t('edit.oknteLaunchTypeSummary') }}
+                </span>
+                <span v-if="showLaunchModeHint" class="control-hint">
+                  {{ t('edit.oknteLaunchModeNeedsLaunchBeforeTask') }}
+                </span>
               </a-form-item>
             </a-col>
           </a-row>
@@ -190,10 +224,7 @@
                 <template #label>
                   <span class="form-label">
                     {{ t('edit.gameLauncher') }}
-                    <span class="label-hint"
-                      >选择包含 <strong>Neverness To Everness</strong> 的任意目录，自动定位
-                      NTEGame.exe 启动器</span
-                    >
+                    <span class="label-hint">{{ t('edit.okntePickDirHint') }}</span>
                   </span>
                 </template>
                 <a-input-group compact class="path-input-group">
@@ -261,12 +292,24 @@
               </a-form-item>
             </a-col>
           </a-row>
+
+          <a-alert
+            v-if="oknteConfig.Game.LaunchMode === 'LauncherUi'"
+            class="launch-mode-alert"
+            type="info"
+            show-icon
+            :message="t('edit.oknteLauncherClickNotice')"
+          />
         </div>
 
         <div class="form-section">
           <div class="section-header">
             <h3>{{ t('edit.runConfiguration') }}</h3>
           </div>
+          <ScriptHardTimeoutField
+            v-model:value="oknteConfig.Run.HardTimeLimit"
+            @save="handleChange('Run', 'HardTimeLimit', oknteConfig.Run.HardTimeLimit)"
+          />
           <a-row :gutter="24">
             <a-col :span="8">
               <a-form-item>
@@ -336,11 +379,13 @@
 </template>
 
 <script setup lang="ts">
+import ScriptHardTimeoutField from '@/views/EditView/Script/components/ScriptHardTimeoutField.vue'
 import ConfigLockPanel from '@/components/ConfigLockPanel.vue'
 import { useI18n } from 'vue-i18n'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
+import type { RadioChangeEvent } from 'ant-design-vue/es/radio/interface'
 import {
   ArrowLeftOutlined,
   FolderOpenOutlined,
@@ -413,6 +458,7 @@ const oknteConfig = reactive<OkNteFormConfig>({
   Game: {
     Enabled: false,
     LaunchBeforeTask: false,
+    LaunchMode: 'Autoplay',
     Type: 'Client',
     Path: '.',
     URL: '',
@@ -423,7 +469,7 @@ const oknteConfig = reactive<OkNteFormConfig>({
     CloseOnFinish: true,
     AccountSwitch: false,
   },
-  Run: { ProxyTimesLimit: 0, RunTimesLimit: 1, RunTimeLimit: 120 },
+  Run: { HardTimeLimit: 120, ProxyTimesLimit: 0, RunTimesLimit: 1, RunTimeLimit: 120 },
 })
 
 const rules = {
@@ -462,6 +508,42 @@ const handleChange = async (category: string, key: string, value: unknown) => {
       logger.error(msg)
     }
   }, `${category}.${key}`)
+}
+
+// 启动方式取值取自生成的 schema 类型（后端 schema.py 的 Literal["Autoplay","LauncherUi"]）
+type OkNteLaunchMode = NonNullable<OkNteConfig_Game['LaunchMode']>
+
+const launchModeDisabled = computed(
+  () => !oknteConfig.Game.Enabled || !oknteConfig.Game.LaunchBeforeTask || isSaving.value
+)
+const showLaunchModeHint = computed(
+  () => oknteConfig.Game.Enabled && !oknteConfig.Game.LaunchBeforeTask
+)
+
+// 已保存成功的启动方式：保存失败时回滚到它。radio-group 的 change 只在用户操作时触发，
+// 回滚赋值不会再触发保存，因此不需要 Okww 那套 persisted/requested 哨兵。
+let persistedLaunchMode: OkNteLaunchMode = 'Autoplay'
+
+const handleLaunchModeChange = async (event: RadioChangeEvent) => {
+  const value = event.target.value as OkNteLaunchMode
+  const previous = persistedLaunchMode
+  const success = await enqueue(async () => {
+    try {
+      const ok = await updateScript(scriptId, { Game: { LaunchMode: value } })
+      if (!ok) oknteConfig.Game.LaunchMode = previous
+      return ok
+    } catch (err) {
+      oknteConfig.Game.LaunchMode = previous
+      logger.error(err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }).catch(() => false)
+  if (!success) {
+    message.error(t('edit.launchTypeSaveFailed'))
+    return
+  }
+  persistedLaunchMode = value
+  logger.info(`配置已保存: Game.LaunchMode=${value}`)
 }
 
 const buildAutoPaths = (rootPath: string) => {
@@ -537,6 +619,9 @@ const loadScript = async () => {
     Object.assign(oknteConfig.Info, config.Info || {})
     Object.assign(oknteConfig.Script, config.Script || {})
     Object.assign(oknteConfig.Game, config.Game || {})
+    // schema 字段可选：后端旧配置没有 LaunchMode，回落到默认「直接启动（静默 /autoplay）」
+    oknteConfig.Game.LaunchMode = config.Game?.LaunchMode ?? 'Autoplay'
+    persistedLaunchMode = oknteConfig.Game.LaunchMode
     Object.assign(oknteConfig.Run, config.Run || {})
 
     // 旧配置 Game.Path 存的是 HTGame.exe：展示层自动升级为同安装根下的启动器
@@ -740,6 +825,18 @@ onMounted(loadScript)
   font-size: 12px;
   font-weight: 400;
   color: var(--ant-color-text-tertiary);
+}
+
+.control-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ant-color-text-tertiary);
+}
+
+.launch-mode-alert {
+  margin-bottom: 24px;
 }
 
 .label-hint strong {

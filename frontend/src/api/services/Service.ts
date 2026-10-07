@@ -5,6 +5,7 @@
 import type { BackendHealthOut } from '../models/BackendHealthOut';
 import type { BetterGICustomGroupsOut } from '../models/BetterGICustomGroupsOut';
 import type { BetterGIDomainCatalogOut } from '../models/BetterGIDomainCatalogOut';
+import type { BetterGIGameInfoOut } from '../models/BetterGIGameInfoOut';
 import type { BetterGIGlobalDomainSettingsIn } from '../models/BetterGIGlobalDomainSettingsIn';
 import type { BetterGIGlobalDomainSettingsOut } from '../models/BetterGIGlobalDomainSettingsOut';
 import type { BetterGIGlobalStygianSettingsIn } from '../models/BetterGIGlobalStygianSettingsIn';
@@ -18,7 +19,6 @@ import type { BetterGIScriptGroupSaveIn } from '../models/BetterGIScriptGroupSav
 import type { BetterGIScriptReadmeOut } from '../models/BetterGIScriptReadmeOut';
 import type { BetterGIScriptSettingsUiOut } from '../models/BetterGIScriptSettingsUiOut';
 import type { BlueArchiveActivityIn } from '../models/BlueArchiveActivityIn';
-import type { BlueArchiveActivityStatusOut } from '../models/BlueArchiveActivityStatusOut';
 import type { Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post } from '../models/Body_batch_update_oknte_configs_api_scripts_oknte_configs_batch_update_post';
 import type { Body_get_maa_cultivate_operators_api_scripts_maa_cultivate_operators_post } from '../models/Body_get_maa_cultivate_operators_api_scripts_maa_cultivate_operators_post';
 import type { Body_get_maa_depot_inventory_api_scripts_maa_depot_inventory_post } from '../models/Body_get_maa_depot_inventory_api_scripts_maa_depot_inventory_post';
@@ -80,8 +80,17 @@ import type { MaaFWInterfacePreviewIn } from '../models/MaaFWInterfacePreviewIn'
 import type { MaaFWInterfacePreviewOut } from '../models/MaaFWInterfacePreviewOut';
 import type { MaaFWProjectUpdateIn } from '../models/MaaFWProjectUpdateIn';
 import type { MaaFWProjectUpdateOut } from '../models/MaaFWProjectUpdateOut';
+import type { MaaFWShellInstanceApplyIn } from '../models/MaaFWShellInstanceApplyIn';
+import type { MaaFWShellInstanceApplyOut } from '../models/MaaFWShellInstanceApplyOut';
+import type { MaaFWShellInstanceImportIn } from '../models/MaaFWShellInstanceImportIn';
+import type { MaaFWShellInstanceImportOut } from '../models/MaaFWShellInstanceImportOut';
+import type { MaaFWShellInstancesIn } from '../models/MaaFWShellInstancesIn';
+import type { MaaFWShellInstancesOut } from '../models/MaaFWShellInstancesOut';
+import type { MssDefenseStatusIn } from '../models/MssDefenseStatusIn';
+import type { MssDefenseStatusOut } from '../models/MssDefenseStatusOut';
 import type { NoticeOut } from '../models/NoticeOut';
 import type { NotifyChannelsOut } from '../models/NotifyChannelsOut';
+import type { OkwwClientPathOut } from '../models/OkwwClientPathOut';
 import type { OutBase } from '../models/OutBase';
 import type { PatternDebugIn } from '../models/PatternDebugIn';
 import type { PatternDebugOut } from '../models/PatternDebugOut';
@@ -119,11 +128,16 @@ import type { ScriptDeleteIn } from '../models/ScriptDeleteIn';
 import type { ScriptGetIn } from '../models/ScriptGetIn';
 import type { ScriptGetOut } from '../models/ScriptGetOut';
 import type { ScriptReorderIn } from '../models/ScriptReorderIn';
+import type { ScriptShareInspectIn } from '../models/ScriptShareInspectIn';
+import type { ScriptTemplateImportIn } from '../models/ScriptTemplateImportIn';
 import type { ScriptUpdateIn } from '../models/ScriptUpdateIn';
 import type { ScriptUploadIn } from '../models/ScriptUploadIn';
-import type { ScriptUrlIn } from '../models/ScriptUrlIn';
 import type { SettingGetOut } from '../models/SettingGetOut';
 import type { SettingUpdateIn } from '../models/SettingUpdateIn';
+import type { ShareAuthStatusOut } from '../models/ShareAuthStatusOut';
+import type { ShareInspectOut } from '../models/ShareInspectOut';
+import type { ShareTemplateListIn } from '../models/ShareTemplateListIn';
+import type { ShareTemplateListOut } from '../models/ShareTemplateListOut';
 import type { SklandQrCheckIn } from '../models/SklandQrCheckIn';
 import type { SklandQrCheckOut } from '../models/SklandQrCheckOut';
 import type { SklandQrCreateOut } from '../models/SklandQrCreateOut';
@@ -131,6 +145,7 @@ import type { SklandQrSaveIn } from '../models/SklandQrSaveIn';
 import type { TaskCreateIn } from '../models/TaskCreateIn';
 import type { TaskCreateOut } from '../models/TaskCreateOut';
 import type { TaskRuntimeSnapshot } from '../models/TaskRuntimeSnapshot';
+import type { TaskStatusOut } from '../models/TaskStatusOut';
 import type { TaygedoLoginIn } from '../models/TaygedoLoginIn';
 import type { TimeSetCreateOut } from '../models/TimeSetCreateOut';
 import type { TimeSetDeleteIn } from '../models/TimeSetDeleteIn';
@@ -143,6 +158,8 @@ import type { ToolsUpdateIn } from '../models/ToolsUpdateIn';
 import type { UpdateCheckIn } from '../models/UpdateCheckIn';
 import type { UpdateCheckOut } from '../models/UpdateCheckOut';
 import type { UpdateDownloadSnapshot } from '../models/UpdateDownloadSnapshot';
+import type { UserConfigDirIn } from '../models/UserConfigDirIn';
+import type { UserConfigDirOut } from '../models/UserConfigDirOut';
 import type { UserCreateOut } from '../models/UserCreateOut';
 import type { UserDeleteIn } from '../models/UserDeleteIn';
 import type { UserGetIn } from '../models/UserGetIn';
@@ -165,6 +182,7 @@ import type { WebhookInBase } from '../models/WebhookInBase';
 import type { WebhookTestIn } from '../models/WebhookTestIn';
 import type { WebhookUpdateIn } from '../models/WebhookUpdateIn';
 import type { WebSocketMetaOut } from '../models/WebSocketMetaOut';
+import type { WhimboxTaskCatalogOut } from '../models/WhimboxTaskCatalogOut';
 import type { ZzzOdAppConfigOut } from '../models/ZzzOdAppConfigOut';
 import type { ZzzOdAppConfigSaveIn } from '../models/ZzzOdAppConfigSaveIn';
 import type { ZzzOdCatalogOut } from '../models/ZzzOdCatalogOut';
@@ -359,17 +377,6 @@ export class Service {
         });
     }
     /**
-     * 获取配置分享中心的配置信息
-     * @returns InfoOut Successful Response
-     * @throws ApiError
-     */
-    public static getWebConfigApiInfoWebconfigPost(): CancelablePromise<InfoOut> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/info/webconfig',
-        });
-    }
-    /**
      * 信息总览
      * @returns InfoOut Successful Response
      * @throws ApiError
@@ -381,11 +388,14 @@ export class Service {
         });
     }
     /**
-     * 获取碧蓝档案活动数据（Kivo 中转）
-     * 按服务器取回碧蓝档案的活动时间轴。
+     * 获取碧蓝档案活动数据（GameKee 中转）
+     * 按服务器取回碧蓝档案的活动。
      *
-     * 这里只做转发：把 Kivo 的响应原样交给前端，筛选与格式转换都由前端完成。
-     * 之所以要绕一道后端，是因为 Kivo 的接口校验 Origin，浏览器直连必定 403。
+     * 这里只做转发：把 GameKee 的响应原样交给前端，分类筛选与格式转换都由前端完成。
+     * 之所以要绕一道后端，一是那个接口认自定义头、二是响应没给跨域头，浏览器直连取不到。
+     *
+     * GameKee 取不到时改用 SRA 托管的那份：那一份已经筛掉非活动条目，这里换成 GameKee
+     * 的字段形状再交给前端，省得让前端认识第二套数据源。
      * @param requestBody
      * @returns InfoOut Successful Response
      * @throws ApiError
@@ -401,6 +411,104 @@ export class Service {
             errors: {
                 422: `Validation Error`,
             },
+        });
+    }
+    /**
+     * 获取碧蓝档案活动图片（GameKee 中转）
+     * 中转 GameKee 的图片。
+     *
+     * 那个 CDN 校验 Referer：带上它自己的站点才给图，页面直连（Referer 是本软件）会被拒。
+     * 所以图片也由后端取回，前端只管引用这个地址。
+     * @param url 图片地址
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static getBluearchiveImageApiInfoBluearchiveImageGet(
+        url: string,
+    ): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/info/bluearchive/image',
+            query: {
+                'url': url,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 获取终末地版本图与版本名
+     * 终末地的版本图地址与版本名（图是固定地址，前端再走图片中转取回）。
+     * @returns InfoOut Successful Response
+     * @throws ApiError
+     */
+    public static getEndfieldVersionArtApiInfoEndfieldVersionArtGet(): CancelablePromise<InfoOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/info/endfield/version-art',
+        });
+    }
+    /**
+     * 获取终末地活动图片（缩放后转发）
+     * 把终末地的活动大图缩到横幅宽度再交给前端。
+     * @param url 图片地址
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static getEndfieldImageApiInfoEndfieldImageGet(
+        url: string,
+    ): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/info/endfield/image',
+            query: {
+                'url': url,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 获取明日方舟活动数据（PRTS 中转）
+     * 取回明日方舟的活动一览。
+     *
+     * PRTS 的页面里已经带了活动名、分类、起止时间与配图，这里解析成前端好用的形状。
+     * 最近两周一场活动都没有是正常情况（长草期），按空列表返回并照常缓存，
+     * 不然前端会把「没有活动」当成接口出错反复重试。
+     *
+     * PRTS 在部分网络下会连不上、也挡浏览器直连，真取不到时改用 SRA 托管的那份活动列表
+     * 顶上：数据没有活动分类，卡片上会少一列标签，但至少不是空的。
+     * @returns InfoOut Successful Response
+     * @throws ApiError
+     */
+    public static getArknightsActivityApiInfoArknightsActivityGet(): CancelablePromise<InfoOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/info/arknights/activity',
+        });
+    }
+    /**
+     * 获取星塔旅人活动数据（官网公告）
+     * 取回星塔旅人的活动一览。
+     *
+     * 数据取自国服官网的活动公告：官网 CMS 不放开跨域、也认 Referer，所以由后端
+     * 取回并按公告正文里的开放时间整理成与其它游戏一致的形状。
+     *
+     * 官网取不到、或者这一次一篇活动公告都没识别出来时，改用 SRA 托管的那份顶上：
+     * 对方的抓取在它自己的服务器上完成，用户本机到不了官网也能看到活动。那份数据没有
+     * 分类，按本模块给星塔旅人定的判据补一个，否则前端的横幅与常驻分组会全落空。
+     *
+     * Returns:
+     * InfoOut: ``{"activities": [...]}``；两处都取不到时返回 ``code=500`` 的错误信封。
+     * @returns InfoOut Successful Response
+     * @throws ApiError
+     */
+    public static getStellaActivityApiInfoStellaActivityPost(): CancelablePromise<InfoOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/info/stella/activity',
         });
     }
     /**
@@ -461,6 +569,29 @@ export class Service {
         });
     }
     /**
+     * 解码鸣潮启动器，返回客户端 exe 路径
+     * 解码鸣潮启动器记录，返回客户端 exe 完整路径（仅直启模式的前端展示用）。
+     *
+     * 任务期的启动与自动更新链路由后端自行解码，不经过本端点。
+     * @param scriptId
+     * @returns OkwwClientPathOut Successful Response
+     * @throws ApiError
+     */
+    public static getOkwwClientPathApiApiScriptsOkwwClientPathGet(
+        scriptId: string,
+    ): CancelablePromise<OkwwClientPathOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/scripts/okww/client-path',
+            query: {
+                'scriptId': scriptId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 删除脚本
      * @param requestBody
      * @returns OutBase Successful Response
@@ -499,13 +630,13 @@ export class Service {
         });
     }
     /**
-     * 从网络加载脚本配置
+     * 从配置中心导入脚本配置
      * @param requestBody
      * @returns OutBase Successful Response
      * @throws ApiError
      */
     public static importScriptFromWebApiScriptsImportWebPost(
-        requestBody: ScriptUrlIn,
+        requestBody: ScriptTemplateImportIn,
     ): CancelablePromise<OutBase> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -518,7 +649,26 @@ export class Service {
         });
     }
     /**
-     * 上传脚本配置到网络
+     * 分享前检查脚本配置中的隐私风险
+     * @param requestBody
+     * @returns ShareInspectOut Successful Response
+     * @throws ApiError
+     */
+    public static inspectScriptShareApiScriptsShareInspectPost(
+        requestBody: ScriptShareInspectIn,
+    ): CancelablePromise<ShareInspectOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/share/inspect',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 分享脚本配置到配置中心
      * @param requestBody
      * @returns OutBase Successful Response
      * @throws ApiError
@@ -586,6 +736,25 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/scripts/user/get',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 获取用户配置目录
+     * @param requestBody
+     * @returns UserConfigDirOut Successful Response
+     * @throws ApiError
+     */
+    public static getUserConfigDirApiScriptsUserConfigDirPost(
+        requestBody: UserConfigDirIn,
+    ): CancelablePromise<UserConfigDirOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/user/config-dir',
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -1016,6 +1185,93 @@ export class Service {
         });
     }
     /**
+     * 列出项目目录里外壳（MFAAvalonia / MXU / MFW-PyQt6）保存的配置实例
+     * 新建脚本引导最后一步用：外壳里配好的每份实例都可以导入成一个用户。只读外壳文件。
+     * @param requestBody
+     * @returns MaaFWShellInstancesOut Successful Response
+     * @throws ApiError
+     */
+    public static listMaafwShellInstancesApiScriptsMaafwShellInstancesPost(
+        requestBody: MaaFWShellInstancesIn,
+    ): CancelablePromise<MaaFWShellInstancesOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/shell-instances',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 个人版「灾变防线」这一期的状态
+     * MSS 用户页显示「本期灾变防线打了没」。只读，不改任何配置。
+     *
+     * 「这一期」由后端按官网那一篇公告的开始时刻算，前端不复刻同一套口径。
+     * @param requestBody
+     * @returns MssDefenseStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static getMssDefenseStatusApiScriptsMaafwMssDefenseStatusPost(
+        requestBody: MssDefenseStatusIn,
+    ): CancelablePromise<MssDefenseStatusOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/mss/defense-status',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 把选中的外壳配置实例导入成用户
+     * 每个实例建一个用户：用户名取实例名，任务队列与任务选项一起导入。
+     *
+     * 逐个实例独立处理，失败原因与当前项目里对不上而跳过的任务 / 选项写在各项结果里。
+     * @param requestBody
+     * @returns MaaFWShellInstanceImportOut Successful Response
+     * @throws ApiError
+     */
+    public static importMaafwShellInstancesApiScriptsMaafwShellInstancesImportPost(
+        requestBody: MaaFWShellInstanceImportIn,
+    ): CancelablePromise<MaaFWShellInstanceImportOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/shell-instances/import',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 把一份外壳配置的任务队列覆盖到已有用户
+     * 脚本已经建好之后又在外壳里调过队列时，把那份队列与选项再同步到某个用户。
+     *
+     * 与「导入成用户」共用同一套换算，所以当前项目里对不上的任务 / 选项同样会被跳过并列在结果里。
+     * 覆盖的是任务队列与任务选项，用户名不动。
+     * @param requestBody
+     * @returns MaaFWShellInstanceApplyOut Successful Response
+     * @throws ApiError
+     */
+    public static applyMaafwShellInstanceApiScriptsMaafwShellInstancesApplyPost(
+        requestBody: MaaFWShellInstanceApplyIn,
+    ): CancelablePromise<MaaFWShellInstanceApplyOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/scripts/maafw/shell-instances/apply',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 按所选 resource 推断 MFW 项目的安卓游戏包名
      * 脚本编辑页读完 interface / 切换 resource 时调用，把推出来的包名直接填进表单。
      *
@@ -1212,27 +1468,6 @@ export class Service {
             url: '/api/scripts/baah/config-names',
             query: {
                 'scriptId': scriptId,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * 获取碧蓝档案活动状态
-     * 返回指定服正在进行的活动，没有则返回下一个未开始的活动。
-     * @param lineType
-     * @returns BlueArchiveActivityStatusOut Successful Response
-     * @throws ApiError
-     */
-    public static getBaahActivityStatusApiApiScriptsBaahActivityStatusGet(
-        lineType: 'JP' | 'Globle' | 'CN' = 'CN',
-    ): CancelablePromise<BlueArchiveActivityStatusOut> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/scripts/baah/activity-status',
-            query: {
-                'lineType': lineType,
             },
             errors: {
                 422: `Validation Error`,
@@ -2125,6 +2360,33 @@ export class Service {
         });
     }
     /**
+     * 获取游戏客户端信息（路径 + 渠道，用户页透传展示）
+     * 读取 BetterGI 配置的游戏路径并识别客户端渠道（官服/B服/国际服）。
+     *
+     * ``detectPath`` 非空时对该路径做渠道识别（用户自填路径的即时标注），
+     * 为空时返回生效路径（用户级优先，否则 BGI 全局配置）及其渠道。
+     * @param scriptId
+     * @param detectPath
+     * @returns BetterGIGameInfoOut Successful Response
+     * @throws ApiError
+     */
+    public static getBettergiGameInfoApiApiScriptsBettergiGameInfoGet(
+        scriptId: string,
+        detectPath: string = '',
+    ): CancelablePromise<BetterGIGameInfoOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/scripts/bettergi/game-info',
+            query: {
+                'scriptId': scriptId,
+                'detectPath': detectPath,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 获取实例原生配置（直控页面表单数据）
      * 读取所选实例 game_account.yml 与 _group.yml（含默认值合并与任务目录并入）。
      * @param scriptId
@@ -2319,6 +2581,30 @@ export class Service {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/scripts/hsr/sra-profiles',
+            query: {
+                'scriptId': scriptId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 获取奇想盒一条龙任务目录
+     * 下发一条龙任务目录（步骤开关 + 目标/参数字段）。
+     *
+     * 字段定义与值域从上游安装目录三件套（default_config / setting_options /
+     * material）运行时机械转换，MAS 发版不管理；上游升级后下次读取自动生效。
+     * @param scriptId
+     * @returns WhimboxTaskCatalogOut Successful Response
+     * @throws ApiError
+     */
+    public static getWhimboxTaskCatalogApiApiScriptsWhimboxTaskCatalogGet(
+        scriptId?: (string | null),
+    ): CancelablePromise<WhimboxTaskCatalogOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/scripts/whimbox/task-catalog',
             query: {
                 'scriptId': scriptId,
             },
@@ -3035,6 +3321,27 @@ export class Service {
         });
     }
     /**
+     * 按 taskId 查询单个任务状态
+     * 返回运行中或最近完成任务的终态；不包含日志。
+     * @param taskId
+     * @returns TaskStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static getTaskStatusApiDispatchTaskTaskIdGet(
+        taskId: string,
+    ): CancelablePromise<TaskStatusOut> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/dispatch/task/{task_id}',
+            path: {
+                'task_id': taskId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * 获取电源倒计时初始快照
      * 返回当前倒计时；WS 只承载后续逐秒更新与取消事件。
      * @returns PowerCountdownSnapshot Successful Response
@@ -3554,6 +3861,69 @@ export class Service {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/setting/virtual-display/status',
+        });
+    }
+    /**
+     * 获取配置中心已发布的通用脚本配置
+     * @param requestBody
+     * @returns ShareTemplateListOut Successful Response
+     * @throws ApiError
+     */
+    public static listShareTemplatesApiShareTemplatesPost(
+        requestBody: ShareTemplateListIn,
+    ): CancelablePromise<ShareTemplateListOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/share/templates',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * 获取配置中心授权状态
+     * @returns ShareAuthStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static getShareAuthStatusApiShareAuthStatusPost(): CancelablePromise<ShareAuthStatusOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/share/auth/status',
+        });
+    }
+    /**
+     * 发起配置中心浏览器授权
+     * @returns ShareAuthStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static startShareAuthApiShareAuthStartPost(): CancelablePromise<ShareAuthStatusOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/share/auth/start',
+        });
+    }
+    /**
+     * 轮询配置中心授权结果
+     * @returns ShareAuthStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static pollShareAuthApiShareAuthPollPost(): CancelablePromise<ShareAuthStatusOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/share/auth/poll',
+        });
+    }
+    /**
+     * 取消等待中的配置中心授权
+     * @returns ShareAuthStatusOut Successful Response
+     * @throws ApiError
+     */
+    public static cancelShareAuthApiShareAuthCancelPost(): CancelablePromise<ShareAuthStatusOut> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/share/auth/cancel',
         });
     }
     /**

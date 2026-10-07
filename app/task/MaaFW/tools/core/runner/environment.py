@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import platform as platform_module
 import re
-import struct
 import sys
 import sysconfig
 import threading
@@ -27,6 +25,20 @@ from app.task.MaaFW.tools.core.runtime_pool import (
     build_runtime_id,
     install_extra_packages,
     install_python_runtime,
+)
+
+# 架构判定在运行池这一层（runtime_pool / project_update 要在模块层用），这里原样转出。
+from app.task.MaaFW.tools.core.runtime_pool.architecture import (  # noqa: F401 - 转出
+    RID_ARCHITECTURE_ALIASES,
+    SUPPORTED_ARCHITECTURE,
+    UNSUPPORTED_ARCHITECTURE_MARKER,
+    ArchitectureTarget,
+    MaaFWUnsupportedArchitectureError,
+    architecture_from_build_platform,
+    describe_unsupported_architecture,
+    host_architecture,
+    runtime_identity_architecture,
+    supported_architecture_target,
 )
 from app.task.MaaFW.tools.core.runtime_pool.binding import (
     BindingInfo,
@@ -164,6 +176,8 @@ def prepare_runner_environment(
     被池删掉，manifest 只在安装完整成功后才写入。
     """
 
+    # 不是 x64 就别建 venv、下 binding：后面每一步都只按 x64 选包。
+    supported_architecture_target()
     _report_environment_progress(
         progress,
         "resolving",
@@ -811,6 +825,53 @@ _MAAFW_DLL_VERSION_RE = re.compile(
 )
 
 
+def _host_rid_os_prefixes() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return ("win",)
+    if sys.platform == "darwin":
+        return ("osx", "macos")
+    if sys.platform.startswith("linux"):
+        return ("linux",)
+    return ()
+
+
+def runtime_identifier_matches_host(rid: str) -> bool:
+    """``runtimes/<rid>`` 的 rid 是不是本机能加载的那一种（系统前缀 + 架构都对上）。
+
+    认 ``win-x64``、``win10-x64``、``linux-musl-arm64`` 这类写法：最后一段是架构，
+    其余是系统（``osx.10.12`` 这种带版本的也按前缀认）。
+    """
+
+    system, separator, architecture = str(rid).casefold().rpartition("-")
+    if not separator:
+        return False
+    if RID_ARCHITECTURE_ALIASES.get(architecture) != host_architecture():
+        return False
+    return any(system.startswith(prefix) for prefix in _host_rid_os_prefixes())
+
+
+def _project_runtime_rid_dirs(project_path: Path) -> list[Path]:
+    """``runtimes/`` 下的 rid 目录，本机架构的排在前面，其余照名字顺序。"""
+
+    runtimes = project_path / "runtimes"
+    try:
+        rids = [item for item in sorted(runtimes.iterdir()) if item.is_dir()]
+    except OSError:
+        return []
+    host = [item for item in rids if runtime_identifier_matches_host(item.name)]
+    return host + [item for item in rids if item not in host]
+
+
+def host_runtime_rid_dirs(project_path: Path) -> list[Path]:
+    """``runtimes/`` 下与本机架构对应的 rid 目录（存在的才给）。"""
+
+    return [
+        item
+        for item in _project_runtime_rid_dirs(project_path)
+        if runtime_identifier_matches_host(item.name)
+    ]
+
+
 def _iter_project_maafw_candidates(project_path: Path):
     """按优先级产出可能放着 MaaFramework.dll 的目录。
 
@@ -820,18 +881,14 @@ def _iter_project_maafw_candidates(project_path: Path):
 
     yield project_path / "maafw"
 
-    runtimes = project_path / "runtimes"
-    if runtimes.is_dir():
-        # .NET 把原生库放在 runtimes/<rid>/native/ 下（MFAAvalonia 即如此）。
-        # 用枚举而不是钉死 win-x64，arm64 / linux-x64 同样能命中。
-        try:
-            rids = [item for item in sorted(runtimes.iterdir()) if item.is_dir()]
-        except OSError:
-            return
-        for rid in rids:
-            yield rid / "native"
-        for rid in rids:
-            yield rid
+    # .NET 把原生库放在 runtimes/<rid>/native/ 下（MFAAvalonia 即如此）。
+    # 用枚举而不是钉死 win-x64，arm64 / linux-x64 同样能命中；同时带好几种架构时
+    # 本机那一种先出——按名字排 win-arm64 在 win-x64 前面，x64 机器上会选到 arm64。
+    rids = _project_runtime_rid_dirs(project_path)
+    for rid in rids:
+        yield rid / "native"
+    for rid in rids:
+        yield rid
 
 
 def _search_project_maafw_dll(project_path: Path) -> Path | None:
@@ -867,10 +924,92 @@ def project_maafw_runtime_path(project_path: Path | None) -> Path | None:
     if project_path is None:
         return None
 
+    # 与本机架构不符的（PE 头读得出且对不上）跳过继续找；一个对得上的都没有时退回
+    # 第一份不符的，让调用方走架构不符的报错（describe_runtime_architecture_mismatch）。
+    mismatched: Path | None = None
+    loadable: list[Path] = []
     for candidate in _iter_project_maafw_candidates(project_path):
-        if (candidate / PROJECT_MAAFW_DLL_NAME).is_file():
-            return candidate
-    return _search_project_maafw_dll(project_path)
+        if not (candidate / PROJECT_MAAFW_DLL_NAME).is_file():
+            continue
+        if _runtime_loadable_on_host(candidate):
+            loadable.append(candidate)
+        elif mismatched is None:
+            mismatched = candidate
+    if loadable:
+        return _newest_runtime(loadable)
+    found = _search_project_maafw_dll(project_path)
+    if found is not None and (mismatched is None or _runtime_loadable_on_host(found)):
+        return found
+    return mismatched
+
+
+def _newest_runtime(candidates: list[Path]) -> Path:
+    """同时有好几份原生库时取版本最高的。读不出版本的那份不参与比较；版本相同、或一份
+    都读不出时按候选顺序取第一份。问题包检查（``maafwProjectRuntimeProbe.ts`` 的
+    ``findNativeDir``）按同一口径选，改时两边一起改。
+
+    多份并存几乎都是残留：本地导入的目录被外壳原地升级过（老布局的 ``maafw/`` 留着），
+    全量包更新又把导入来的文件原样带进新载荷。M9A v4.11.0 实测 ``maafw/`` 是 5.9.2、
+    ``runtimes/win-x64/native`` 是 5.14.0；它的 agent（``agent/maafw_paths.py``）先找
+    ``runtimes/``，按固定顺序先取 ``maafw/`` 的 runner 就与 agent 协议不一致（7 对 8），
+    每次都等满连接超时。残留天然比发行包带的旧，取最高版本不依赖任何布局约定。
+    """
+
+    if len(candidates) == 1:
+        return candidates[0]
+    best = candidates[0]
+    best_version: Version | None = None
+    for candidate in candidates:
+        text = _read_runtime_maafw_version(candidate)
+        if text is None:
+            continue
+        version = Version(text)
+        if best_version is None or version > best_version:
+            best, best_version = candidate, version
+    return best
+
+
+def _read_runtime_maafw_version(runtime_path: Path) -> str | None:
+    """原生库里内嵌的版本串，规范化成 PEP 440；不是恰好一个或解析不了时 None。"""
+
+    try:
+        data = (runtime_path / PROJECT_MAAFW_DLL_NAME).read_bytes()
+    except OSError:
+        return None
+
+    found = {
+        match.group(1).decode("ascii", errors="ignore")
+        for match in _MAAFW_DLL_VERSION_RE.finditer(data)
+    }
+    if len(found) != 1:
+        return None
+    try:
+        return str(Version(found.pop()))
+    except InvalidVersion:
+        return None
+
+
+def _runtime_loadable_on_host(runtime_path: Path) -> bool:
+    """原生库的 PE 架构与本机一致；读不出来（非 PE、读失败）不猜，算一致。"""
+
+    found = detect_pe_architecture(runtime_path / PROJECT_MAAFW_DLL_NAME)
+    return found is None or found == host_architecture()
+
+
+def project_runtime_loadable_on_host(project_path: Path) -> bool | None:
+    """项目自带的 MaaFramework 在本机能不能加载。
+
+    Returns:
+        True / False；项目没自带原生库、或读不出它的架构时 None（不猜）。
+    """
+
+    runtime = project_maafw_runtime_path(project_path)
+    if runtime is None:
+        return None
+    found = detect_pe_architecture(runtime / PROJECT_MAAFW_DLL_NAME)
+    if found is None:
+        return None
+    return found == host_architecture()
 
 
 _PE_SIGNATURE = bytes((0x50, 0x45, 0x00, 0x00))  # PE signature
@@ -909,23 +1048,32 @@ def detect_pe_architecture(path: Path) -> str | None:
     return _PE_MACHINE_ARCHITECTURES.get(machine)
 
 
-def host_architecture() -> str:
-    """当前解释器进程的架构。"""
+# 架构不符报错（describe_runtime_architecture_mismatch 的各种文案、「只支持 x64」提示）
+# 里一定有其一；宿主侧靠它认出「重试也没用」，别只改文案不改这里。
+ARCHITECTURE_MISMATCH_MARKERS = (
+    "架构，本机是 ",
+    "架构的 MaaFramework，本机是 ",
+    UNSUPPORTED_ARCHITECTURE_MARKER,
+)
 
-    if struct.calcsize("P") == 8:
-        machine = platform_module.machine().casefold()
-        return "arm64" if "arm" in machine or "aarch" in machine else "x64"
-    return "x86"
 
-
-def describe_runtime_architecture_mismatch(runtime_path: Path | None) -> str | None:
+def describe_runtime_architecture_mismatch(
+    runtime_path: Path | None,
+    *,
+    project_path: Path | None = None,
+    source_path: Path | None = None,
+) -> str | None:
     """项目自带的原生库架构与本机不符时给出可读原因。
 
     不符时 ``Library.open`` 必然失败，但原生层报的错难以定位到「装错了包」。
     提前判断只是把同一个失败说清楚，不会挡下任何原本能跑的情况。
 
     典型场景：arm64 机器上装了 win-x86_64 的发行包（或反之）——MaaFramework
-    的项目普遍两种都发，选错了很难自己看出来。
+    的项目普遍两种都发，选错了很难自己看出来。另一种是 MAS 自己造成的：旧版在
+    来源 ``runtimes/`` 同时带 win-arm64 与 win-x64 时按名字选中 arm64，副本里只剩
+    arm64。给了 ``project_path``（副本）且原生库在它的 ``runtimes/`` 下时按这种情况
+    说；再给了 ``source_path``（导入来源 ``Info.Path``）就看来源里有没有本机能用的，
+    有就只让重新导入，没有就让换包。这里只说明、不动副本与载荷。
     """
 
     if runtime_path is None:
@@ -937,9 +1085,82 @@ def describe_runtime_architecture_mismatch(runtime_path: Path | None) -> str | N
     expected = host_architecture()
     if found == expected:
         return None
+    source_loadable = (
+        project_runtime_loadable_on_host(source_path)
+        if source_path is not None and source_path.is_dir()
+        else None
+    )
+    if source_loadable is True:
+        return (
+            f"项目副本里只带了 {found} 架构的 MaaFramework，本机是 {expected}"
+            "（旧版 MAS 在来源目录同时带多种架构时选错了）。来源目录里有 "
+            f"{expected} 版，请在脚本页重新导入项目"
+        )
+    if source_loadable is False:
+        return (
+            f"项目自带的 MaaFramework 是 {found} 架构，本机是 {expected}，来源目录里"
+            f"也只有 {found} 版——请换成 {expected} 的发行包，再在脚本页重新导入"
+        )
+    if project_path is not None and _is_relative_to(
+        runtime_path, project_path / "runtimes"
+    ):
+        return (
+            f"项目副本里只带了 {found} 架构的 MaaFramework，本机是 {expected}"
+            "（旧版 MAS 在来源目录同时带多种架构时会选错），请在脚本页重新导入项目；"
+            f"若来源目录本身只有 {found} 版，请换成 {expected} 的发行包"
+        )
     return (
         f"项目自带的 MaaFramework 是 {found} 架构，本机是 {expected}——"
         "多半是下载了不匹配的发行包，请换成对应架构的包"
+    )
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(parent).resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def describe_plugin_architecture_mismatch(plugins_dir: Path) -> str | None:
+    """项目自带的原生插件目录里没有一个本机能加载时给出可读原因（导入时提示用）。
+
+    与 runner 目录模式的筛选同一个判据：PE 架构读得出且与本机不符的 DLL 会被跳过，
+    读不出的照旧尝试。所以只有「读得出架构的全都不符、也没有读不出的」才说——那时
+    插件一个都不会加载。没有 DLL、或目录读不了时不说。
+    """
+
+    try:
+        dlls = [item for item in plugins_dir.rglob("*.dll") if item.is_file()]
+    except OSError:
+        return None
+    found: set[str] = set()
+    for dll in dlls:
+        architecture = detect_pe_architecture(dll)
+        if architecture is None:
+            return None
+        found.add(architecture)
+    expected = host_architecture()
+    if not found or expected in found:
+        return None
+    return (
+        f"项目自带的原生插件（{plugins_dir.name}/）是 {' / '.join(sorted(found))} 架构，"
+        f"本机是 {expected}——多半是下载了不匹配的发行包，请换成 {expected} 的发行包"
+        "重新导入"
+    )
+
+
+def describe_project_runtime_architecture_mismatch(
+    project_path: Path, *, source_path: Path | None = None
+) -> str | None:
+    """运行前自检用：项目（副本）自带的原生库与本机架构不符时的原因，见
+    :func:`describe_runtime_architecture_mismatch`；对得上或没自带时 None。"""
+
+    return describe_runtime_architecture_mismatch(
+        project_maafw_runtime_path(project_path),
+        project_path=project_path,
+        source_path=source_path,
     )
 
 
@@ -954,21 +1175,7 @@ def probe_bundled_maafw_version(project_path: Path) -> str | None:
     runtime_path = project_maafw_runtime_path(project_path)
     if runtime_path is None:
         return None
-    try:
-        data = (runtime_path / PROJECT_MAAFW_DLL_NAME).read_bytes()
-    except OSError:
-        return None
-
-    found = {
-        match.group(1).decode("ascii", errors="ignore")
-        for match in _MAAFW_DLL_VERSION_RE.finditer(data)
-    }
-    if len(found) != 1:
-        return None
-    try:
-        return str(Version(found.pop()))
-    except InvalidVersion:
-        return None
+    return _read_runtime_maafw_version(runtime_path)
 
 
 def _bundled_project_maafw_requirement(project_path: Path) -> str | None:

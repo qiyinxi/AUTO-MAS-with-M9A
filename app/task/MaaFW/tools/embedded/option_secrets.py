@@ -137,6 +137,10 @@ REDACTED_SECRET_TEXT = "<已隐藏>"
 #: 短于这个长度的密码不做全文替换：一两个字符的值会把日志里所有同样的字符都换掉，
 #: 日志就没法看了；这么短的密码本身也谈不上保密。
 MIN_REDACTED_SECRET_LENGTH = 4
+#: 项目有 password 输入框时，每次运行的 ``.worker.log`` 第一行以它开头（``log_redaction_notice``）。
+#: 问题包导出（frontend/electron/services/maafwIssueReportService.ts）凭这一行认定这次的
+#: ``.worker.log`` / ``.maafw.log`` 是写的时候就打过码的，没有这一行的旧副本不往包里放。两边一起改。
+LOG_REDACTION_MARKER = "[MAS 日志打码]"
 
 
 def collect_plan_password_values(plan: Any, interface: MaaFWInterface) -> list[str]:
@@ -162,6 +166,63 @@ def collect_plan_password_values(plan: Any, interface: MaaFWInterface) -> list[s
     return values
 
 
+def _sealed_leaves(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if is_sealed_secret(value) else []
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in _sealed_leaves(item)]
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in _sealed_leaves(item)]
+    return []
+
+
+def collect_script_password_values(
+    script_config: Any, interface: MaaFWInterface | None
+) -> list[str]:
+    """脚本下全部用户任务配置里 password 字段的值（已解密），去重。
+
+    给不在某次运行里的日志打码用（问题包收项目自己写的日志）：那些日志可能是任何一个用户
+    跑出来的。``interface`` 读不出来（None）时只认带 ``SECRET_PREFIX`` 的密文——它们一定是
+    密码；旧版本存下的明文要靠 interface 才认得出。解不开的密文跳过（本机本来也跑不了它）。
+    """
+
+    fields = password_input_names(interface) if interface is not None else {}
+    values: list[str] = []
+
+    def add(value: str) -> None:
+        if value and value not in values:
+            values.append(value)
+
+    def collect(value: str, option_name: str, field_name: str) -> str:
+        try:
+            add(_open_value(value, option_name, field_name))
+        except MaaFWSecretError:
+            pass
+        return value
+
+    try:
+        users = list(script_config.UserData.items())
+    except Exception as exc:  # noqa: BLE001 - 读不出用户列表就没有可打码的值
+        logger.debug(f"读取脚本用户列表失败，没有可打码的密码值：{exc}")
+        return values
+    for _, user in users:
+        try:
+            raw = user.get("Task", "TaskSnapshot")
+            snapshot = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:  # noqa: BLE001 - 坏快照跳过
+            continue
+        task_options = (
+            snapshot.get("taskOptions") if isinstance(snapshot, dict) else None
+        )
+        if not isinstance(task_options, dict):
+            continue
+        if fields:
+            map_password_values(task_options, fields, collect)
+        for sealed in _sealed_leaves(task_options):
+            collect(sealed, "", "")
+    return values
+
+
 def secret_log_variants(values: list[str]) -> list[str]:
     """一个密码在日志里可能出现的写法：原文，以及 JSON 转义后的两种（中文原样 / \\u 转义）。
 
@@ -180,6 +241,37 @@ def secret_log_variants(values: list[str]) -> list[str]:
     return sorted(variants, key=len, reverse=True)
 
 
+#: 按字节打码时每个写法再试的编码：项目日志不一定是 UTF-8（GBK 控制台输出重定向进文件、
+#: Windows 下 UTF-16LE 的日志），``.maafw.log`` 与 ``.project.log`` 共用。
+_SECRET_BYTE_ENCODINGS = ("utf-8", "gbk", "utf-16-le")
+
+
+def secret_byte_pairs(variants: list[str]) -> list[tuple[bytes, bytes]]:
+    """``secret_log_variants`` 的每个写法在 UTF-8 / GBK / UTF-16LE 下的字节，配同一编码的占位；
+    编不了的（GBK 里没有的字）跳过，重复的只留一份，长的在前。"""
+
+    pairs: dict[bytes, bytes] = {}
+    for variant in variants:
+        for encoding in _SECRET_BYTE_ENCODINGS:
+            try:
+                raw = variant.encode(encoding)
+                placeholder = REDACTED_SECRET_TEXT.encode(encoding)
+            except UnicodeEncodeError:
+                continue
+            if raw:
+                pairs.setdefault(raw, placeholder)
+    return sorted(pairs.items(), key=lambda item: len(item[0]), reverse=True)
+
+
+def redact_secret_bytes(data: bytes, pairs: list[tuple[bytes, bytes]]) -> bytes:
+    """按 ``secret_byte_pairs`` 把字节里的密码换成占位。"""
+
+    for raw, placeholder in pairs:
+        if raw in data:
+            data = data.replace(raw, placeholder)
+    return data
+
+
 def redact_secret_text(text: str, variants: list[str]) -> str:
     """把 ``text`` 里出现的密码（``secret_log_variants`` 给出的写法）换成占位。"""
 
@@ -187,6 +279,24 @@ def redact_secret_text(text: str, variants: list[str]) -> str:
         if variant in text:
             text = text.replace(variant, REDACTED_SECRET_TEXT)
     return text
+
+
+def log_redaction_notice(interface: MaaFWInterface, values: list[str]) -> str | None:
+    """项目声明了 password 输入框时写进 ``.worker.log`` 开头的打码说明，没有就是 None。
+
+    ``values`` 是本次运行计划里的密码值（``collect_plan_password_values``）。
+    """
+
+    if not password_input_names(interface):
+        return None
+    short = sum(1 for value in values if len(value) < MIN_REDACTED_SECRET_LENGTH)
+    notice = (
+        f"{LOG_REDACTION_MARKER} 本次的 .worker.log 与 .maafw.log 已把 "
+        f"{len(values) - short} 个密码值换成「{REDACTED_SECRET_TEXT}」"
+    )
+    if short:
+        notice += f"；另有 {short} 个短于 {MIN_REDACTED_SECRET_LENGTH} 个字符，未打码"
+    return notice
 
 
 def seal_user_task_snapshot(script_id: str, script_config: Any, snapshot: Any) -> Any:
@@ -208,13 +318,18 @@ def seal_user_task_snapshot(script_id: str, script_config: Any, snapshot: Any) -
 
 
 __all__ = [
+    "LOG_REDACTION_MARKER",
     "REDACTED_SECRET_TEXT",
     "SECRET_PREFIX",
     "MaaFWSecretError",
     "collect_plan_password_values",
+    "collect_script_password_values",
     "is_sealed_secret",
+    "log_redaction_notice",
     "open_task_snapshot",
+    "redact_secret_bytes",
     "redact_secret_text",
+    "secret_byte_pairs",
     "seal_task_snapshot",
     "seal_user_task_snapshot",
     "secret_log_variants",

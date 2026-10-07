@@ -34,6 +34,8 @@ export const WS_TASK_INFO_UPDATED = 'task.info.updated'
 export const WS_TASK_LOG_UPDATED = 'task.log.updated'
 export const WS_TASK_NOTICE = 'task.notice'
 export const WS_TASK_COMPLETED = 'task.completed'
+/** 配置会话结束、本次改动被丢弃（id 为任务 UUID） */
+export const WS_TASK_CONFIG_DISCARDED = 'task.config.discarded'
 
 // 任务创建通知（id=TaskManager）
 export const WS_TASK_CREATED = 'task.created'
@@ -79,6 +81,11 @@ export const WS_SYSTEM_NOTICE = 'system.notice'
 export interface WSTaskNoticeData {
   level: 'info' | 'warning' | 'error'
   message: string
+}
+
+/** 配置会话改动被丢弃的数据 (type=task.config.discarded)：正文由前端按语言本地化 */
+export interface WSTaskConfigDiscardedData {
+  reason: 'structure' | 'unreadable' | 'not_written'
 }
 
 export interface WSTaskUserInfoData {
@@ -128,6 +135,8 @@ export interface WSTaskLogUpdatedData {
   log: string
   seq: number
   append: boolean
+  /** log 第一行在完整日志里的行号；append 为 true 时忽略，界面接着已有行号往后数 */
+  firstLine?: number
 }
 
 /** 任务完成消息数据 (type=task.completed) */
@@ -173,14 +182,14 @@ interface WSMaaFWEnvPrepareProgressData {
 
 /** MFW 项目手动更新过程 (id=<scriptId>, type=maafw.project-update.progress) */
 export interface WSMaaFWProjectUpdateProgressData {
-  /** checking / downloading / downloaded / plan_validated / staged / applying / post_validating / committed / rolled_back / completed / failed / log */
+  /** checking / downloading / downloaded / extracting / plan_validated / staged / applying / post_validating / committed / rolled_back / completed / failed / log */
   stage: string
   /** running / success / failed */
   status: string
   message: string
   /** 本次事件附带的新增日志行 */
   log?: string | null
-  /** 当前阶段进度百分比（下载 / 覆盖），未知时为 null */
+  /** 当前阶段进度百分比（下载 / 解压 / 覆盖），未知时为 null */
   percent?: number | null
   downloadedBytes?: number | null
   totalBytes?: number | null
@@ -190,6 +199,12 @@ export interface WSMaaFWProjectUpdateProgressData {
   packageKind?: string | null
   appliedFiles?: number | null
   totalFiles?: number | null
+  /** 解压阶段：已解压 / 总文件数（不含目录条目） */
+  extractedFiles?: number | null
+  extractTotalFiles?: number | null
+  /** 解压阶段：已写出 / 解压后总字节 */
+  extractedBytes?: number | null
+  extractTotalBytes?: number | null
 }
 
 /** 更新下载进度数据 (id=Update, type=update.progress) */
@@ -265,6 +280,7 @@ interface WSMessageDataMap {
   [WS_TASK_LOG_UPDATED]: WSTaskLogUpdatedData
   [WS_TASK_NOTICE]: WSTaskNoticeData
   [WS_TASK_COMPLETED]: WSTaskCompletedData
+  [WS_TASK_CONFIG_DISCARDED]: WSTaskConfigDiscardedData
   [WS_TASK_CREATED]: WSTaskCreatedData
   [WS_BACKEND_SHUTDOWN_READY]: WSEmptyData
   [WS_FRONTEND_CLOSE_REQUESTED]: WSEmptyData

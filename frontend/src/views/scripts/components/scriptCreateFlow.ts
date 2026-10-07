@@ -1,5 +1,11 @@
+import type { ShareTemplateItem } from '@/composables/useTemplateApi'
 import type { MaaFWEmbeddedSourceItem } from '@/api'
-import type { WebConfigTemplate } from '@/composables/useTemplateApi'
+import {
+  MAAFW_FLAVORS,
+  isMaaFWFamily,
+  maafwRouteSuffix,
+  type MaaFWFlavorType,
+} from '@/composables/useMaaFWFlavor'
 import type { ScriptType } from '@/types/script'
 import { SCRIPT_LOGOS } from '@/utils/scriptLogos'
 
@@ -8,10 +14,9 @@ export type ConfigMode = 'template' | 'custom'
 export type MfwSourceMode = 'new' | 'reuse'
 export type CreateStepKey = 'type' | 'config'
 
-/** 由 MaaFW 引擎运行的类型（M9A 是它的特调类型，类型最终由项目决定） */
-export type MfwFamilyType = 'MaaFW' | 'M9A'
-export const isMfwFamily = (type: ScriptType): type is MfwFamilyType =>
-  type === 'MaaFW' || type === 'M9A'
+/** 由 MaaFW 引擎运行的类型（各特调登记在特调注册表，类型最终由项目决定） */
+export type MfwFamilyType = MaaFWFlavorType
+export const isMfwFamily = (type: ScriptType): type is MfwFamilyType => isMaaFWFamily(type)
 type ScriptTypeGroup = 'all' | 'specialized' | 'general'
 
 interface ScriptTypeOption {
@@ -24,6 +29,11 @@ interface ScriptTypeOption {
   icon: string
 }
 
+export interface TemplateRequest {
+  page: number
+  keyword: string
+}
+
 interface CreateStep {
   key: CreateStepKey
   titleKey: string
@@ -32,7 +42,7 @@ interface CreateStep {
 interface CreateRequestState {
   type: ScriptType
   configMode: ConfigMode
-  template: WebConfigTemplate | null
+  template: ShareTemplateItem | null
   mfwSourceMode?: MfwSourceMode
   mfwSourceScriptId?: string | null
 }
@@ -42,9 +52,10 @@ export type ScriptCreateRequest =
   /** 同一个 MFW 项目再建一个脚本：建好后从 sourceScriptId 的副本克隆，不再选目录 */
   | { kind: 'mfw-reuse'; type: MfwFamilyType; sourceScriptId: string }
   | { kind: 'general-custom' }
-  | { kind: 'general-template'; template: WebConfigTemplate }
+  | { kind: 'general-template'; template: ShareTemplateItem }
 
-export const SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] = [
+// MaaFW 与各特调的卡片不在这里：由特调注册表提供，按各自的 create.card.after 插回原位
+const BASE_SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] = [
   {
     value: 'General',
     titleKey: 'scripts.type.General',
@@ -52,15 +63,6 @@ export const SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] = [
     keywords: ['general', '通用', '自定义'],
     group: 'general',
     icon: SCRIPT_LOGOS.General,
-  },
-  {
-    // MaaFW 是通用引擎，不是专项：任何带 interface.json 的项目都由它运行，和「通用脚本」并列。
-    value: 'MaaFW',
-    titleKey: 'scripts.type.MaaFW',
-    descriptionKey: 'scripts.create.typeDesc.MaaFW',
-    keywords: ['maafw', 'maaframework', 'framework', 'mfw', 'interface.json', '通用'],
-    group: 'general',
-    icon: SCRIPT_LOGOS.MaaFW,
   },
   {
     value: 'MAA',
@@ -85,14 +87,6 @@ export const SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] = [
     keywords: ['maaend', 'maaframework', '终末地', 'endfield'],
     group: 'specialized',
     icon: SCRIPT_LOGOS.MaaEnd,
-  },
-  {
-    value: 'M9A',
-    titleKey: 'scripts.type.M9A',
-    descriptionKey: 'scripts.create.typeDesc.M9A',
-    keywords: ['m9a', '1999', '重返未来'],
-    group: 'specialized',
-    icon: SCRIPT_LOGOS.M9A,
   },
   {
     value: 'Okww',
@@ -142,7 +136,30 @@ export const SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] = [
     group: 'specialized',
     icon: SCRIPT_LOGOS.BAAH,
   },
+  {
+    value: 'Whimbox',
+    titleKey: 'scripts.type.Whimbox',
+    descriptionKey: 'scripts.create.typeDesc.Whimbox',
+    keywords: ['whimbox', '奇想盒', '无限暖暖', 'nikki'],
+    group: 'specialized',
+    icon: SCRIPT_LOGOS.Whimbox,
+  },
 ]
+
+const withMaaFWFlavorOptions = (base: readonly ScriptTypeOption[]): ScriptTypeOption[] => {
+  const options = [...base]
+  for (const flavor of MAAFW_FLAVORS) {
+    const { after, ...card } = flavor.create.card
+    const option: ScriptTypeOption = { value: flavor.type, ...card, icon: flavor.logo }
+    const index = after ? options.findIndex(item => item.value === after) : -1
+    if (index >= 0) options.splice(index + 1, 0, option)
+    else options.push(option)
+  }
+  return options
+}
+
+export const SCRIPT_TYPE_OPTIONS: ScriptTypeOption[] =
+  withMaaFWFlavorOptions(BASE_SCRIPT_TYPE_OPTIONS)
 
 /** 第二步列表里的一行「已导入的项目」：同一项目开了几个脚本只列一行，克隆源取其中一个 */
 export interface MfwReuseChoice {
@@ -234,22 +251,23 @@ export const splitScriptTypeOptions = <T extends Pick<ScriptTypeOption, 'group'>
   general: options.filter(option => option.group === 'general'),
 })
 
-const EDIT_SEGMENT_BY_TYPE: Record<ScriptType, string> = {
+// MaaFW 与各特调的路由后缀取自特调注册表
+const EDIT_SEGMENT_BY_TYPE: Record<Exclude<ScriptType, MaaFWFlavorType>, string> = {
   MAA: 'maa',
   SRC: 'src',
   MaaEnd: 'maaend',
-  M9A: 'm9a',
-  MaaFW: 'maafw',
   Okww: 'okww',
   OkNte: 'oknte',
   HSR: 'hsr',
   BetterGI: 'bettergi',
   ZzzOd: 'zzzod',
   BAAH: 'baah',
+  Whimbox: 'whimbox',
   General: 'general',
 }
 
-export const getScriptEditSegment = (type: ScriptType) => EDIT_SEGMENT_BY_TYPE[type]
+export const getScriptEditSegment = (type: ScriptType) =>
+  isMaaFWFamily(type) ? maafwRouteSuffix(type) : EDIT_SEGMENT_BY_TYPE[type]
 
 export const buildCreateRequest = (state: CreateRequestState): ScriptCreateRequest | null => {
   if (isMfwFamily(state.type) && state.mfwSourceMode === 'reuse') {
