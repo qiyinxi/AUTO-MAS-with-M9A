@@ -41,6 +41,7 @@ from app.task.proxy_helpers import (
 )
 from app.utils import get_logger
 from app.utils.constants import TASK_MODE_ZH
+from app.utils.emulator2.phone import bind_device_client
 from app.utils.io import (
     clear_native_config_snapshot,
     commit_native_config_snapshot,
@@ -183,6 +184,8 @@ class MaaManager(TaskExecuteBase):
         self.emulator_manager = await device_provider(
             self.script_config.get("Emulator", "Id")
         )
+        # MAA 支持真机：声明身份，Emulator 2.0 才会让它用真机设备
+        bind_device_client(self.emulator_manager, "MAA")
 
         # 先处置上次崩溃残留的快照, 再备份原始配置。无条件清空会把崩溃后唯一
         # 一份原始配置副本删掉, 让注入污染的状态固化成「原始配置」。
