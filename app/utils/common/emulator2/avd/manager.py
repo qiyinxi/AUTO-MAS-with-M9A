@@ -987,13 +987,9 @@ class _AvdCore(DeviceBase):
         )
         if process is not None:
             try:
+                # 窗口按这台实例的 qemu 进程找，不按标题：标题以后会改成实例名
                 set_visible = emulator_native.prepare_window_visibility()
-                count = await asyncio.to_thread(
-                    set_visible,
-                    process.pid,
-                    f"{avd_name(idx)}:{console_port(idx)}",
-                    is_visible,
-                )
+                count = await asyncio.to_thread(set_visible, process.pid, is_visible)
             except Exception as e:  # noqa: BLE001 - 见 docstring
                 logger.warning(
                     f"魔改 AVD 实例 {idx} {'显示' if is_visible else '隐藏'}窗口失败: {e}"

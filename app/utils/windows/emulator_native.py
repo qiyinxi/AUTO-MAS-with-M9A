@@ -5,8 +5,34 @@ from pathlib import Path
 
 from ..contracts.emulator_native import WindowVisibility
 
-_EMULATOR_WINDOW_PREFIX = "Android Emulator - "
 _EMULATOR_TOOLBAR_TITLE = "Emulator"
+
+
+def is_emulator_window(class_name: str, title: str, owned: bool) -> bool:
+    """模拟器进程里这个类名、标题、有没有属主的顶层窗口，是不是它的主窗口或侧边工具栏。
+
+    Qt 给 QWindow 起的窗口类名是 ``Qt<版本>QWindow<类型>``（模拟器主窗口实测 ``Qt653QWindowIcon``），
+    工具窗口、弹出窗口的类型以 ``Tool`` / ``Popup`` 开头；Qt 自己的辅助窗口（屏幕变化监听）不叫这个名字。
+    主窗口是既不是工具窗口也不是弹出窗口、没有属主、标题不为空的那个 QWindow，标题写什么都认：上游的
+    ``Android Emulator - <avd>:<控制台端口>`` 会带上鼠标捕获的前缀或安全关机的后缀，以后还会改成实例名。
+    调用方已经按进程号选好了这台实例的 qemu，它只有一个主窗口。上游另有两种同样形状的窗口，按写死的标题
+    排除：扩展控制（Extended Controls）和多屏的 ``Display <n>``。侧边工具栏（完整工具栏模式）是标题为
+    ``Emulator`` 的工具窗口。
+    """
+    _, found, kind = class_name.partition("QWindow")
+    if not found or not class_name.startswith("Qt") or not title:
+        return False
+    if title == _EMULATOR_TOOLBAR_TITLE:
+        return True
+    if owned or kind.startswith(("Tool", "Popup")):
+        return False
+    return "Extended Controls" not in title and not _display_title(title)
+
+
+def _display_title(title: str) -> bool:
+    """``Display <n>``：多屏时额外那块屏的窗口标题。"""
+    number = title.removeprefix("Display ")
+    return number != title and number.isdigit()
 
 
 def shm_exists(port: int) -> bool:
@@ -33,26 +59,25 @@ def prepare_window_visibility() -> WindowVisibility:
     import win32gui
     import win32process
 
-    def set_emulator_windows_visible(pid: int, name_port: str, visible: bool) -> int:
+    def set_emulator_windows_visible(pid: int, visible: bool) -> int:
         """对 qemu 进程 ``pid`` 的主窗口与侧边工具栏发 ``SW_SHOW`` / ``SW_HIDE``，返回处理的窗口数。
 
-        只认 Qt 窗口（类名以 ``Qt`` 开头）里标题是 ``Android Emulator - <avd>:<端口>`` 的主窗口和标题为
-        ``Emulator`` 的工具栏；同一进程里一大堆 OpenGL / 输入法隐藏窗口不碰。无头开机的进程没有这两个
-        窗口，返回 0。用 ``ShowWindowAsync`` 只投递消息，不等模拟器界面线程。"""
+        窗口按进程号和窗口类认（:func:`is_emulator_window`），不看主窗口的标题；同一进程里一大堆
+        OpenGL / 输入法 / Qt 自己的隐藏窗口、扩展控制和对话框都不碰。无头开机的进程没有这两个窗口，
+        返回 0。用 ``ShowWindowAsync`` 只投递消息，不等模拟器界面线程。"""
         targets: list[int] = []
 
         def collect(hwnd: int, _: object) -> bool:
             try:
-                _, owner = win32process.GetWindowThreadProcessId(hwnd)
-                if owner != pid or not win32gui.GetClassName(hwnd).startswith("Qt"):
+                _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+                if process_id != pid:
                     return True
+                class_name = win32gui.GetClassName(hwnd)
                 title = win32gui.GetWindowText(hwnd)
+                owned = bool(win32gui.GetWindow(hwnd, win32con.GW_OWNER))
             except Exception:  # noqa: BLE001 - 枚举途中窗口被销毁
                 return True
-            if (
-                title == f"{_EMULATOR_WINDOW_PREFIX}{name_port}"
-                or title == _EMULATOR_TOOLBAR_TITLE
-            ):
+            if is_emulator_window(class_name, title, owned):
                 targets.append(hwnd)
             return True
 

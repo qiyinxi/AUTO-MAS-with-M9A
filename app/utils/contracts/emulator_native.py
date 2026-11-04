@@ -5,7 +5,7 @@ from typing import Protocol
 
 
 class WindowVisibility(Protocol):
-    def __call__(self, pid: int, name_port: str, visible: bool) -> int: ...
+    def __call__(self, pid: int, visible: bool) -> int: ...
 
 
 class EmulatorNativeAPI(Protocol):
