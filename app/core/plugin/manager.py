@@ -1224,11 +1224,34 @@ class _PluginManager:
                     != Path(str(distribution.locate_file(""))).resolve()
                 ):
                     raise PluginPrecheckError("发现的插件与已验证的安装发行包不一致")
+                # 作为依赖一起装上的插件（例如专项依赖的积木服务插件）同启动时一样先加载，
+                # 否则它们停在 unloaded，提供的服务找不到提供者，本插件启用就会失败。
+                for other in sorted(
+                    Config.plugin_registry.values(),
+                    key=lambda r: r.info.plugin_name or "",
+                ):
+                    if (
+                        other.uid == record.uid
+                        or other._plugin_cls is not None
+                        or other.info.source != "installed"
+                        or other._project_dir is None
+                    ):
+                        continue
+                    try:
+                        await self.load(other, held=True)
+                    except Exception:
+                        logger.exception(
+                            f"加载随安装带入的插件失败: {other.info.plugin_name}"
+                        )
                 try:
                     if record._plugin_cls is not None:
                         result = await self.reload(record, held=True)
                     else:
                         result = await self.load(record, held=True)
+                        # 登记里留着启用意图（例如从本地源码换成发行包、来源丢失后重装）：
+                        # 同启动时一样按意图启用，否则安装确认会把「意图启用、实际禁用」判成失败并回滚。
+                        if record.info.enabled:
+                            await self.enable(record, held=True)
                 except BaseException:
                     from app.plugin.uv.environment import write_installation
 
