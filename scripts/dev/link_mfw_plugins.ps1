@@ -6,8 +6,9 @@
 
 .DESCRIPTION
 联调分支专用（int/mfw-plugins-*）：宿主已不再登记内置的 MaaFW / M9A / MSS，
-这三类托管由插件 maafw_adapter / m9a_adapter / mss_adapter 接手。插件还没发 PyPI，
-所以按「本地源码布局 + 库 wheel 目录」联调：
+这三类托管由插件 maafw_adapter / m9a_adapter / mss_adapter 接手。只联调、不改插件包的，
+直接从 PyPI 装（见 docs\mfw-plugins-local-integration.md 第 1 节）；要改插件包源码时，
+用本脚本按「本地源码布局 + 库 wheel 目录」接入：
 
 1. 在本树 plugins\ 下给六个插件包各建一个目录联接（junction），宿主把 plugins\ 下
    每个带 pyproject.toml 和 src\ 的子目录当本地插件发现：
