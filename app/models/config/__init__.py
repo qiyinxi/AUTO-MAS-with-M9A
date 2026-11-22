@@ -38,10 +38,11 @@ from .shared import (
 )
 from .tools import *
 
+# 联调分支：MaaFW、M9A、MSS 三种托管（含 MSSPlanConfig）让给插件 maafw_adapter /
+# m9a_adapter / mss_adapter 登记，宿主不再登记内置的同名类型；类定义仍留在模型里，
+# 供内置 MaaEnd、M9A 一次性迁移和没装插件时的冷登记兜底使用。
 CLASS_BOOK: dict[str, type[ScriptConfigType]] = {
     "MaaEnd": MaaEndConfig,
-    "M9A": M9AConfig,
-    "MaaFW": MaaFWConfig,
     "General": GeneralConfig,
     "Okww": OkwwConfig,
     "OkNte": OkNteConfig,
@@ -49,7 +50,6 @@ CLASS_BOOK: dict[str, type[ScriptConfigType]] = {
     "BetterGI": BetterGIConfig,
     "ZzzOd": ZzzOdConfig,
     "BAAH": BAAHConfig,
-    "MSS": MSSConfig,
 }
 
 
@@ -103,14 +103,5 @@ PLAN_BOOK: dict[str, _PlanRegistration] = {
         "script_class": BAAHConfig,
         "field_group": "Info",
         "field_name": "StageMode",
-    },
-    "MSSPlanConfig": {
-        "create_type": "MSSPlan",
-        "config_class": MSSPlanConfig,
-        # MSS 排在 baah 之后，位置索引跟着往后挪一位
-        "consumer": PLAN_CONSUMER_VALUES[2],
-        "script_class": MSSConfig,
-        "field_group": "Info",
-        "field_name": "PlanMode",
     },
 }

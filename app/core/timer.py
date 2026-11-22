@@ -366,10 +366,12 @@ class _MainTimer:
                 "诊断文件清理",
                 partial(asyncio.to_thread, Config.clean_debug_diagnostics),
             )
-            await self._run_loop_step(
-                "MaaFW 原生日志清理",
-                Config.maafw_maintenance.clean_native_debug_logs,
-            )
+            # 联调分支：内置维护已让给插件 maafw_project_update，宿主不建就跳过。
+            if Config.maafw_maintenance is not None:
+                await self._run_loop_step(
+                    "MaaFW 原生日志清理",
+                    Config.maafw_maintenance.clean_native_debug_logs,
+                )
 
         while True:
             await self._run_loop_step("遥测日活", record_telemetry_active)

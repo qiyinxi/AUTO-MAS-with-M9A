@@ -20,7 +20,32 @@ _ADAPTER_PLUGINS = {
     "MaaPluginConfig": ("maa_adapter", "auto-mas-maa-adapter"),
     "MaaPlanConfig": ("maa_adapter", "auto-mas-maa-adapter"),
     "MaaPluginPlanConfig": ("maa_adapter", "auto-mas-maa-adapter"),
+    "MaaFWConfig": ("maafw_adapter", "auto-mas-maafw-adapter"),
+    "M9AConfig": ("m9a_adapter", "auto-mas-m9a-adapter"),
+    "MSSConfig": ("mss_adapter", "auto-mas-mss-adapter"),
+    "MSSPlanConfig": ("mss_adapter", "auto-mas-mss-adapter"),
 }
+# 联调分支：MFW 一族的插件还没发布，装不上或启用失败时不中止启动，
+# 由配置管理器给已有托管冷登记内置类型兜底（AppConfig._register_maafw_fallback_types）。
+_TOLERATED_ADAPTER_PLUGINS = frozenset({"maafw_adapter", "m9a_adapter", "mss_adapter"})
+# 让位给插件登记的四个类型名；没有插件接手时，宿主用仍保留的内置同名类兜底。
+MAAFW_FAMILY_TYPE_NAMES = ("MaaFWConfig", "M9AConfig", "MSSConfig", "MSSPlanConfig")
+
+
+def collection_type_names(config_path: Path) -> set[str]:
+    """读托管与计划索引里出现过的类型名，只看索引不看业务字段。"""
+    names: set[str] = set()
+    for name in ("ScriptConfig.json", "PlanConfig.json", "scripts.yaml", "plans.yaml"):
+        path = config_path / name
+        if not path.is_file() or is_blank_file(path):
+            continue
+        document = _utils_io.read_dict_file(path)
+        for item in document.get("order", document.get("instances", [])):
+            if isinstance(item, dict) and isinstance(item.get("type"), str):
+                names.add(item["type"])
+    return names
+
+
 _MINIMUM_ADAPTER_VERSIONS = {
     "maa_adapter": Version("0.1.4"),
     "mumu_adapter": Version("0.1.1"),
@@ -52,7 +77,17 @@ def required_adapter_plugins(config_path: Path) -> dict[str, str]:
 async def install_adapter_plugins(required: dict[str, str]) -> None:
     """在领域集合激活前复用插件安装及启用入口，失败时中止配置升级。"""
     for name, package in required.items():
-        await install_adapter_plugin(name, package)
+        if name not in _TOLERATED_ADAPTER_PLUGINS:
+            await install_adapter_plugin(name, package)
+            continue
+        try:
+            await install_adapter_plugin(name, package)
+        except Exception as exc:  # noqa: BLE001 - 联调分支：没装插件也要能起来
+            from app.utils import get_logger
+
+            get_logger("插件化升级").warning(
+                f"适配插件 {name} 未能安装或启用，相关托管暂按内置类型保留、不能运行：{exc}"
+            )
 
 
 async def install_adapter_plugin(name: str, package: str) -> None:

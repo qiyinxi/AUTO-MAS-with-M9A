@@ -515,9 +515,11 @@ def main():
                     except Exception:
                         logger.exception("MFW 启动期维护失败，下次启动再试")
 
-                app.state.maafw_startup_maintenance = asyncio.create_task(
-                    _maafw_startup_maintenance()
-                )
+                # 联调分支：内置维护已让给插件 maafw_project_update，宿主不建就不起。
+                if Config.maafw_maintenance is not None:
+                    app.state.maafw_startup_maintenance = asyncio.create_task(
+                        _maafw_startup_maintenance()
+                    )
 
                 # 显示输出守卫要早于主定时器：定时器可能立刻拉起一轮任务，而任务开跑前
                 # 会要求守卫强制巡检一次，守卫没起来那次巡检就是空转。守卫失败不拦定时器：

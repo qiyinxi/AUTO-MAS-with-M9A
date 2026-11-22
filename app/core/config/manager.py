@@ -125,6 +125,9 @@ from app.utils import io as _utils_io
 from app.utils.common.startup_timing import startup_stage
 
 DEFAULT_GAME_PLUGIN_INSTALL_TIMEOUT = 90
+# 联调分支：MFW 一族让位后仍要给 related_config 挂好集合（没装插件时的冷登记兜底会用到；
+# M9A、MSS 的托管类共用 MaaFWConfig 上那份字典）。
+_MAAFW_FAMILY_FALLBACK_SCRIPTS = (MaaFWConfig,)
 
 # 各专项失败诊断目录里参与保留期清理的文件后缀（诊断日志与截图）；
 # 不在集合内的文件（如未来的标记/锁文件）不被自动清理触碰
@@ -322,18 +325,12 @@ class AppConfig:
         self._m9a_managed = None
         # ACTIVE 也可能是部分激活的结果；只有加载成功返回后才允许按引用回收。
         self._script_configs_loaded = False
-        from app.task.MaaFW.tools.embedded import owners as maafw_owners
-        from app.task.MaaFW.tools.embedded.maintenance import MaaFWMaintenanceService
-
-        # 托管属主的回答只在托管完整加载之后算数：信号由宿主注入项目更新一侧。
-        maafw_owners.set_loaded_signal(self.script_config_loaded_intact)
-        self.maafw_maintenance = MaaFWMaintenanceService(
-            scripts_loaded_intact=self.script_config_loaded_intact,
-            retention_days=lambda: self.setting.Function.HistoryRetentionTime,
-            process_started_at=_PROCESS_STARTED_AT,
-        )
+        # 联调分支：MFW 的启动期维护、原生日志清理和属主加载信号都归插件
+        # maafw_project_update，宿主不再建内置维护，免得两张属主表同时清 data/mfw。
+        self.maafw_maintenance: Any = None
         for model in (
             *CLASS_BOOK.values(),
+            *_MAAFW_FAMILY_FALLBACK_SCRIPTS,
             MaaEndUserConfig,
             BAAHUserConfig,
             MSSUserConfig,
@@ -707,6 +704,7 @@ class AppConfig:
             }
             # 先保留旧设备及账号路径并转换绑定，再让当前模型转换历史 JSON。
             await install_adapter_plugins(required_game_plugins(self.config_path))
+            self._register_maafw_fallback_types()
             await migrate_games()
             await asyncio.to_thread(
                 upgrade_json_configs,
@@ -742,6 +740,7 @@ class AppConfig:
         self.GameConfig.connect(GameEntry.on_add_devices, phase="both", kind="add")
         if self.GameConfig.activation_state == NodeState.INACTIVE:
             await self.GameConfig.activate(fast_init=True)
+        self._register_maafw_fallback_types()
         for _old, _new, key in CONFIG_FILES:
             if key == "EmulatorConfig":
                 continue
@@ -1737,6 +1736,9 @@ class AppConfig:
         entry_type = type(script)
         if entry_type in self._script_config_handlers:
             return self._script_config_handlers[entry_type]
+        if entry_type in (MaaFWConfig, M9AConfig, MSSConfig):
+            # 联调分支：没装插件时冷登记兜底的内置类型没有专项回调，只原样保留。
+            return None
         raise RuntimeError(f"专项配置处理器未登记: {type(script).__name__}")
 
     def script_supports_mod_avd(self, script: ConfigEntry) -> bool:
@@ -2887,6 +2889,51 @@ class AppConfig:
                 "lines": lines,
             }
         )
+
+    def _register_maafw_fallback_types(self) -> None:
+        """联调分支：配置里已有 MFW 一族托管、却没有插件接手时，冷登记内置类型兜底。
+
+        内置类型已让位给插件；不兜底的话集合激活会因「未登记的 Entry 类型」整体失败，
+        后端起不来。兜底只为让托管原样保留、后端照常启动：这些托管没有执行能力，
+        插件装好后重启即由插件接手（运行中再启用插件会因类型名冲突失败）。
+        """
+
+        from app.core.config.plugin_upgrade import (
+            MAAFW_FAMILY_TYPE_NAMES,
+            collection_type_names,
+        )
+
+        present = collection_type_names(self.config_path) & set(MAAFW_FAMILY_TYPE_NAMES)
+        fallback: dict[str, tuple[ConfigCollection[Any], type[Any]]] = {
+            "MaaFWConfig": (self.ScriptConfig, MaaFWConfig),
+            "M9AConfig": (self.ScriptConfig, M9AConfig),
+            "MSSConfig": (self.ScriptConfig, MSSConfig),
+            "MSSPlanConfig": (self.PlanConfig, MSSPlanConfig),
+        }
+        registered = []
+        for name in sorted(present):
+            collection, entry_cls = fallback[name]
+            if (
+                collection.activation_state != NodeState.INACTIVE
+                or name in collection.entry_types
+            ):
+                continue
+            collection.register_initial_type(entry_cls)
+            registered.append(name)
+        if registered:
+            logger.warning(
+                f"未找到接手 {'、'.join(registered)} 的插件，相关托管按内置类型保留、不能运行"
+            )
+            self.startup_notices.append(
+                {
+                    "level": "warning",
+                    "title": "MFW / M9A / MSS 插件未就绪",
+                    "lines": [
+                        f"配置里有 {'、'.join(registered)} 托管，但对应插件没有装上或启用失败。",
+                        "这些托管原样保留、暂时不能运行；装好插件后重启即可接手。",
+                    ],
+                }
+            )
 
     def script_config_loaded_intact(self) -> bool:
         """确认托管集合加载成功；空表再核对持久文件，避免把损坏配置当成无引用。"""

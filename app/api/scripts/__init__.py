@@ -22,7 +22,6 @@ from app.task.BAAH.api import router as baah_router
 from app.task.BetterGI.api import router as bettergi_router
 from app.task.HSR.api import router as hsr_router
 from app.task.MaaEnd.api import router as maaend_router
-from app.task.MaaFW.api import router as maafw_router
 from app.task.OkNte.api import router as oknte_router
 from app.task.Okww.api import router as okww_router
 from app.task.ZzzOd.api import router as zzzod_router
@@ -39,7 +38,7 @@ router.include_router(webhooks.router)
 router.include_router(sharing.router)
 router.include_router(okww_router)
 router.include_router(maaend_router)
-router.include_router(maafw_router)
+# 联调分支：/maafw/* 端点由插件挂载，内置的不再挂，免得路由重复。
 router.include_router(hsr_router)
 router.include_router(bettergi_router)
 router.include_router(baah_router)
