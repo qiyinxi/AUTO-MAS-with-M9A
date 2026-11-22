@@ -1229,6 +1229,16 @@ class AppConfig:
 
         logger.info(f"添加托管配置: {script}, 从 {script_id} 复制")
 
+        if script_id is None and script not in self.script_classes:
+            # 联调分支：MFW 一族让给了插件，没装插件时说清楚，不只回一个 KeyError。
+            if script in ("MaaFW", "M9A", "MSS"):
+                raise ValueError(
+                    f"{script} 托管由插件提供，插件还没装上或没启用：请在插件中心安装并启用"
+                    " auto-mas-maafw-adapter（M9A、MSS 另需 auto-mas-m9a-adapter、"
+                    "auto-mas-mss-adapter）"
+                )
+            raise KeyError(script)
+
         if script_id is None:
             async with config_manager.transaction():
                 _config_uid = self.ScriptConfig.add(
@@ -1866,6 +1876,11 @@ class AppConfig:
                 ),
                 None,
             )
+        if plan_class is None:
+            # 联调分支：前端仍按旧创建标识（如 MSSPlan）提交，对应插件登记的 <标识>Config。
+            declared = self.PlanConfig.entry_types.get(f"{script}Config")
+            if declared is not None and issubclass(declared, PlanEntry):
+                plan_class = declared
         if plan_class is None:
             raise TypeError(f"不支持的计划表配置类型: {script}")
         if plan_class is UniversalPlanConfig:
@@ -2730,9 +2745,20 @@ class AppConfig:
             None,
         )
         if consumer_config is None:
-            raise TypeError(f"不支持的计划表消费方类型: {consumer}")
-
-        plan_class = consumer_config["config_class"]
+            # 联调分支：计划类型已让给插件（如 MSS → MSSPlanConfig），按类型名找插件登记的类。
+            plan_class = next(
+                (
+                    cls
+                    for name, cls in self.PlanConfig.entry_types.items()
+                    if name.casefold() == f"{consumer}planconfig".casefold()
+                    and issubclass(cls, PlanEntry)
+                ),
+                None,
+            )
+            if plan_class is None:
+                raise TypeError(f"不支持的计划表消费方类型: {consumer}")
+        else:
+            plan_class = consumer_config["config_class"]
         logger.info(f"开始获取 {consumer} 计划下拉框信息")
         data = [{"label": "固定", "value": "Fixed"}]
         for uid, plan in self.PlanConfig.items():
